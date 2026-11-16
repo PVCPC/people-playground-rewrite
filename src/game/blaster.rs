@@ -573,7 +573,7 @@ impl Game {
         Some(self.with_component_instance(m, |_, inst, o| inst.rotation(o)))
     }
 
-    /// BlasterBehaviour.Shoot (the muzzle flash is presentation).
+    /// BlasterBehaviour.Shoot
     pub fn blaster_shoot(&mut self, i: usize) {
         if !self.blasters[i].enabled {
             return;
@@ -597,6 +597,7 @@ impl Game {
         let clip = if clips != 0 { self.pick_clip(id, "Clips", clips) } else { self.audio.get(source).clip.clone() };
         self.audio.play_one_shot(source, clip.as_ref(), 1.0);
         self.camera_shake(0.5 * shake, vector);
+        self.ps_field_play_stop(id, "Muzzleflash", true);
     }
 
     /// The physical a hit's transform is (Global.PhysicalObjectsInWorldByTransform), if it is in the world.

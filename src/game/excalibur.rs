@@ -47,6 +47,8 @@ impl Game {
         if !self.excaliburs[e].performingSpell {
             self.excaliburs[e].performingSpell = true;
             self.excaliburs[e].chargeTime = 0.0;
+            let id = self.excaliburs[e].id;
+            self.ps_field_emit_n(id, "SpellChargeParticleSystem", 12);
             self.audio.play(self.excaliburs[e].ChargeAudioSource);
         }
     }

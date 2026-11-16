@@ -95,17 +95,40 @@ impl Game {
     /// loop sound follow the use).
     pub fn lightning_gun_update(&mut self, i: usize) {
         let p = self.lightning_guns[i].Phys;
+        let id = self.lightning_guns[i].id;
+        let src = self.audio.source_field(id, "LoopSource");
         if self.started_used_continuously(p) {
             self.lightning_guns[i].heldTime = 0.0;
+            self.ps_field_play_stop(id, "ParticleSystem", true);
+            if let Some(s) = src {
+                self.audio.play(s);
+                let clip = self.audio.clip(id, "Start");
+                self.audio.play_one_shot(s, clip.as_ref(), 1.0);
+            }
         }
         if self.used_continuously(p) {
             self.lightning_guns[i].heldTime += self.time.deltaTime;
         }
+        if self.stopped_used_continuously(p) {
+            self.ps_field_play_stop(id, "ParticleSystem", false);
+            if let Some(s) = src {
+                self.audio.stop(s);
+                let clip = self.audio.clip(id, "End");
+                self.audio.play_one_shot(s, clip.as_ref(), 1.0);
+            }
+        }
     }
 
-    /// LightningGunBehaviour.OnDisable: heldTime = 0 (the particles and the loop sound stop).
+    /// LightningGunBehaviour.OnDisable: heldTime = 0, the particles stop, and a playing loop stops with the End sound.
     pub fn lightning_gun_on_disable(&mut self, i: usize) {
         self.lightning_guns[i].heldTime = 0.0;
+        let id = self.lightning_guns[i].id;
+        self.ps_field_play_stop(id, "ParticleSystem", false);
+        if let Some(s) = self.audio.source_field(id, "LoopSource").filter(|&s| self.audio.is_playing(s)) {
+            self.audio.stop(s);
+            let clip = self.audio.clip(id, "End");
+            self.audio.play_one_shot(s, clip.as_ref(), 1.0);
+        }
     }
 
     /// LightningGunBehaviour.FixedUpdate

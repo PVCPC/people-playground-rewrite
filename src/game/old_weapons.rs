@@ -200,6 +200,17 @@ impl Game {
     /// instantiated at the barrel with the launcher's rotation and its `right` set to transform.right * localScale.x.
     pub fn needler_use(&mut self, i: usize) {
         let s = self.needlers[i].clone();
+        if let Some(t) = self.field_component(s.id, "flash") {
+            let at = self.needler_barrel_position(i);
+            let d = self.transform_direction(s.physical, [s.barrelDirection[0], s.barrelDirection[1], 0.0]);
+            let k = self.physicals[s.physical].transform.localScale[0];
+            let q = crate::unity::transform::from_to_rotation([1.0, 0.0, 0.0], [d[0] * k, d[1] * k, 0.0]);
+            self.with_component_instance(t, |_, inst, o| {
+                inst.set_world_position(o, [at[0], at[1], 0.0]);
+                inst.set_world_rotation(o, q);
+            });
+        }
+        self.ps_field_play_stop(s.id, "flash", true);
         let clip = self.pick_clip(s.id, "FireSounds", s.FireSounds);
         let src = self.audio_src(s.id, "Audio");
         self.audio.play_one_shot(src, clip.as_ref(), s.FireVolume);

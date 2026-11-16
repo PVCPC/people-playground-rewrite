@@ -149,6 +149,8 @@ impl Game {
             if !g.archelix_casters[c].MuzzleFlash {
                 crate::game::menu::throw("NullReferenceException: Object reference not set to an instance of an object");
             }
+            let id = g.archelix_casters[c].id;
+            g.ps_field_play_stop(id, "MuzzleFlash", true);
             let (p, shake) = (g.archelix_casters[c].physical, g.archelix_casters[c].ScreenShakeIntensity);
             let at = g.physicals[p].transform.position;
             g.camera_shake(shake, [at[0], at[1]]);

@@ -667,7 +667,7 @@ impl Game {
 
     /// Runs `f` on the clone that holds the component `id` (still unsynced, or retained by the sync), with the
     /// index of its object.
-    pub(super) fn with_component_instance<R>(&mut self, id: i32, f: impl FnOnce(&mut Game, &mut super::spawn::Instance, usize) -> R) -> R {
+    pub(crate) fn with_component_instance<R>(&mut self, id: i32, f: impl FnOnce(&mut Game, &mut super::spawn::Instance, usize) -> R) -> R {
         let owns = |i: &super::spawn::Instance| i.objects.iter().any(|x| x.components.contains(&id));
         let (list, i) = match self.unsynced.iter().position(owns) {
             Some(i) => (true, i),

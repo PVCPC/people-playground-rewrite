@@ -84,8 +84,12 @@ impl Game {
             self.audio.get_mut(loop_source).looping = false;
             let clip = self.audio.clip(id, "ChargeUpSound");
             self.audio.play_one_shot(loop_source, clip.as_ref(), 1.0);
+            self.field_local_scale(id, "ChargeUpParticleSystem", |_| [0.0; 3]);
+            self.ps_field_play_stop(id, "ChargeUpParticleSystem", true);
         }
         if self.used_continuously(p) {
+            let num = self.time.smoothDeltaTime / self.accelerators[a].MaxChargeTime;
+            self.field_local_scale(id, "ChargeUpParticleSystem", |s| s.map(|x| x + num));
             let g = &mut self.accelerators[a];
             g.CurrentChargeProgress += self.time.deltaTime / g.MaxChargeTime;
             if g.CurrentChargeProgress >= 0.9999 {
@@ -99,6 +103,7 @@ impl Game {
             }
         }
         if self.stopped_used_continuously(p) {
+            self.ps_field_play_stop(id, "ChargeUpParticleSystem", false);
             let loop_source = self.audio_src(id, "LoopAudioSource");
             self.audio.stop(loop_source);
             self.audio.set_clip(loop_source, None);
@@ -137,6 +142,7 @@ impl Game {
         let at = self.accelerator_barrel_position(a);
         let rb = self.physicals[self.accelerators[a].physical].rigidbody.clone();
         rb.add_force_at_position(&mut self.world, [k * dir[0], k * dir[1]], at);
+        self.ps_field_play_stop(id, "MuzzleflashSystem", true);
     }
 
     /// AcceleratorGunBehaviour.ShootFullPower: SpawnProjectile(250, 6, 25, 1.5), then the recoil
@@ -150,6 +156,7 @@ impl Game {
         let at = self.accelerator_barrel_position(a);
         let rb = self.physicals[self.accelerators[a].physical].rigidbody.clone();
         rb.add_force_at_position(&mut self.world, [dir[0] * k, dir[1] * k], at);
+        self.ps_field_play_stop(id, "MuzzleflashSystem", true);
     }
 
     /// AcceleratorGunBehaviour.SpawnProjectile: Instantiate(ProjectilePrefab, BarrelPosition, identity), its right along

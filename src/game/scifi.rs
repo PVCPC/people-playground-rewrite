@@ -389,6 +389,7 @@ impl Game {
     pub fn scifi40_use(&mut self, i: usize) {
         if self.scifi40s[i].enabled {
             let (src, id) = (self.scifi40s[i].source, self.scifi40s[i].id);
+            self.ps_field_play_stop(id, "ParticleSystem", true);
             let clip = self.audio.clip(id, "ShotSound");
             self.audio.play_one_shot(src, clip.as_ref(), 1.0);
             self.scifi40_fire(i);

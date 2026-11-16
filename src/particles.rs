@@ -2039,6 +2039,24 @@ impl Game {
         }
     }
 
+    /// `<field>.Emit(n)` on script `sid`'s ParticleSystem field, at its pose now.
+    pub(crate) fn ps_field_emit_n(&mut self, sid: i32, field: &str, n: i32) {
+        if let Some(i) = self.field_ps(sid, field) {
+            let (p, q, _) = self.embedded_pose(i);
+            self.ps_calls.push((i, crate::game::PsCall::Emit(n, p, q)));
+        }
+    }
+
+    /// `<field>.transform.localScale`: read, then set to what `f` makes of it.
+    pub(crate) fn field_local_scale(&mut self, sid: i32, field: &str, f: impl FnOnce([f32; 3]) -> [f32; 3]) {
+        if let Some(t) = self.field_component(sid, field) {
+            self.with_component_instance(t, |_, inst, o| {
+                let s = inst.objects[o].trs.s;
+                inst.set_local_scale(o, f([s[0], s[1], s[2]]));
+            });
+        }
+    }
+
     /// A script's call on the embedded systems `which` picks (in embedded_ps order).
     pub(crate) fn ps_call(&mut self, which: impl Fn(&crate::game::EmbeddedPs) -> bool, call: crate::game::PsCall) {
         for i in 0..self.embedded_ps.len() {
