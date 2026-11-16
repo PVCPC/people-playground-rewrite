@@ -33,8 +33,18 @@ pub const SINGLETONS: &[&str] = &["BulletTracerPool", "ClipboardControllerBehavi
 /// Instantiate of its Prefab takes.
 fn tracer_pool(db: &mut AssetDb, s: &SceneScript) -> Result<super::ballistics::TracerPool, String> {
     let v = &s.fields;
-    let prefab = v.get("Prefab").and_then(Value::pptr).and_then(|p| db.resolve(s.game_object.file, p)).ok_or("BulletTracerPool.Prefab")?;
-    let prefab = db.prefab(prefab)?;
+    let root = v.get("Prefab").and_then(Value::pptr).and_then(|p| db.resolve(s.game_object.file, p)).ok_or("BulletTracerPool.Prefab")?;
+    let prefab = db.prefab(root)?;
+    // Rendering: the root's LineRenderer on the root's own transform (scale kept; position and rotation set per use).
+    let line = prefab.objects[0].components.iter().find(|(_, k)| matches!(k, crate::assets::db::Component::Other(120))).and_then(|(r, _)| {
+        let data = crate::assets::components::LineRendererData::read(db.data(*r)).ok()?;
+        let s = prefab.objects[0].components.iter().find_map(|(_, k)| match k {
+            crate::assets::db::Component::Transform(t) => Some(t.local_scale),
+            _ => None,
+        })?;
+        let trs = crate::unity::transform::Trs { t: [0.0; 4], q: [0.0, 0.0, 0.0, 1.0], s: [s[0], s[1], s[2], 0.0] };
+        Some(Game::line_visual(db, root.file, data, 0, super::BareAnchor::Root, vec![trs], prefab.objects[0].layer as i32, false))
+    });
     for o in &prefab.objects {
         for (_, c) in &o.components {
             if let crate::assets::db::Component::Script { class, .. } = c {
@@ -48,6 +58,7 @@ fn tracer_pool(db: &mut AssetDb, s: &SceneScript) -> Result<super::ballistics::T
         clone_ids: prefab.objects.iter().map(|o| 1 + o.components.len()).sum(),
         MaxPoolSize: v.get("MaxPoolSize").and_then(Value::i64).ok_or("BulletTracerPool.MaxPoolSize")? as usize,
         InactivityThresholdInSeconds: v.get("InactivityThresholdInSeconds").and_then(Value::f32).ok_or("BulletTracerPool.InactivityThresholdInSeconds")?,
+        line,
         ..Default::default()
     })
 }

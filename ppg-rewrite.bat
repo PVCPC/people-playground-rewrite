@@ -28,6 +28,8 @@ where cargo >nul 2>&1
 if errorlevel 1 call :install || exit /b 1
 echo Building (the first time takes several minutes)...
 cargo build --release --manifest-path "%ROOT%Cargo.toml"
+rem A build stopped halfway can leave a broken cache (link errors): the rewrite's own part is rebuilt once from scratch.
+if errorlevel 1 (echo Retrying with a clean build of the rewrite... & cargo clean --release -p people-playground-bevy --manifest-path "%ROOT%Cargo.toml" & cargo build --release --manifest-path "%ROOT%Cargo.toml")
 if errorlevel 1 (echo Build failed. & pause & exit /b 1)
 if not defined WGPU_BACKEND set "WGPU_BACKEND=dx12"
 rem What it writes as the game would beside itself (Logs, Contraptions, Mods, stats) goes to your user folder, not here.

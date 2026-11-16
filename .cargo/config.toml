@@ -1,0 +1,4 @@
+# rust-lld (ships with Rust) links the Windows exe several times faster than Microsoft's link.exe; the code is the same.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+

@@ -177,6 +177,8 @@ pub struct Bullet {
     pub total: f32,
     pub previous: Option<i32>,
     pub tracer: bool,
+    /// Rendering only: the tracer's line in `Game::lines` (tracer_line_take).
+    pub line: Option<usize>,
     pub splash: bool,
     pub can_explode: bool,
     pub charge: f32,
@@ -205,6 +207,11 @@ pub struct TracerPool {
     pub InactivityThresholdInSeconds: f32,
     /// The ids an Instantiate of the prefab takes.
     pub clone_ids: usize,
+    /// Rendering only: the prefab's LineRenderer (its root's scale in its chain), each clone's line in `Game::lines`:
+    /// the inactive ones, and the active ones with the emitter holding them.
+    pub line: Option<super::line::LineVisual>,
+    pub free: Vec<usize>,
+    pub held: Vec<(usize, Shooter)>,
 }
 
 /// Global.main.camera and CameraShakeBehaviour.
@@ -376,6 +383,61 @@ impl Game {
         true
     }
 
+    /// Rendering: a tracer clone's line for a Request at `origin` (a new clone's rotation is identity, a reused one keeps
+    /// its last; PoolableSizeHelper puts back the prefab's scale), with CreateTracer's widthMultiplier and
+    /// SetPosition(1, right * MaxRange). Its Renderer.enabled is the clone's last one.
+    fn tracer_line_take(&mut self, f: Shooter, origin: [f32; 2], width: f32, range: f32) -> Option<usize> {
+        let template = self.tracer_pool.line.clone()?;
+        let l = match self.tracer_pool.free.pop() {
+            Some(l) => l,
+            None => {
+                let mut line = template.clone();
+                line.id = i32::MIN / 2 + (self.tracer_pool.held.len() + self.tracer_pool.free.len()) as i32;
+                self.lines.push(line);
+                self.lines.len() - 1
+            }
+        };
+        self.tracer_pool.held.push((l, f));
+        let line = &mut self.lines[l];
+        line.visible = true;
+        line.width = width;
+        line.chain[0].t = [origin[0], origin[1], 0.0, 0.0];
+        line.chain[0].s = template.chain[0].s;
+        if line.positions.len() >= 2 {
+            line.positions[1] = [range, 0.0, 0.0];
+        }
+        Some(l)
+    }
+
+    /// Rendering: ObjectPoolBehaviour.Return of a tracer clone (SetActive(false)).
+    fn tracer_line_give(&mut self, l: usize) {
+        if let Some(i) = self.tracer_pool.held.iter().position(|h| h.0 == l) {
+            self.tracer_pool.held.swap_remove(i);
+            self.tracer_pool.free.push(l);
+            self.lines[l].visible = false;
+        }
+    }
+
+    /// Rendering: tracer.enabled.
+    fn tracer_line_enable(&mut self, b: &Bullet, on: bool) {
+        if let Some(l) = b.line.filter(|l| self.tracer_pool.held.iter().any(|h| h.0 == *l)) {
+            self.lines[l].enabled = on;
+        }
+    }
+
+    /// Rendering: tracer.transform.position = origin; tracer.transform.right = direction; SetPosition(1, right * length).
+    fn tracer_line_place(&mut self, b: &Bullet, origin: [f32; 2], direction: [f32; 2], length: f32) {
+        if let Some(l) = b.line.filter(|l| self.tracer_pool.held.iter().any(|h| h.0 == *l)) {
+            let half = direction[1].atan2(direction[0]) * 0.5;
+            let line = &mut self.lines[l];
+            line.chain[0].t = [origin[0], origin[1], 0.0, 0.0];
+            line.chain[0].q = [0.0, 0.0, half.sin(), half.cos()];
+            if line.positions.len() >= 2 {
+                line.positions[1] = [length, 0.0, 0.0];
+            }
+        }
+    }
+
     /// ObjectPoolBehaviour.Return
     pub(crate) fn tracer_return(&mut self) {
         self.tracer_pool.available += 1;
@@ -418,6 +480,10 @@ impl Game {
     /// BallisticsEmitter.Dispose (OnDestroy of its ConnectedBehaviour; none before its Start): the tracers it still
     /// holds go back.
     pub fn emitter_dispose(&mut self, f: Shooter) {
+        let held: Vec<usize> = self.tracer_pool.held.iter().filter(|h| h.1 == f).map(|h| h.0).collect();
+        for l in held {
+            self.tracer_line_give(l);
+        }
         let e = match f {
             Shooter::Firearm(f) => self.firearms[f].emitter.as_mut(),
             Shooter::MachineGun(m) => self.machine_guns[m].emitter.as_mut(),
@@ -463,13 +529,15 @@ impl Game {
     pub fn emitter_emit(&mut self, f: Shooter, origin: [f32; 2], direction: [f32; 2]) {
         let e = self.emitter(f);
         let (traversal, charge, speed) = (e.DoTraversal && e.RenderTracersIfTraversal, e.Charge, e.cartridge.StartSpeed);
-        let mut tracer = false;
+        let (width, range) = (e.TracerWidth, e.MaxRange);
+        let (mut tracer, mut line) = (false, None);
         // BallisticsEmitter.CreateTracer: BulletTracerPool.Instance.Request; OnTracerCreation is rendering.
         if traversal && self.tracer_request() {
             *self.emitter_mut(f).tracers.as_mut().unwrap_or_else(|| super::menu::npe()) += 1;
             tracer = true;
+            line = self.tracer_line_take(f, origin, width, range);
         }
-        let b = Bullet { shooter: f, origin, direction: mathf::normalized2(direction), speed, iteration: 0, total: 0.0, previous: None, tracer, splash: true, can_explode: true, charge };
+        let b = Bullet { shooter: f, origin, direction: mathf::normalized2(direction), speed, iteration: 0, total: 0.0, previous: None, tracer, line, splash: true, can_explode: true, charge };
         self.bullet_iterate(b);
     }
 
@@ -482,6 +550,9 @@ impl Game {
     }
 
     fn remove_tracer(&mut self, b: &Bullet) {
+        if let Some(l) = b.line {
+            self.tracer_line_give(l);
+        }
         if b.tracer {
             *self.emitter_mut(b.shooter).tracers.as_mut().unwrap_or_else(|| super::menu::npe()) -= 1;
             self.tracer_return();
@@ -555,6 +626,7 @@ impl Game {
                 let num2 = self.hardness(f, p);
                 if b.previous != Some(collider) {
                     let damage = self.damage_for_distance(f, thickness + b.total) * mathf::clamp01(num);
+                    self.tracer_line_enable(&b, false);
                     if let Some(prev) = b.previous.filter(|&c| self.collider_exists(c)) {
                         let at = sub(b.origin, mul(b.direction, thickness));
                         self.send_shot(prev, None, b.direction, at, damage, true, Some(self.emitter(b.shooter).cartridge));
@@ -597,6 +669,7 @@ impl Game {
                 let damage = self.damage_for_distance(f, thickness + b.total) * mathf::clamp01(num);
                 self.send_shot(prev, None, b.direction, at, damage, true, Some(self.emitter(b.shooter).cartridge));
                 self.bullet_exit_callback(f, at, b.direction);
+                self.tracer_line_enable(&b, true);
             }
             let ray = self.raycast(V::new(b.origin[0], b.origin[1]), b.direction, max_range, layers, -0.1, 0.1);
             // extras: a shot into a portal's opening goes on out of the other (src/game/extras_glue.rs); no portals, no change.
@@ -607,6 +680,8 @@ impl Game {
             let target = ray.and_then(|h| self.bullet_target(f, self.physical_of_body(h.body)).map(|p| (h, p)));
             let Some((hit, p)) = target else {
                 if traversal {
+                    // tracer.SetPosition(1, Clamp01(num) * MaxRange * right); position = origin; right = direction.
+                    self.tracer_line_place(&b, b.origin, b.direction, mathf::clamp01(num) * max_range);
                     let dt = self.time.deltaTime;
                     let traversal = mathf::min(max_range, (d(dt) * 60.0f32 * max_range * mathf::sqrt(num)).f());
                     let damage = self.damage_for_distance(f, (d(b.total) + d(traversal) * 0.1f32).f()) * num;
@@ -636,6 +711,7 @@ impl Game {
             ph.charge = mathf::max(charge * ph.EnergyWireResistance, ph.Charge());
             self.bullet_entry_callback(f, point, b.direction, hit.collider);
             self.bullet_explode(&mut b, point);
+            self.tracer_line_place(&b, b.origin, b.direction, hit.distance);
             let h = BulletHit { physical: p, hardness, damage: damage2, collider: hit.collider, point, normal, distance: hit.distance };
             let slot = self.bullet_slot(b, Some(h));
             let owner = self.emitter_owner(f);

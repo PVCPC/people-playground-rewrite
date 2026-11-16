@@ -67,7 +67,7 @@ const DRAIN_CALLS: &[(&str, Call)] = &[
         let f = shooter(g, c)?;
         if c.arg::<String>(6)? != "null" { return Err("a tracer arg".into()) }
         let previous = if c.arg::<String>(5)? == "null" { None } else { Some(c.arg::<i32>(5)?) };
-        let b = bl::Bullet { shooter: f, origin: c.arg(0)?, direction: c.arg(1)?, speed: c.arg(2)?, iteration: c.arg(3)?, total: c.arg(4)?, previous, tracer: false, splash: c.arg(7)?, can_explode: c.arg(8)?, charge: c.arg(9)? };
+        let b = bl::Bullet { shooter: f, origin: c.arg(0)?, direction: c.arg(1)?, speed: c.arg(2)?, iteration: c.arg(3)?, total: c.arg(4)?, previous, tracer: false, line: None, splash: c.arg(7)?, can_explode: c.arg(8)?, charge: c.arg(9)? };
         let seq = g.coroutine_seq;
         let mut s = Vec::new();
         if g.bullet_iterate(b) {
@@ -358,7 +358,7 @@ pub(super) const BIGB_CALLS: &[(&str, Call)] = &[
             return Err("a tracer arg".into());
         }
         let h = ray(g, c, 6, None)?.unwrap_or(bl::BulletHit { physical: 0, hardness: 0.0, damage: 0.0, collider: 0, point: [0.0; 2], normal: [0.0; 2], distance: 0.0 });
-        let b = bl::Bullet { shooter: f, origin: [0.0; 2], direction: c.arg(0)?, speed: c.arg(1)?, iteration: c.arg(2)?, total: c.arg(3)?, previous: None, tracer: false, splash: true, can_explode: false, charge: c.arg(4)? };
+        let b = bl::Bullet { shooter: f, origin: [0.0; 2], direction: c.arg(0)?, speed: c.arg(1)?, iteration: c.arg(2)?, total: c.arg(3)?, previous: None, tracer: false, line: None, splash: true, can_explode: false, charge: c.arg(4)? };
         g.ricochet_bullet(b, &h);
         Ok(em(g, c, f, String::new()))
     }),

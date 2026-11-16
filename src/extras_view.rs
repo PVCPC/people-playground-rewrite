@@ -557,6 +557,10 @@ pub fn add_test(app: &mut App, scene: String) {
         if log && *first > 0 && *step >= 2 && t - *last_log >= 0.25 {
             *last_log = t;
             let mut line = format!("PORTAL t={t:.2} crossers={} portals={:?}", g.extras.crossers.len(), g.extras.portals.map(|p| p.map(|p| (p.frame.centre, p.body))));
+            for &(l, _) in &g.tracer_pool.held {
+                let x = &g.lines[l];
+                line += &format!(" | tracer at {:?} q {:?} to {:?} w {} on {}", x.chain[0].t, x.chain[0].q, x.positions.get(1), x.width, x.enabled && x.visible);
+            }
             for p in (*first..g.physicals.len()).take(16) {
                 let ph = &g.physicals[p];
                 if ph.destroyed {
