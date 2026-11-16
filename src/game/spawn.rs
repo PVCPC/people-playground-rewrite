@@ -1,0 +1,2511 @@
+//! Object.Instantiate of a prefab from the game's own data: InstantiateObject (180634340) clones the hierarchy,
+//! then AwakeAndActivateClonedObjects (1806321d0) wakes the clones through an AwakeFromLoadQueue in
+//! kInstantiateOrCreateFromCodeAwakeFromLoad mode. This module is the native part of that: the clones' instance
+//! ids and Transforms, and the Rigidbody2D, Collider2D and HingeJoint2D AwakeFromLoads that build the b2 world
+//! state.
+
+use super::*;
+use crate::assets::components::{ColliderShape, Joint2D as Joint2DData, JointKind as JointData, Rigidbody2D as RigidbodyData};
+use crate::assets::db::{AssetDb, Component, ObjRef, Prefab, PrefabObject};
+use crate::b2::revolute::RevoluteDef;
+use crate::b2::shape::{box_collider_polygon, capsule_collider, edge_collider_chain, polygon_collider_polygons, Circle, ColliderMatrix};
+use crate::b2::prismatic::SliderJoint2d;
+use crate::b2::wheel_joint::WheelJoint2d;
+use crate::b2::weld::{check_bodies, BodyFrame, Connected, FixedJoint2d};
+use crate::b2::world::{BodyDef, BodyId, BodyType, ColliderRef, FixtureDef, FixtureId, JointId, JointKind, RigidbodyMass, RigidbodyRef, Shape};
+use crate::unity::transform::{global_position, global_rotation, local_to_world, lossy_scale, quaternion_to_matrix, Trs};
+use std::collections::HashMap;
+
+/// One cloned GameObject: its instance id, its components' ids (prefab order) and its local Transform.
+#[derive(Clone, Debug)]
+pub struct Clone {
+    pub game_object: i32,
+    pub components: Vec<i32>,
+    pub trs: Trs,
+    pub parent: Option<usize>,
+    /// GameObject.activeInHierarchy.
+    pub active: bool,
+    /// GameObject.activeSelf.
+    pub self_active: bool,
+    /// The object has been active in the hierarchy before: its scripts have been awoken.
+    pub activated: bool,
+}
+
+/// An instantiated prefab: the clones in prefab order, and the b2 objects their components made.
+#[derive(Clone, Debug, Default)]
+pub struct Instance {
+    /// The prefab it was cloned from.
+    pub prefab: std::sync::Arc<Prefab>,
+    pub objects: Vec<Clone>,
+    /// Rigidbody2D bodies by object.
+    pub bodies: HashMap<usize, BodyId>,
+    /// The Transform pose Rigidbody2D::Create read: its SetInterpolation makes it the movement state's previous,
+    /// current and body pose.
+    pub created_pose: HashMap<usize, ([f32; 3], [f32; 4])>,
+    /// Collider2D fixtures by (object, component).
+    pub fixtures: HashMap<(usize, usize), Vec<FixtureId>>,
+    /// HingeJoint2D joints by (object, component).
+    pub joints: HashMap<(usize, usize), JointId>,
+    /// The HingeJoint2Ds' native state by (object, component).
+    pub hinges: HashMap<(usize, usize), HingeState>,
+    /// The FixedJoint2Ds', SliderJoint2Ds' and SpringJoint2Ds' native state by (object, component).
+    pub anchored: HashMap<(usize, usize), AnchoredState>,
+    /// The Collider2Ds' native state by (object, component).
+    pub colliders: HashMap<(usize, usize), ColliderState>,
+    /// The CircleCollider2Ds whose radius or offset a script set at run time, by (object, component): (radius, offset).
+    pub circles: HashMap<(usize, usize), (f32, [f32; 2])>,
+    /// The EdgeCollider2Ds whose points a script set at run time (SetPoints), by (object, component).
+    pub edge_points: HashMap<(usize, usize), Vec<[f32; 2]>>,
+    /// The Collider2Ds whose isTrigger a script set at run time, by (object, component).
+    pub triggers: HashMap<(usize, usize), bool>,
+    /// The Collider2Ds whose enabled a script set at run time, by (object, component).
+    pub collider_enabled: HashMap<(usize, usize), bool>,
+    /// Each object's TransformChangeDispatch interest in the Physics2D systems (the CHANGE_* bits).
+    pub interest: Vec<u8>,
+    /// Each object's changed bits for those systems, cleared by SyncTransforms.
+    pub changed: Vec<u8>,
+}
+
+/// The Physics2D TransformChangeDispatch systems InitializePhysicsManager2D (180bf14a0) registers: the
+/// Rigidbody2D T (global T), R (global R), S (global S) and Anim (physics animation) systems and the Collider2D
+/// TRS system (global T, R and S).
+pub const CHANGE_RB_T: u8 = 1;
+pub const CHANGE_RB_R: u8 = 2;
+pub const CHANGE_RB_S: u8 = 4;
+pub const CHANGE_RB_ANIM: u8 = 8;
+pub const CHANGE_COLLIDER: u8 = 16;
+/// The systems interested in each kind of change (TransformInternal::g_ChangeMaskCache).
+const GLOBAL_T: u8 = CHANGE_RB_T | CHANGE_COLLIDER;
+const GLOBAL_R: u8 = CHANGE_RB_R | CHANGE_COLLIDER;
+const GLOBAL_S: u8 = CHANGE_RB_S | CHANGE_COLLIDER;
+
+/// A FixedJoint2D, SliderJoint2D, SpringJoint2D, DistanceJoint2D or WheelJoint2D component's native state: the AnchoredJoint2D/Joint2D fields
+/// every kind shares, the kind's own, and the slot in `Game.anchored_joints` the break-limit walk reads.
+#[derive(Clone, Debug)]
+pub struct AnchoredState {
+    pub base: FixedJoint2d,
+    pub slider: Option<SliderJoint2d>,
+    pub spring: Option<SpringState>,
+    pub distance: Option<DistanceState>,
+    pub wheel: Option<WheelJoint2d>,
+    pub relative: Option<super::simulate::RelativeState>,
+    pub slot: Option<usize>,
+}
+
+/// DistanceJoint2D +0x98..+0x9d: distance, maxDistanceOnly and autoConfigureDistance.
+#[derive(Clone, Copy, Debug)]
+pub struct DistanceState {
+    pub auto_configure_distance: bool,
+    pub distance: f32,
+    pub max_distance_only: bool,
+}
+
+/// SpringJoint2D +0x98..+0xa4: distance, damping ratio, frequency and autoConfigureDistance.
+#[derive(Clone, Copy, Debug)]
+pub struct SpringState {
+    pub auto_configure_distance: bool,
+    pub distance: f32,
+    pub damping_ratio: f32,
+    pub frequency: f32,
+}
+
+/// HingeJoint2D's runtime fields.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HingeState {
+    /// AnchoredJoint2D.m_ConnectedAnchor: serialized, then rewritten by auto-configuration.
+    pub connected_anchor: [f32; 2],
+    /// Joint2D.m_AutoConfigurationComplete: set by FinalizeCreateJoint while the world plays.
+    pub auto_configuration_complete: bool,
+    pub has_previous_state: bool,
+    pub reference_angle: f32,
+    pub body_angle_a: f32,
+    pub body_angle_b: f32,
+    /// The slot in `Game.anchored_joints` the break-limit walk reads (a prefab hinge no script links).
+    pub slot: Option<usize>,
+}
+
+/// AnchoredJoint2D / Joint2D serialized state of a FixedJoint2D or SliderJoint2D component.
+fn anchored_base(j: &Joint2DData, damping_ratio: f32, frequency: f32) -> FixedJoint2d {
+    FixedJoint2d {
+        anchor: V::new(j.anchor[0], j.anchor[1]),
+        connected_anchor: V::new(j.connected_anchor[0], j.connected_anchor[1]),
+        auto_configure_connected_anchor: j.auto_configure_connected_anchor,
+        anchor_configured: false,
+        damping_ratio,
+        frequency,
+        stored_reference_angle: None,
+        enable_collision: j.enable_collision,
+        break_force: j.break_force,
+        break_torque: j.break_torque,
+    }
+}
+
+/// The native state a FixedJoint2D, SliderJoint2D, SpringJoint2D, DistanceJoint2D or WheelJoint2D component has before its
+/// first Create: the serialized fields.
+pub(super) fn anchored_initial_state(j: &Joint2DData) -> AnchoredState {
+    let (base, slider, spring, distance, wheel) = match j.kind {
+        JointData::Fixed { damping_ratio, frequency } => (anchored_base(j, damping_ratio, frequency), None, None, None, None),
+        JointData::Wheel { damping_ratio, frequency, angle, use_motor, motor_speed, max_motor_torque } => (
+            anchored_base(j, 0.0, 0.0),
+            None,
+            None,
+            None,
+            Some(WheelJoint2d { damping_ratio, frequency, angle, use_motor, motor_speed, max_motor_torque }),
+        ),
+        JointData::Distance { auto_configure_distance, distance, max_distance_only } => {
+            (anchored_base(j, 0.0, 0.0), None, None, Some(DistanceState { auto_configure_distance, distance, max_distance_only }), None)
+        }
+        JointData::Slider { auto_configure_angle, angle, use_motor, motor_speed, max_motor_force, use_limits, lower, upper } => (
+            anchored_base(j, 0.0, 0.0),
+            Some(SliderJoint2d { angle, motor_speed, max_motor_torque: max_motor_force, lower, upper, use_motor, use_limits, auto_configure_angle }),
+            None,
+            None,
+            None,
+        ),
+        JointData::Spring { auto_configure_distance, distance, damping_ratio, frequency } => {
+            (anchored_base(j, 0.0, 0.0), None, Some(SpringState { auto_configure_distance, distance, damping_ratio, frequency }), None, None)
+        }
+        JointData::Relative { .. } => (anchored_base(j, 0.0, 0.0), None, None, None, None),
+        _ => unreachable!(),
+    };
+    let relative = match j.kind {
+        JointData::Relative { max_force, max_torque, correction_scale, auto_configure_offset, linear_offset, angular_offset } => {
+            let linear_offset = crate::b2::math::Vec2::new(linear_offset[0], linear_offset[1]);
+            Some(super::simulate::RelativeState { max_force, max_torque, correction_scale, linear_offset, angular_offset, auto_configure_offset })
+        }
+        _ => None,
+    };
+    AnchoredState { base, slider, spring, distance, wheel, relative, slot: None }
+}
+
+/// The prefab object a Joint2D's connectedBody points at.
+pub(super) fn joint_connected_object(prefab: &Prefab, o: usize, c: usize, j: &Joint2DData) -> Option<usize> {
+    (!j.connected_body.is_null()).then(|| {
+        let r = prefab.objects[o].components[c].0;
+        let target = ObjRef { file: r.file, path_id: j.connected_body.path_id };
+        assert_eq!(j.connected_body.file, 0, "a joint connected outside its prefab");
+        prefab.index.get(&target).unwrap_or_else(|| panic!("a joint connected outside the spawned object (a map part instantiated alone)")).0
+    })
+}
+
+/// Collider2D's runtime transform fields, set by CreateFixtures.
+#[derive(Clone, Copy, Debug)]
+pub struct ColliderState {
+    pub relative_transform: [f32; 16],
+    pub rigidbody_scale: [f32; 3],
+}
+
+/// AwakeFromLoadQueue::DetermineQueueIndex (180911850) for the component kinds a prefab here holds: the custom
+/// queues of InitializeClass (180914380), then MonoBehaviours 0x14, Collider2D 0xd and other components 0x10.
+fn queue_index(c: Option<&Component>) -> usize {
+    match c {
+        None => 1,
+        Some(Component::Rigidbody2D(_)) => 0xb,
+        Some(Component::Collider2D(_)) => 0xd,
+        Some(Component::Script { .. }) => 0x14,
+        // ParticleSystem (198) has its own queue; ParticleSystemRenderer (199) and the rest are components.
+        Some(Component::Other(198)) => 0xf,
+        Some(_) => 0x10,
+    }
+}
+
+/// level1's first instance id (its object 0): a scene object's id is this plus twice its index in the file
+/// (1.28.41: 56 fewer objects load before level1 than in 1.28.32's 66952).
+const LEVEL1_FIRST_ID: i32 = 66840;
+
+/// The Main scene's Physics2D natives: the ToolController's body and every scene hierarchy that holds
+/// Physics2D components (root first, loaded ids), for `set_active` and the scripts' references.
+pub struct SceneNatives {
+    pub tool_body: BodyId,
+    pub roots: Vec<Instance>,
+}
+
+/// The instance id of level1's object `r`.
+pub(super) fn level1_id(db: &AssetDb, r: ObjRef) -> i32 {
+    level1_index_id(db.files[r.file].objects.iter().position(|o| o.path_id == r.path_id).expect("an object of its file"))
+}
+
+/// The instance id of level1's object at index `at` in the file.
+pub(super) fn level1_index_id(at: usize) -> i32 {
+    LEVEL1_FIRST_ID + 2 * at as i32
+}
+
+/// The tag of the level1 GameObject whose Transform has instance id `transform` (a scene object: a positive id in
+/// level1's range), or None for an id outside level1.
+pub(super) fn level1_transform_tag(db: &AssetDb, transform: i32) -> Option<u16> {
+    let file = db.file_index("level1")?;
+    let i = usize::try_from(transform - LEVEL1_FIRST_ID).ok().filter(|i| i % 2 == 0)? / 2;
+    let r = ObjRef { file, path_id: db.files[file].objects.get(i)?.path_id };
+    if !matches!(db.class(r), 4 | 224) {
+        return None;
+    }
+    let t = crate::assets::classes::Transform::read(db.data(r)).ok()?;
+    Some(db.game_object(db.resolve(file, t.game_object)?).ok()?.tag)
+}
+
+/// A scene GameObject's Transform.
+pub(super) fn scene_transform(db: &AssetDb, go: ObjRef) -> Result<crate::assets::classes::Transform, String> {
+    let g = db.game_object(go)?;
+    let t = g.components.iter().filter_map(|&c| db.resolve(go.file, c)).find(|&c| matches!(db.class(c), 4 | 224)).ok_or_else(|| format!("{}: no Transform", g.name))?;
+    crate::assets::classes::Transform::read(db.data(t))
+}
+
+/// Whether a hierarchy holds a Rigidbody2D, Collider2D or Joint2D on an object active in it.
+fn has_physics(db: &AssetDb, go: ObjRef) -> Result<bool, String> {
+    let g = db.game_object(go)?;
+    if !g.active {
+        return Ok(false);
+    }
+    for c in g.components.iter().filter_map(|&c| db.resolve(go.file, c)) {
+        let class = db.class(c);
+        if class == 50 || crate::assets::components::Collider2D::CLASSES.contains(&class) || crate::assets::components::Joint2D::CLASSES.contains(&class) {
+            return Ok(true);
+        }
+    }
+    for child in scene_transform(db, go)?.children {
+        let t = db.resolve(go.file, child).ok_or("unresolved child transform")?;
+        let child_go = db.resolve(go.file, crate::assets::classes::Transform::read(db.data(t))?.game_object).ok_or("child without GameObject")?;
+        if has_physics(db, child_go)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+impl Instance {
+    /// The object's own local TRS, then each parent's up to the root.
+    pub fn chain(&self, o: usize) -> Vec<Trs> {
+        let mut out = vec![self.objects[o].trs];
+        let mut p = self.objects[o].parent;
+        while let Some(i) = p {
+            out.push(self.objects[i].trs);
+            p = self.objects[i].parent;
+        }
+        out
+    }
+
+    /// Transform::GetPosition (CalculateGlobalPosition).
+    pub fn position(&self, o: usize) -> [f32; 3] {
+        let chain = self.chain(o);
+        let mut p = chain[0].t;
+        for n in &chain[1..] {
+            p = global_position(n, p);
+        }
+        [p[0], p[1], p[2]]
+    }
+
+    /// Transform::GetRotation (CalculateGlobalRotation).
+    pub fn rotation(&self, o: usize) -> [f32; 4] {
+        let chain = self.chain(o);
+        let mut q = chain[0].q;
+        for n in &chain[1..] {
+            q = global_rotation(n, q);
+        }
+        q
+    }
+
+    /// Transform::GetWorldScaleLossy.
+    pub fn lossy_scale(&self, o: usize) -> [f32; 3] {
+        lossy_scale(&self.chain(o), self.rotation(o))
+    }
+
+    /// Transform::SetLocalScale (1807f4b10): SetLocalS (1800ca2d0) marks the object local and global S and every
+    /// descendant global T, R and S, for the systems interested in each.
+    pub fn set_local_scale(&mut self, o: usize, s: [f32; 3]) {
+        let old = std::mem::replace(&mut self.objects[o].trs.s, [s[0], s[1], s[2], 0.0]);
+        if (0..3).all(|i| old[i] == s[i]) {
+            return;
+        }
+        self.changed[o] |= self.interest[o] & GLOBAL_S;
+        for d in self.descendants(o) {
+            self.changed[d] |= self.interest[d] & (GLOBAL_T | GLOBAL_R | GLOBAL_S);
+        }
+    }
+
+    /// Transform.localPosition = p (SetLocalT): marks the object's global T and every descendant's global T, R and S.
+    pub fn set_local_position(&mut self, o: usize, p: [f32; 3]) {
+        // SetLocalT stores the value always (a -0 replaces a +0); only the marks wait for a change.
+        let same = self.objects[o].trs.t[..3] == p;
+        self.objects[o].trs.t = [p[0], p[1], p[2], self.objects[o].trs.t[3]];
+        if same {
+            return;
+        }
+        self.changed[o] |= self.interest[o] & GLOBAL_T;
+        for d in self.descendants(o) {
+            self.changed[d] |= self.interest[d] & (GLOBAL_T | GLOBAL_R | GLOBAL_S);
+        }
+    }
+
+    /// Transform.localRotation = q (SetLocalR, 1800ca1c0): stores the per-lane normalized q (gapB r12: every
+    /// localRotation/localEulerAngles write, the 1-ulp arm/hand/knob rotations), marking as store_local_rotation.
+    pub fn set_local_rotation(&mut self, o: usize, q: [f32; 4]) {
+        self.store_local_rotation(o, crate::unity::transform::normalize(q));
+    }
+
+    /// The stored local rotation set to q as is (a recorded value), marking the object's global R and every
+    /// descendant's global T, R and S when it differs.
+    pub fn store_local_rotation(&mut self, o: usize, q: [f32; 4]) {
+        // SetLocalR stores the value always (a -0 replaces a +0); only the marks wait for a change.
+        let same = self.objects[o].trs.q == q;
+        self.objects[o].trs.q = q;
+        if same {
+            return;
+        }
+        self.changed[o] |= self.interest[o] & GLOBAL_R;
+        for d in self.descendants(o) {
+            self.changed[d] |= self.interest[d] & (GLOBAL_T | GLOBAL_R | GLOBAL_S);
+        }
+    }
+
+    /// Transform.rotation = q (SetRotation 1807f5af0): the normalized local rotation, which SetLocalR (1800ca1c0)
+    /// always stores (bits, so a -0 too), when it differs (float !=) marking the object's global R and every descendant's global T, R and S.
+    pub fn set_world_rotation(&mut self, o: usize, q: [f32; 4]) {
+        let chain = self.chain(o);
+        let ((_, local), _) = crate::unity::transform::set_world(&chain[1..], self.position(o), q);
+        let same = self.objects[o].trs.q == local;
+        self.objects[o].trs.q = local;
+        if same {
+            return;
+        }
+        self.changed[o] |= self.interest[o] & GLOBAL_R;
+        for d in self.descendants(o) {
+            self.changed[d] |= self.interest[d] & (GLOBAL_T | GLOBAL_R | GLOBAL_S);
+        }
+    }
+
+    /// Transform.position = p (SetPosition): the local position, always stored as SetLocalTR (1800ca4c0) does,
+    /// marking the object's global T and every descendant's global T, R and S only when it differs (float !=).
+    pub fn set_world_position(&mut self, o: usize, p: [f32; 3]) {
+        let chain = self.chain(o);
+        let ((local, _), _) = crate::unity::transform::set_world(&chain[1..], p, self.rotation(o));
+        let same = self.objects[o].trs.t[..3] == local;
+        self.objects[o].trs.t = [local[0], local[1], local[2], self.objects[o].trs.t[3]];
+        if same {
+            return;
+        }
+        self.changed[o] |= self.interest[o] & GLOBAL_T;
+        for d in self.descendants(o) {
+            self.changed[d] |= self.interest[d] & (GLOBAL_T | GLOBAL_R | GLOBAL_S);
+        }
+    }
+
+    /// The object's descendants in hierarchy (pre-) order.
+    pub(super) fn descendants(&self, o: usize) -> Vec<usize> {
+        // The prefab's depth-first order bounds them; SetParent(null) may have taken some out.
+        let prefab_below = |d: usize| {
+            let mut p = self.prefab.objects[d].parent;
+            while let Some(i) = p {
+                if i == o {
+                    return true;
+                }
+                p = self.prefab.objects[i].parent;
+            }
+            false
+        };
+        (o + 1..self.objects.len()).take_while(|&d| prefab_below(d)).filter(|&d| self.is_descendant(d, o)).collect()
+    }
+
+    /// Transform.SetParent(null) keeping the world pose (1807f4c00): SetGlobalMatrixLossy (1800d9010) of the
+    /// world position and rotation and the inverse world rotation times CalculateGlobalRS (the lossy scale), which
+    /// marks the object's and its children's global T, R and S.
+    pub fn set_parent_null(&mut self, o: usize) {
+        let world = (self.position(o), self.rotation(o), self.lossy_scale(o));
+        self.set_parent_null_at(o, world);
+    }
+
+    /// `set_parent_null` with the world pose and lossy scale given (read from the live Transforms when the clone's
+    /// are stale).
+    pub fn set_parent_null_at(&mut self, o: usize, (t, q, s): ([f32; 3], [f32; 4], [f32; 3])) {
+        let below = self.descendants(o);
+        let x = &mut self.objects[o];
+        x.parent = None;
+        x.trs = Trs { t: [t[0], t[1], t[2], 0.0], q, s: [s[0], s[1], s[2], 0.0] };
+        for d in std::iter::once(o).chain(below) {
+            self.changed[d] |= self.interest[d] & (GLOBAL_T | GLOBAL_R | GLOBAL_S);
+        }
+    }
+
+    pub(super) fn is_descendant(&self, d: usize, o: usize) -> bool {
+        let mut p = self.objects[d].parent;
+        while let Some(i) = p {
+            if i == o {
+                return true;
+            }
+            p = self.objects[i].parent;
+        }
+        false
+    }
+}
+
+const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+fn neg(x: f32) -> f32 {
+    f32::from_bits(x.to_bits() ^ 0x8000_0000)
+}
+
+/// The (z, w) PhysicsUtility2D::ZRotFromFullRot (180bfabf0) and CalculateColliderTransformation's inline copy take
+/// the angle from: the quaternion's sign flipped when w < 0, then again if w is still negative.
+fn z_rot_angle(q: [f32; 4]) -> f32 {
+    let (mut z, mut w) = if 0.0 <= q[3] { (q[2], q[3]) } else { (neg(q[2]), neg(q[3])) };
+    if w < 0.0 {
+        (z, w) = (neg(z), neg(w));
+    }
+    crate::unity::atan2f(z, w)
+}
+
+/// The body angle Rigidbody2D::Create and SyncTransforms take from a rotation: the quaternion's sign flipped
+/// when w < 0, then twice the half angle.
+pub(super) fn body_angle(mut q: [f32; 4]) -> f32 {
+    if q[3] < 0.0 {
+        (q[2], q[3]) = (neg(q[2]), neg(q[3]));
+    }
+    let a = crate::unity::atan2f(q[2], q[3]);
+    a + a
+}
+
+/// result = R · M in Collider2D::CalculateColliderTransformation's add order.
+fn collider_product(m: &[f32; 16], r: &[f32; 16]) -> [f32; 16] {
+    let mut out = [0.0f32; 16];
+    for c in 0..4 {
+        for row in 0..4 {
+            out[c * 4 + row] = m[c * 4 + 1] * r[4 + row] + m[c * 4] * r[row] + m[c * 4 + 2] * r[8 + row] + m[c * 4 + 3] * r[12 + row];
+        }
+    }
+    out
+}
+
+/// Loads a rewritten script's fields from its serialized MonoBehaviour. Returns the fields the data lacks: the
+/// C# runtime state, which keeps its field initializer.
+pub fn load_values(fields: Vec<(&'static str, &mut dyn Field)>, data: &crate::assets::mono::Value) -> Result<Vec<&'static str>, String> {
+    let mut runtime = Vec::new();
+    for (name, field) in fields {
+        match data.get(name) {
+            Some(v) => field.set(v).map_err(|e| format!("{name}: {e}"))?,
+            None => runtime.push(name),
+        }
+    }
+    Ok(runtime)
+}
+
+/// HingeJoint2D::Create: a body angle that wrapped by a turn since Cleanup moves the stored reference angle with it (within
+/// 2 degrees). The second test of each pair reads body angle A, as the native does.
+pub(super) fn rewrapped_reference_angle(mut reference: f32, prev_a: f32, prev_b: f32, angle_a: f32, angle_b: f32) -> f32 {
+    const PI: f32 = f32::from_bits(0x4049_0fdb);
+    const TAU: f32 = f32::from_bits(0x40c9_0fdb);
+    const TOLERANCE: f32 = f32::from_bits(0x3d0e_fa36);
+    let near = |x: f32, y: f32| TOLERANCE >= (x - y).abs();
+    if prev_a > PI && near(angle_a, prev_a - TAU) {
+        reference = reference + TAU;
+    } else if -PI > prev_a && near(angle_a, prev_a + TAU) {
+        reference = reference - TAU;
+    }
+    if prev_b > PI && near(angle_b, prev_b - TAU) {
+        reference = reference - TAU;
+    } else if -PI > prev_a && near(angle_b, prev_b + TAU) {
+        reference = reference + TAU;
+    }
+    reference
+}
+
+impl Game {
+    /// PP_STOP_PROBE=@prefabs (tools only): spawns every root GameObject of the game's data (each prefab, and the scenes' roots) under
+    /// catch_unwind, activating the objects that start inactive, and prints the panic of those that stop.
+    pub fn stop_probe_prefabs(&mut self) {
+        let mut db = self.assets.take().expect("stop_probe needs the game's data");
+        let last = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let l2 = last.clone();
+        std::panic::set_hook(Box::new(move |i| *l2.lock().unwrap() = format!("{} @ {}", i.payload().downcast_ref::<String>().cloned().or(i.payload().downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default(), i.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default())));
+        let mut roots = Vec::new();
+        for f in 0..db.files.len() {
+            for o in db.files[f].objects.iter().filter(|o| o.class_id == 1) {
+                let r = crate::assets::db::ObjRef { file: f, path_id: o.path_id };
+                let Ok(g) = db.game_object(r) else { continue };
+                let Some(t) = g.components.iter().filter_map(|p| db.resolve(f, *p)).find(|r| db.class(*r) == 4) else { continue };
+                if db.resolve(f, crate::assets::classes::Transform::read(db.data(t)).unwrap().father).is_none() {
+                    roots.push((r, g.name));
+                }
+            }
+        }
+        println!("PROBE prefabs: {} roots", roots.len());
+        let from: usize = std::env::var("PP_CAT_FROM").ok().and_then(|x| str::parse::<usize>(&x).ok()).unwrap_or(0);
+        for (n, (root, name)) in roots.into_iter().enumerate().skip(from) {
+            println!("PREFABNOW {n} {name:?}");
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let prefab = db.prefab(root)?;
+                let (mut inst, _) = self.spawn(&mut db, &prefab, [0.0; 3], [0.0, 0.0, 0.0, 1.0], None)?;
+                for o in 0..inst.objects.len() {
+                    if !inst.objects[o].active {
+                        self.set_active_scripts(&mut inst, o, true);
+                    }
+                }
+                Ok::<(), String>(())
+            }));
+            match r {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => println!("PREFAB {name:?}: Err {e}"),
+                Err(_) => println!("PREFAB {name:?}: PANIC {}", last.lock().unwrap()),
+            }
+        }
+        self.assets = Some(db);
+    }
+
+    /// Instantiate up to the last AwakeFromLoadQueue: the clones and queues 0..0x13 (every native component).
+    /// The clone ids go down from `next_instance_id` by 2 in prefab pre-order, each GameObject before its
+    /// components. `original_ids` are the prefab objects' own instance ids (GameObject or component ObjRef -> id,
+    /// `AssetDb::resource_load_order`), whose order is the remap's and so the queues'.
+    /// Returns the MonoBehaviours of queue 0x14, (object, component), in the order AwakeFromLoadQueue::AwakeFromLoad
+    /// (1809112c0) wakes them: sorted by SortBehaviourItemByExecutionOrderAndReverseInstanceID (180915860),
+    /// script execution order first, then the higher clone id.
+    pub fn instantiate_native(&mut self, prefab: &Prefab, position: [f32; 3], rotation: [f32; 4], original_ids: &HashMap<ObjRef, i32>) -> (Instance, Vec<(usize, usize)>) {
+        // Instantiate(original, position, rotation) stores the rotation normalized (q / |q| in float): the game's Wooden Pole at
+        // Euler z 56.850525 comes back one ulp up in z and w, which moves its lossyScale and so RecalculateMassBasedOnSize's InitialMass.
+        let rotation = crate::unity::transform::normalize(rotation);
+        let inst = self.clone_prefab(prefab, position, rotation, |g, o| (g.allocate_instance_id(), o.components.iter().map(|_| g.allocate_instance_id()).collect()));
+        let mut insts = [inst];
+        let behaviours = self.awake_instances(&mut insts, original_ids).pop().unwrap();
+        let [inst] = insts;
+        (inst, behaviours)
+    }
+
+    /// The clones of `prefab`, with the ids `ids` gives each object (GameObject id, component ids).
+    pub(super) fn clone_prefab(&mut self, prefab: &Prefab, position: [f32; 3], rotation: [f32; 4], mut ids: impl FnMut(&mut Game, &PrefabObject) -> (i32, Vec<i32>)) -> Instance {
+        let mut inst = Instance { prefab: std::sync::Arc::new(prefab.clone()), ..Default::default() };
+        for (i, o) in prefab.objects.iter().enumerate() {
+            let (game_object, components) = ids(self, o);
+            // GameObject.layer, which the overlap queries filter by.
+            self.world.layers.insert(game_object, o.layer as i32);
+            let Some((_, Component::Transform(t))) = o.components.first() else { panic!("{}: first component not a Transform", o.name) };
+            let v3 = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
+            let mut trs = Trs { t: v3(t.local_position), q: t.local_rotation, s: v3(t.local_scale) };
+            // The root takes the given pose (Instantiate's SetPositionAndRotation on a parentless clone).
+            if i == 0 {
+                trs.t = v3(position);
+                trs.q = rotation;
+            }
+            let active = o.active && o.parent.map_or(true, |p| inst.objects[p].active);
+            inst.objects.push(Clone { game_object, components, trs, parent: o.parent, active, self_active: o.active, activated: active });
+        }
+        // A clone copies its original's interests (CopyTransformSubhierarchy); a prefab asset has no Physics2D
+        // interest, so the clones start with none and nothing changed.
+        inst.interest = vec![0; inst.objects.len()];
+        inst.changed = vec![0; inst.objects.len()];
+        inst
+    }
+
+    /// The AwakeFromLoadQueue of `insts` together: queues 0..0x13 (every native component) in one pass, each
+    /// queue in the order of the originals' ids. Returns each instance's queue 0x14 MonoBehaviours.
+    pub(super) fn awake_instances(&mut self, insts: &mut [Instance], original_ids: &HashMap<ObjRef, i32>) -> Vec<Vec<(usize, usize)>> {
+        // The remap: every original (GameObject and component) with its clone, sorted by original id.
+        // An original outside the Resources load order (a prefab a scene references, loaded with its file): after them,
+        // in its file's object order.
+        let key = |r: &ObjRef| original_ids.get(r).map_or((1, r.file as i64, r.path_id), |&id| (0, 0, id as i64));
+        let mut items: Vec<((i32, i64, i64), usize, usize, Option<usize>)> = Vec::new();
+        for (n, inst) in insts.iter().enumerate() {
+            for (i, o) in inst.prefab.objects.iter().enumerate() {
+                items.push((key(&o.game_object), n, i, None));
+                for (c, (r, _)) in o.components.iter().enumerate() {
+                    items.push((key(r), n, i, Some(c)));
+                }
+            }
+        }
+        items.sort_by_key(|x| x.0);
+        let mut queues: Vec<Vec<(usize, usize, Option<usize>)>> = vec![Vec::new(); 0x15];
+        for &(_, n, o, c) in &items {
+            queues[queue_index(c.map(|c| &insts[n].prefab.objects[o].components[c].1))].push((n, o, c));
+        }
+        for items in &queues[..0x14] {
+            for &(n, o, c) in items {
+                let Some(c) = c else { continue };
+                let prefab = insts[n].prefab.clone();
+                match &prefab.objects[o].components[c].1 {
+                    Component::Rigidbody2D(rb) => self.rigidbody2d_awake(&mut insts[n], &prefab, o, c, rb),
+                    Component::Collider2D(_) => self.collider2d_awake(&mut insts[n], &prefab, o, c),
+                    Component::Joint2D(j) => self.joint2d_awake(&mut insts[n], &prefab, o, c, j),
+                    Component::PointEffector2D(e) => {
+                        self.point_effector_create(&insts[n], o, c, e);
+                        self.point_effector_awake(&insts[n], &prefab, o, c);
+                    }
+                    Component::WindZone(z) if insts[n].objects[o].active && z.enabled => self.wind_zones.push(insts[n].objects[o].components[c]),
+                    Component::ForceField(f) if insts[n].objects[o].active && f.enabled => self.force_fields.push(insts[n].objects[o].components[c]),
+                    // Renderer::AddToManager: RendererScene::AddRenderer (1805d4890) appends a node.
+                    Component::SpriteRenderer(r) if insts[n].objects[o].active => self.renderer_scene(insts[n].objects[o].components[c], r.enabled),
+                    // Transform and the unread classes make no physics state.
+                    _ => {}
+                }
+            }
+        }
+        insts
+            .iter()
+            .enumerate()
+            .map(|(n, inst)| {
+                let mut behaviours: Vec<(usize, usize)> = queues[0x14].iter().filter(|q| q.0 == n).map(|&(_, o, c)| (o, c.unwrap())).collect();
+                behaviours.sort_by_key(|&(o, c)| {
+                    let Component::Script { execution_order, .. } = &inst.prefab.objects[o].components[c].1 else { unreachable!() };
+                    (*execution_order, std::cmp::Reverse(inst.objects[o].components[c]))
+                });
+                behaviours
+            })
+            .collect()
+    }
+
+    /// SceneManager.LoadScene("Main") up to its native AwakeFromLoad: the Rigidbody2Ds and Collider2Ds of the
+    /// scene's hierarchies, all in one AwakeFromLoadQueue in the order of their loaded ids (the scene's first id
+    /// plus twice the object's index in the file). Everything here exists before the first MonoBehaviour's Awake
+    /// (MapLoaderBehaviour.Awake instantiates the map after it).
+    pub fn load_scene_natives(&mut self, db: &mut AssetDb) -> Result<SceneNatives, String> {
+        let roots = self.scene_roots(db, |_| true)?;
+        let tool = roots.iter().find(|r| r.prefab.objects[0].name == "ToolController").ok_or("level1 has no ToolController with Physics2D components")?;
+        let tool_body = *tool.bodies.get(&0).ok_or("the ToolController has no Rigidbody2D body")?;
+        Ok(SceneNatives { tool_body, roots })
+    }
+
+    /// The level1 roots with Physics2D components that `keep` accepts, cloned and awoken (`load_scene_natives`).
+    pub(super) fn scene_roots(&mut self, db: &mut AssetDb, keep: impl Fn(&crate::assets::db::Prefab) -> bool) -> Result<Vec<Instance>, String> {
+        let file = db.file_index("level1").ok_or("no level1")?;
+        // The scene's PhysicsScene2D, made first, owns the static ground body the body-less colliders go on.
+        self.world.ground_body();
+        let index: HashMap<i64, i32> = db.files[file].objects.iter().enumerate().map(|(i, o)| (o.path_id, i as i32)).collect();
+        let id = |r: ObjRef| LEVEL1_FIRST_ID + 2 * index[&r.path_id];
+        let gos: Vec<i64> = db.files[file].objects.iter().filter(|o| o.class_id == 1).map(|o| o.path_id).collect();
+        let mut roots = Vec::new();
+        let mut original_ids = HashMap::new();
+        for path_id in gos {
+            let go = ObjRef { file, path_id };
+            if !scene_transform(db, go)?.father.is_null() || !has_physics(db, go)? {
+                continue;
+            }
+            let prefab = db.prefab(go)?;
+            if !keep(&prefab) {
+                continue;
+            }
+            for o in &prefab.objects {
+                original_ids.insert(o.game_object, id(o.game_object));
+                original_ids.extend(o.components.iter().map(|&(r, _)| (r, id(r))));
+            }
+            let t = scene_transform(db, go)?;
+            roots.push(self.clone_prefab(&prefab, t.local_position, t.local_rotation, |_, o| (id(o.game_object), o.components.iter().map(|&(r, _)| id(r)).collect())));
+        }
+        self.awake_instances(&mut roots, &original_ids);
+        Ok(roots)
+    }
+
+    /// Instantiate's id allocation: each new object takes the next id below the last.
+    pub fn allocate_instance_id(&mut self) -> i32 {
+        let id = self.next_instance_id;
+        self.next_instance_id -= 2;
+        id
+    }
+
+    /// GameObject.SetActive on clone `o` (GameObject::SetSelfActive, 180589740). Deactivating an active object is
+    /// GameObject::Deactivate (180587a20) through ActivateAwakeRecursivelyInternal (1805865f0), which goes through
+    /// the children first, in Transform order, then deactivates the object's own components in component order;
+    /// activating queues the same walk's components on an AwakeFromLoadQueue. An object already inactive in the
+    /// hierarchy only takes the flag. Every Collider2D and Rigidbody2D of the subtree is (de)activated here;
+    /// the MonoBehaviours it passes (their OnDisable, or OnEnable) are returned, (object, component), in Unity's
+    /// order.
+    pub fn set_active(&mut self, inst: &mut Instance, o: usize, active: bool) -> Vec<(usize, usize)> {
+        if active {
+            let scripts = self.activate(inst, o);
+            self.attached_set_active(inst, o, true);
+            self.refresh_renderers(inst, o);
+            if !self.explosion_sounds_waiting.is_empty() {
+                self.explosion_sounds_wake(inst);
+            }
+            return scripts;
+        }
+        inst.objects[o].self_active = false;
+        let prefab = inst.prefab.clone();
+        let mut scripts = Vec::new();
+        self.deactivate_recursively(inst, &prefab, o, &mut scripts);
+        self.attached_set_active(inst, o, false);
+        self.refresh_renderers(inst, o);
+        scripts
+    }
+
+    /// The drawn SpriteRenderers of the subtree follow activeInHierarchy.
+    fn refresh_renderers(&mut self, inst: &Instance, o: usize) {
+        for d in std::iter::once(o).chain(inst.descendants(o)) {
+            for (k, (_, comp)) in inst.prefab.objects[d].components.iter().enumerate() {
+                if let Component::SpriteRenderer(_) = comp {
+                    let id = inst.objects[d].components[k];
+                    if let Some(x) = self.renderers.iter_mut().find(|x| x.id == id) {
+                        x.visible = inst.objects[d].active;
+                    }
+                }
+                // A TextMeshPro's GameObject.activeInHierarchy.
+                if matches!(comp, Component::Script { class, .. } if class == "TextMeshPro") {
+                    let id = inst.objects[d].components[k];
+                    if let Some(x) = self.world_texts.iter_mut().find(|x| x.id == id) {
+                        x.visible = inst.objects[d].active;
+                        x.dirty |= x.visible;
+                    }
+                }
+                if let Component::Other(120) = comp {
+                    let id = inst.objects[d].components[k];
+                    if let Some(x) = self.lines.iter_mut().find(|x| x.id == id) {
+                        x.visible = inst.objects[d].active;
+                    }
+                }
+                if let Component::Other(23) = comp {
+                    let id = inst.objects[d].components[k];
+                    if let Some(x) = self.energy_blurs.iter_mut().find(|x| x.renderer_id == id) {
+                        x.visible = inst.objects[d].active;
+                    }
+                }
+            }
+        }
+    }
+
+    /// GameObject.SetActive(true): the flag, then (with the parents active) ActivateAwakeRecursivelyInternal queues
+    /// the components of the subtree, children first, and AwakeFromLoadQueue::AwakeFromLoad wakes the queues in
+    /// order, each in the order its items were queued; the MonoBehaviours (queue 0x14) by execution order and,
+    /// within it, the higher instance id first. Returns those, (object, component).
+    fn activate(&mut self, inst: &mut Instance, o: usize) -> Vec<(usize, usize)> {
+        inst.objects[o].self_active = true;
+        if inst.objects[o].active || inst.objects[o].parent.is_some_and(|p| !inst.objects[p].active) {
+            return Vec::new();
+        }
+        let prefab = inst.prefab.clone();
+        let mut queued = Vec::new();
+        self.activate_recursively(inst, &prefab, o, &mut queued);
+        let mut scripts = Vec::new();
+        for queue in 0..=0x14 {
+            for &(d, c) in &queued {
+                let comp = &prefab.objects[d].components[c].1;
+                if queue_index(Some(comp)) != queue {
+                    continue;
+                }
+                match comp {
+                    Component::Rigidbody2D(rb) => self.rigidbody2d_activate(inst, &prefab, d, c, rb),
+                    Component::Collider2D(_) => self.collider2d_awake(inst, &prefab, d, c),
+                    Component::Joint2D(_) => unimplemented!("mod-only: Joint2D::AwakeFromLoad on GameObject.SetActive(true)"),
+                    Component::PointEffector2D(_) => self.point_effector_awake(inst, &prefab, d, c),
+                    Component::Script { .. } => scripts.push((d, c)),
+                    Component::AudioSource { .. } => self.audio.set_active(inst.objects[d].components[c], true),
+                    Component::WindZone(z) if z.enabled => self.wind_zones.push(inst.objects[d].components[c]),
+                    Component::ForceField(f) if f.enabled => self.force_fields.push(inst.objects[d].components[c]),
+                    Component::SpriteRenderer(r) => {
+                        let id = inst.objects[d].components[c];
+                        let enabled = self.sprite_renderer_enabled(id, r.enabled);
+                        self.renderer_scene(id, enabled);
+                    }
+                    // Transform and the unread classes hold no Physics2D state.
+                    _ => {}
+                }
+            }
+        }
+        scripts.sort_by_key(|&(d, c)| {
+            let Component::Script { execution_order, .. } = &prefab.objects[d].components[c].1 else { unreachable!() };
+            (*execution_order, std::cmp::Reverse(inst.objects[d].components[c]))
+        });
+        for &(d, c) in &scripts {
+            let Component::Script { class, .. } = &prefab.objects[d].components[c].1 else { unreachable!() };
+            super::link::check_rewritten_at(&prefab, d, class);
+        }
+        let awoken: Vec<bool> = scripts.iter().map(|&(d, _)| inst.objects[d].activated).collect();
+        let first = awoken.iter().filter(|&&a| !a).count();
+        for &(d, _) in &queued {
+            inst.objects[d].activated = true;
+        }
+        // A ParticleSystem's Awake on its first activation.
+        for &(d, c) in &queued {
+            if matches!(prefab.objects[d].components[c].1, Component::Other(super::water::PARTICLE_SYSTEM)) {
+                let id = inst.objects[d].components[c];
+                for e in self.embedded_ps.iter_mut().filter(|e| e.owner == id) {
+                    e.awake = true;
+                }
+            }
+        }
+        if first == 0 {
+            return scripts;
+        }
+        // The queue in order: a never awoken script's Awake and OnEnable, an awoken one's OnEnable. The never awoken wake
+        // here and the awoken are returned for their OnEnable, which keeps the order when no awoken script's OnEnable
+        // comes before a never awoken Awake; a TextMeshPro's OnEnable (its mesh, drawn from world_texts) may.
+        let is_tmp = |&(d, c): &(usize, usize)| matches!(&prefab.objects[d].components[c].1, Component::Script { class, .. } if class == "TextMeshPro");
+        let last_new = awoken.iter().rposition(|&a| !a).unwrap();
+        let linked = self.first_activation.get(&inst.objects[0].components[0]).cloned().unwrap_or_else(|| unimplemented!("mod-only: GameObject.SetActive(true) on a first activation of a clone without its spawn's links"));
+        if (0..last_new).any(|i| awoken[i] && !is_tmp(&scripts[i])) {
+            // An awoken script queued before a never awoken one (EnergySwordBehaviour.SetActivation's blade): the queue in
+            // order up to the last never awoken, each run of awoken scripts' OnEnable (script_enable_passes) and each run of
+            // never awoken ones' Awake, OnEnable and Start queued; the awoken after it are returned as before.
+            let mut i = 0;
+            while i <= last_new {
+                let j = (i..scripts.len()).find(|&j| awoken[j] != awoken[i]).unwrap_or(scripts.len());
+                let run = &scripts[i..j];
+                if awoken[i] {
+                    self.script_enable_passes(inst, &prefab, run);
+                } else {
+                    self.wake_scripts(inst, &prefab, &linked, run);
+                }
+                i = j;
+            }
+            return scripts[last_new + 1..].to_vec();
+        }
+        let (rest, scripts): (Vec<_>, Vec<_>) = scripts.iter().zip(&awoken).partition(|x| *x.1);
+        let rest: Vec<(usize, usize)> = rest.into_iter().map(|(&x, _)| x).collect();
+        let scripts: Vec<(usize, usize)> = scripts.into_iter().map(|(&x, _)| x).collect();
+        self.wake_scripts(inst, &prefab, &linked, &scripts);
+        rest
+    }
+
+    /// Scripts that never ran Awake: Awake and OnEnable in this order (AddToManager), then Start queued.
+    fn wake_scripts(&mut self, inst: &mut Instance, prefab: &Prefab, linked: &super::link::Linked, scripts: &[(usize, usize)]) {
+        for &(d, c) in scripts {
+            let Component::Script { class, .. } = &prefab.objects[d].components[c].1 else { unreachable!() };
+            match class.as_str() {
+                "PhysicalBehaviour" => self.physicals[linked.physicals[&d]].active = true,
+                "WaterBehaviour" => self.waters[linked.waters[&d]].active = true,
+                _ => {}
+            }
+        }
+        self.awake_behaviours(None, prefab, inst, linked, scripts);
+        self.queue_starts(None, prefab, inst, linked, scripts).unwrap_or_else(|e| panic!("GameObject.SetActive(true): {e}"));
+    }
+
+    pub(super) fn activate_recursively(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, queued: &mut Vec<(usize, usize)>) {
+        inst.objects[o].active = true;
+        for &child in &prefab.objects[o].children {
+            if inst.objects[child].self_active {
+                self.activate_recursively(inst, prefab, child, queued);
+            }
+        }
+        queued.extend((0..prefab.objects[o].components.len()).map(|c| (o, c)));
+    }
+
+    pub(super) fn deactivate_recursively(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, scripts: &mut Vec<(usize, usize)>) {
+        if !inst.objects[o].active {
+            return;
+        }
+        inst.objects[o].active = false;
+        for &child in &prefab.objects[o].children {
+            self.deactivate_recursively(inst, prefab, child, scripts);
+        }
+        for c in 0..prefab.objects[o].components.len() {
+            match &prefab.objects[o].components[c].1 {
+                Component::Collider2D(_) => self.collider2d_deactivate(inst, o, c),
+                Component::Rigidbody2D(_) => self.rigidbody2d_deactivate(inst, prefab, o),
+                Component::Script { .. } => scripts.push((o, c)),
+                Component::Joint2D(_) => self.joint2d_deactivate(inst, prefab, o, c),
+                Component::PointEffector2D(_) => self.point_effector_deactivate(inst, o, c),
+                Component::AudioSource { .. } => self.audio.set_active(inst.objects[o].components[c], false),
+                // WindZone::RemoveFromManager unlinks it; ParticleSystemForceFieldManager::Remove moves the last field in.
+                Component::WindZone(_) => {
+                    let id = inst.objects[o].components[c];
+                    self.wind_zones.retain(|&w| w != id);
+                }
+                Component::ForceField(_) => {
+                    let id = inst.objects[o].components[c];
+                    if let Some(i) = self.force_fields.iter().position(|&f| f == id) {
+                        self.force_fields.swap_remove(i);
+                    }
+                }
+                // Renderer::RemoveFromManager: RendererScene::RemoveRenderer.
+                Component::SpriteRenderer(_) => self.renderer_scene(inst.objects[o].components[c], false),
+                // Transform and the unread classes hold no Physics2D state.
+                _ => {}
+            }
+        }
+    }
+
+    /// RendererScene::AddRenderer appends a node; RemoveRenderer (1805e5410) moves the last node into the removed slot.
+    /// A renderer is in the scene while it is enabled and active in the hierarchy.
+    ///
+    /// While `renderer_prevent` (CullScene sends OnWillRenderObject between SetPreventAddRemoveRenderer(true) 1805f69bb and
+    /// (false) 1805f6a14), RemoveRenderer (1805e5260) only queues the node and AddRenderer (1805d4890) queues the renderer.
+    pub(super) fn renderer_scene(&mut self, id: i32, in_scene: bool) {
+        let at = self.renderer_nodes.iter().position(|&n| n == id);
+        if self.renderer_prevent {
+            // Renderer::RemoveFromScene (18069e3a0) has cleared the renderer's node, so it is out of the scene at once.
+            let queued_add = self.renderer_pending_add.iter().position(|&n| n == id);
+            let queued_remove = self.renderer_pending_remove.contains(&id);
+            let now = queued_add.is_some() || (at.is_some() && !queued_remove);
+            match (now, in_scene) {
+                (false, true) => self.renderer_pending_add.push(id),
+                // Renderer::Deactivate without a node: RemoveRendererFromPendingNodes (1805e53e0).
+                (true, false) if queued_add.is_some() => {
+                    self.renderer_pending_add.remove(queued_add.unwrap());
+                }
+                (true, false) => self.renderer_pending_remove.push(id),
+                _ => {}
+            }
+            return;
+        }
+        match (at, in_scene) {
+            (None, true) => self.renderer_nodes.push(id),
+            (Some(i), false) => {
+                self.renderer_nodes.swap_remove(i);
+            }
+            _ => {}
+        }
+    }
+
+    /// SetPreventAddRemoveRenderer(true) before CullScene's OnWillRenderObject messages (1805f69bb).
+    pub fn renderer_cull_begin(&mut self) {
+        self.renderer_prevent = true;
+    }
+
+    /// SetPreventAddRemoveRenderer(false) (1805f6a14), then ApplyPendingAddRemoveNodes (1805d4dc0, from RenderCameras
+    /// 1805e593b): the queued nodes sorted and removed from the highest down (each RemoveRendererInternal 1805e5410
+    /// moves the last node in), then the queued renderers added in order (PendingAddToScene 18069e0a0).
+    pub fn renderer_cull_end(&mut self) {
+        self.renderer_prevent = false;
+        let mut removed: Vec<usize> = std::mem::take(&mut self.renderer_pending_remove).iter().filter_map(|id| self.renderer_nodes.iter().position(|n| n == id)).collect();
+        removed.sort_unstable();
+        for i in removed.into_iter().rev() {
+            self.renderer_nodes.swap_remove(i);
+        }
+        for id in std::mem::take(&mut self.renderer_pending_add) {
+            self.renderer_scene(id, true);
+        }
+    }
+
+    /// `renderer_scene` for a `renderers` entry after its enabled or visible changed.
+    pub(super) fn renderer_sync(&mut self, r: usize) {
+        let x = &self.renderers[r];
+        self.renderer_scene(x.id, x.visible && x.enabled);
+    }
+
+    /// SpriteRenderer.enabled of component `id` (a `renderers` entry, a physical's spriteRenderer, else the prefab's).
+    fn sprite_renderer_enabled(&self, id: i32, prefab_enabled: bool) -> bool {
+        if let Some(x) = self.renderers.iter().find(|x| x.id == id) {
+            return x.enabled;
+        }
+        if let Some(p) = self.physicals.iter().find(|p| p.sprite_id == id) {
+            return p.sprite_enabled;
+        }
+        prefab_enabled
+    }
+
+    /// Collider2D::Deactivate (180c0fc00) -> Cleanup (180c0d940) with kColliderDestroy and the callbacks off: the
+    /// collider's Physics2D.IgnoreCollision pairs go, its fixtures are destroyed last first, the body's mass is
+    /// reset and its contact records are dropped without callbacks.
+    fn collider2d_deactivate(&mut self, inst: &mut Instance, o: usize, c: usize) {
+        let id = inst.objects[o].components[c];
+        self.world.ignored.retain(|&(a, b)| a != id && b != id);
+        // A collider disabled earlier (Collider2D.enabled = false) has no fixtures left.
+        if let Some(fixtures) = inst.fixtures.remove(&(o, c)).map(|f| f.into_iter().filter(|&f| self.world.fixture_alive(f)).collect::<Vec<_>>()).filter(|f| !f.is_empty()) {
+            let body = self.world.fixture(fixtures[0]).body;
+            for &f in fixtures.iter().rev() {
+                self.world.destroy_fixture(body, f);
+            }
+            self.world.reset_mass_data(body);
+        }
+        self.world.contacts2d.destroy_contacts(id);
+        self.world.effector_colliders.remove(&id);
+        inst.colliders.remove(&(o, c));
+        // Collider2D::RemoveFromManager.
+        inst.interest[o] &= !CHANGE_COLLIDER;
+    }
+
+    /// Joint2D::Deactivate (180c047f0) / the Joint2D::Cleanup(false) Rigidbody2D::Cleanup runs on each joint of its
+    /// body: a live joint keeps its reference angles for the next Create and its b2 joint is destroyed; a joint
+    /// already cleaned up has nothing left.
+    pub(super) fn joint2d_deactivate(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize) {
+        let Some(&id) = inst.joints.get(&(o, c)) else { return };
+        // A joint that broke has no b2 joint left (Joint2D::Cleanup finds `[this+0x58]` null).
+        if self.world.joints[id].is_none() {
+            inst.joints.remove(&(o, c));
+            return;
+        }
+        let Component::Joint2D(j) = &prefab.objects[o].components[c].1 else { unreachable!() };
+        match j.kind {
+            JointData::Hinge { .. } => {
+                self.hinge_joint2d_cleanup(inst, o, c);
+                // The linked HingeJoint2D script reads its joint null.
+                if let Some(h) = self.hinges.iter().position(|h| h.joint == Some(id)) {
+                    self.hinges[h].joint = None;
+                }
+            }
+            JointData::Fixed { .. } | JointData::Slider { .. } | JointData::Spring { .. } | JointData::Distance { .. } | JointData::Wheel { .. } | JointData::Relative { .. } => self.anchored_joint2d_cleanup(inst, o, c),
+        }
+    }
+
+    /// Rigidbody2D::Deactivate (180c1ec40) -> Cleanup (180c1dd20) with DeactivateOperation 0: the body goes
+    /// (its colliders were cleaned before it), the Rigidbody2D leaves the scene's lists and its Transform
+    /// interest.
+    fn rigidbody2d_deactivate(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize) {
+        let Some(&body) = inst.bodies.get(&o) else { return };
+        // Not for kWillDestroyGameObjectDeactivate, but a destroyed hierarchy's driven-by links are never read again.
+        self.rigidbody2d_check_children(inst, prefab, o, Some(o));
+        // GetAttachedColliders (180c1f350): the fixtures' colliders (a collider disabled earlier has none left) sorted
+        // by address and deduplicated; on the inactive GameObject each gets Collider2D::Cleanup with Deactivate's
+        // arguments, which its own Deactivate repeats later on an empty collider. The addresses differ from session to
+        // session in the game itself, so the colliders go in creation order (prefab object, then component).
+        let mut attached: Vec<(usize, usize)> = inst.fixtures.iter().filter(|(_, f)| f.iter().any(|&f| self.world.fixture_alive(f) && self.world.fixture(f).body == body)).map(|(&k, _)| k).collect();
+        attached.sort_unstable();
+        for (co, cc) in attached {
+            self.collider2d_deactivate(inst, co, cc);
+        }
+        if !self.world.body(body).fixtures.is_empty() {
+            unimplemented!("mod-only: {}: Rigidbody2D::Cleanup with another instance's colliders attached", prefab.objects[o].name);
+        }
+        // The body's joint list from its head (the Vec's tail): each Joint2D gets Cleanup(false) (DeactivateOperation 0),
+        // which keeps the reference angles for a re-create and destroys the b2 joint.
+        for (_, id) in self.world.body(body).joints.clone().into_iter().rev() {
+            if let Some(&(jo, jc)) = inst.joints.iter().find(|(_, j)| **j == id).map(|(k, _)| k) {
+                self.joint2d_deactivate(inst, prefab, jo, jc);
+            } else {
+                self.joint2d_cleanup_any(id);
+            }
+        }
+        // m_Body becomes null: a PhysicalBehaviour's Rigidbody keeps the component's own mass fields.
+        let b = self.world.body(body);
+        let (mass, props) = (b.rigidbody, [b.linear_damping, b.angular_damping, b.gravity_scale]);
+        for rb in self.physicals.iter_mut().map(|ph| &mut ph.rigidbody).chain(self.node_rigidbodies.iter_mut().map(|n| &mut n.rigidbody)) {
+            if rb.body == body && rb.detached.is_none() {
+                rb.detached = Some(mass);
+                rb.detached_props = props;
+                rb.movement.listed = false;
+            }
+        }
+        self.world.destroy_body(body);
+        inst.bodies.remove(&o);
+        inst.interest[o] &= !(CHANGE_RB_T | CHANGE_RB_R | CHANGE_RB_S | CHANGE_RB_ANIM);
+        self.rigidbody_hierarchy_changed = true;
+    }
+
+    /// Rigidbody2D::AwakeFromLoad (180c1c8e0) in instantiate mode: Create on an active object without a body.
+    pub(super) fn rigidbody2d_awake(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize, rb: &RigidbodyData) {
+        if inst.objects[o].active && !inst.bodies.contains_key(&o) {
+            self.rigidbody2d_create(inst, prefab, o, c, rb, None);
+        }
+    }
+
+    /// Rigidbody2D::AwakeFromLoad (180c1c8e0) in kActivateAwakeFromLoad mode: Create on an active object without a
+    /// body, from the component's own fields (its owner keeps them while the body is gone) and the owner's Transform;
+    /// the scene's lists get the Rigidbody2D and the nearest ancestor Rigidbody2D drives it.
+    fn rigidbody2d_activate(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize, rb: &RigidbodyData) {
+        if inst.bodies.contains_key(&o) {
+            return;
+        }
+        let Some(owner) = self.rigidbody_owner(inst.objects[o].components[c]) else {
+            unimplemented!("mod-only: {}: Rigidbody2D re-created without a PhysicalBehaviour or Transform node owner", prefab.objects[o].name);
+        };
+        let mut fields = rb.clone();
+        let r = self.owner_rigidbody(owner);
+        let mass = r.detached.expect("a Rigidbody2D without a body is detached");
+        (fields.body_type, fields.collision_detection, fields.interpolate) = (r.bodyType, r.collisionDetectionMode, r.interpolation);
+        [fields.linear_drag, fields.angular_drag, fields.gravity_scale] = r.detached_props;
+        fields.constraints = r.constraints;
+        let pose = self.owner_pose(owner);
+        self.rigidbody2d_create(inst, prefab, o, c, &fields, Some((pose, mass)));
+        let body = inst.bodies[&o];
+        let driven_by = self.rigidbody2d_driven_by(inst, prefab, o, fields.body_type);
+        let r = self.owner_rigidbody_mut(owner);
+        r.body = body;
+        r.detached = None;
+        r.movement.listed = false;
+        self.set_driven_by(owner, driven_by);
+        // AddRigidbodyUpdates: m_RigidbodyHierarchyChanged.
+        self.rigidbody_hierarchy_changed = true;
+    }
+
+    /// AddComponent<Rigidbody2D>() on clone object `o`, a Transform node without a body or a PhysicalBehaviour (the RequireComponent of a
+    /// joint added there); `id` is the component's instance id. Rigidbody2D::Reset (180c22c10) gives a dynamic, simulated, awake body of
+    /// mass 1 (no auto mass), linear drag 0, angular drag 0.05, gravity scale 1, no interpolation, discrete, no constraints; then
+    /// AwakeFromLoad (180c1c8e0) in kInstantiateOrCreateFromCode mode: Create (180c1e6b0: the body at the Transform's pose, ResetMassData,
+    /// AddRigidbodyUpdates, the transform-change interest, CheckForDrivenByParentRigidbody), the Rigidbody2DAdded broadcast down the
+    /// hierarchy (Collider2D's handler 180c0d110 acts only on a collider used by a composite), CheckForDrivenByParentRigidbody on each
+    /// nearest Rigidbody2D below (GetRigidbodyChildren 180c1fde0), the attached colliders' material state and RecalculateContacts (the
+    /// body has no colliders: none attach to it), and its own CheckForDrivenByParentRigidbody again. Returns its `node_rigidbodies` entry.
+    pub(super) fn add_rigidbody2d_component(&mut self, inst: &mut Instance, o: usize, id: i32) -> usize {
+        let tid = inst.objects[o].components[0];
+        let node = self.transform_nodes.iter().position(|n| n.id == tid).expect("a Rigidbody2D added to a Transform node");
+        if inst.bodies.contains_key(&o) || self.node_bodies.contains_key(&node) {
+            unimplemented!("mod-only: AddComponent<Rigidbody2D> on an object that has one");
+        }
+        // A collider on the object or on a body-less object below it would attach to the new body (Collider2D's kDidAddComponent).
+        let below = std::iter::once(o).chain(inst.descendants(o).into_iter().filter(|&x| {
+            let mut up = inst.objects[x].parent;
+            while let Some(t) = up {
+                if t == o {
+                    return true;
+                }
+                if inst.prefab.objects[t].components.iter().any(|(_, c)| matches!(c, Component::Rigidbody2D(_))) {
+                    return false;
+                }
+                up = inst.objects[t].parent;
+            }
+            false
+        }));
+        for x in below.collect::<Vec<_>>() {
+            let comps = &inst.prefab.objects[x].components;
+            if (x == o || !comps.iter().any(|(_, c)| matches!(c, Component::Rigidbody2D(_)))) && comps.iter().any(|(_, c)| matches!(c, Component::Collider2D(_))) {
+                unimplemented!("mod-only: AddComponent<Rigidbody2D> that colliders already on the hierarchy attach to");
+            }
+        }
+        let rb = RigidbodyData {
+            game_object: Default::default(),
+            body_type: 0,
+            simulated: true,
+            use_full_kinematic_contacts: false,
+            use_auto_mass: false,
+            mass: 1.0,
+            linear_drag: 0.0,
+            angular_drag: 0.05,
+            gravity_scale: 1.0,
+            material: Default::default(),
+            interpolate: 0,
+            sleeping_mode: 1,
+            collision_detection: 0,
+            constraints: 0,
+        };
+        let mut prefab = (*inst.prefab).clone();
+        let c = prefab.objects[o].components.len();
+        prefab.objects[o].components.push((ObjRef { file: usize::MAX, path_id: c as i64 + 1 }, Component::Rigidbody2D(rb.clone())));
+        inst.prefab = std::sync::Arc::new(prefab);
+        inst.objects[o].components.push(id);
+        let prefab = inst.prefab.clone();
+        // The clone's own TRS may be stale once kept: the body starts at the node's pose.
+        let mass = RigidbodyMass { use_auto_mass: false, mass: 1.0, inertia: None, center_of_mass: None };
+        self.rigidbody2d_create(inst, &prefab, o, c, &rb, Some((self.node_world(node), mass)));
+        let body = inst.bodies[&o];
+        let rigidbody = Rigidbody { body, bodyType: 0, collisionDetectionMode: 0, interpolation: 0, movement: MovementState::default(), detached: None, component: id, simulated: true, detached_props: [0.0, 0.05, 1.0], constraints: 0 };
+        let driven_by = self.rigidbody2d_driven_by(inst, &prefab, o, 0);
+        let k = self.node_rigidbodies.len();
+        self.node_rigidbodies.push(NodeBody { node, rigidbody, driven_by });
+        self.rigidbody_hierarchy_changed = true;
+        self.rigidbody2d_check_children(inst, &prefab, o, None);
+        k
+    }
+
+    /// GetRigidbodyChildren (180c1fde0) of object `o`: the nearest Rigidbody2D in each branch below, each given
+    /// CheckForDrivenByParentRigidbody (180c1dc80) again, skipping object `exclude`'s Rigidbody2D (Cleanup's `this`).
+    fn rigidbody2d_check_children(&mut self, inst: &Instance, prefab: &Prefab, o: usize, exclude: Option<usize>) {
+        let below = |x: usize| (0..inst.objects.len()).filter(move |&y| inst.objects[y].parent == Some(x));
+        let mut stack: Vec<usize> = below(o).collect();
+        stack.reverse();
+        while let Some(x) = stack.pop() {
+            match prefab.objects[x].components.iter().position(|(_, c)| matches!(c, Component::Rigidbody2D(_))) {
+                Some(rc) => {
+                    let Some(owner) = self.rigidbody_owner(inst.objects[x].components[rc]) else { continue };
+                    let body_type = self.owner_rigidbody(owner).bodyType;
+                    let driven = self.rigidbody2d_driven_by_excluding(inst, prefab, x, body_type, exclude);
+                    self.set_driven_by(owner, driven);
+                }
+                None => {
+                    let n = stack.len();
+                    stack.extend(below(x));
+                    stack[n..].reverse();
+                }
+            }
+        }
+    }
+
+    /// The owner of the Rigidbody2D component `id`: its PhysicalBehaviour, or its Transform node's body.
+    pub(super) fn rigidbody_owner(&self, id: i32) -> Option<BodyOwner> {
+        self.physicals
+            .iter()
+            .position(|p| p.rigidbody.component == id)
+            .map(BodyOwner::Physical)
+            .or_else(|| self.node_rigidbodies.iter().position(|n| n.rigidbody.component == id).map(BodyOwner::Node))
+    }
+
+    pub(super) fn owner_rigidbody(&self, o: BodyOwner) -> &Rigidbody {
+        match o {
+            BodyOwner::Physical(p) => &self.physicals[p].rigidbody,
+            BodyOwner::Node(k) => &self.node_rigidbodies[k].rigidbody,
+        }
+    }
+
+    pub(super) fn owner_rigidbody_mut(&mut self, o: BodyOwner) -> &mut Rigidbody {
+        match o {
+            BodyOwner::Physical(p) => &mut self.physicals[p].rigidbody,
+            BodyOwner::Node(k) => &mut self.node_rigidbodies[k].rigidbody,
+        }
+    }
+
+    pub(super) fn set_driven_by(&mut self, o: BodyOwner, driven_by: Option<BodyId>) {
+        match o {
+            BodyOwner::Physical(p) => self.physicals[p].driven_by = driven_by,
+            BodyOwner::Node(k) => self.node_rigidbodies[k].driven_by = driven_by,
+        }
+    }
+
+    /// Transform.position/rotation of a Rigidbody2D's owner.
+    fn owner_pose(&self, o: BodyOwner) -> ([f32; 3], [f32; 4]) {
+        match o {
+            BodyOwner::Physical(p) => (self.physicals[p].transform.position, self.physicals[p].transform.rotation),
+            BodyOwner::Node(k) => self.node_world(self.node_rigidbodies[k].node),
+        }
+    }
+
+    /// Rigidbody2D::CheckForDrivenByParentRigidbody(null) (180c1dc80): unless static, the nearest ancestor with a
+    /// Rigidbody2D drives it.
+    pub(super) fn rigidbody2d_driven_by(&self, inst: &Instance, prefab: &Prefab, o: usize, body_type: i32) -> Option<BodyId> {
+        self.rigidbody2d_driven_by_excluding(inst, prefab, o, body_type, None)
+    }
+
+    fn rigidbody2d_driven_by_excluding(&self, inst: &Instance, prefab: &Prefab, o: usize, body_type: i32, exclude: Option<usize>) -> Option<BodyId> {
+        if body_type == 2 {
+            return None;
+        }
+        let mut up = inst.objects[o].parent;
+        while let Some(t) = up {
+            if Some(t) != exclude && prefab.objects[t].components.iter().any(|(_, x)| matches!(x, Component::Rigidbody2D(_))) {
+                return Some(*inst.bodies.get(&t).unwrap_or_else(|| unimplemented!("mod-only: {}: driven by a Rigidbody2D without a body", prefab.objects[o].name)));
+            }
+            up = inst.objects[t].parent;
+        }
+        None
+    }
+
+    /// Rigidbody2D::SetBodyType (180c23120) through the `bodyType` setter (force off) of the Rigidbody2D `owner`
+    /// has on object `o`. The type is stored; a changed type moves the Rigidbody2D in the scene's update lists
+    /// (RemoveRigidbodyUpdates, AddRigidbodyUpdates: the movement list is rebuilt after the next step); a Rigidbody2D
+    /// with a body then has its colliders' contacts flagged and the colliders re-created (RecreateCollider),
+    /// b2Body::SetType, the movement state reset to the body pose, the contacts recalculated and the driving
+    /// ancestor looked up again.
+    pub fn rigidbody2d_set_body_type(&mut self, inst: &mut Instance, owner: BodyOwner, o: usize, body_type: i32) {
+        let prefab = inst.prefab.clone();
+        let rb = self.owner_rigidbody_mut(owner);
+        let old = rb.bodyType;
+        rb.bodyType = body_type;
+        if body_type == old || rb.detached.is_some() {
+            return;
+        }
+        rb.movement.listed = false;
+        let body = rb.body;
+        self.rigidbody_hierarchy_changed = true;
+        // GetAttachedColliders sorts the Collider2D pointers, which differ from session to session in the game itself:
+        // creation order (prefab object, then component), as in Rigidbody2D::Cleanup.
+        let mut colliders: Vec<(usize, usize)> = inst.fixtures.iter().filter(|(_, f)| f.iter().any(|&f| self.world.fixture_alive(f) && self.world.fixture(f).body == body)).map(|(&k, _)| k).collect();
+        colliders.sort_unstable();
+        // FlagAllColliderContactsForRecreate.
+        for &(co, cc) in &colliders {
+            self.world.contacts2d.flag_for_recreate(inst.objects[co].components[cc]);
+        }
+        for &(co, cc) in &colliders {
+            self.collider2d_recreate(inst, &prefab, co, cc);
+        }
+        self.world.set_body_type(body, match body_type {
+            0 => BodyType::Dynamic,
+            1 => BodyType::Kinematic,
+            _ => BodyType::Static,
+        });
+        // RigidbodyMovementState2D::ResetLinearMoveState and ResetAngularMoveState (180c232bf), then previous and
+        // current become the body pose with no interpolation.
+        self.rigidbody_reset_move_states(owner);
+        let m = &mut self.owner_rigidbody_mut(owner).movement;
+        (m.previous, m.current, m.interpolating) = (m.body, m.body, false);
+        self.rigidbody2d_recalculate_contacts(inst, &prefab, body);
+        let driven_by = self.rigidbody2d_driven_by(inst, &prefab, o, body_type);
+        self.set_driven_by(owner, driven_by);
+    }
+
+    /// Rigidbody2D::Create (180c1e6b0).
+    /// `restore` is a re-creation after SetActive(true): the owner's pose, and the component's mass fields.
+    fn rigidbody2d_create(&mut self, inst: &mut Instance, _prefab: &Prefab, o: usize, c: usize, rb: &RigidbodyData, restore: Option<(([f32; 3], [f32; 4]), RigidbodyMass)>) {
+        let kind = match rb.body_type {
+            0 => BodyType::Dynamic,
+            1 => BodyType::Kinematic,
+            _ => BodyType::Static,
+        };
+        let (awake, allow_sleep) = if kind == BodyType::Static { (false, true) } else { (rb.sleeping_mode != 2, rb.sleeping_mode != 0) };
+        let mut def = BodyDef {
+            kind,
+            bullet: rb.collision_detection == 1,
+            linear_damping: rb.linear_drag,
+            angular_damping: rb.angular_drag,
+            fixed_rotation: rb.constraints & 4 != 0,
+            fixed_position_x: rb.constraints & 1 != 0,
+            fixed_position_y: rb.constraints & 2 != 0,
+            gravity_scale: rb.gravity_scale,
+            active: rb.simulated,
+            awake,
+            allow_sleep,
+            rigidbody: restore.map_or(RigidbodyMass { use_auto_mass: rb.use_auto_mass, mass: rb.mass, inertia: None, center_of_mass: None }, |r| r.1),
+            user: Some(RigidbodyRef { id: inst.objects[o].components[c], game_object: inst.objects[o].game_object }),
+            ..Default::default()
+        };
+        if inst.objects[o].active {
+            let (p, q) = restore.map_or_else(|| (inst.position(o), inst.rotation(o)), |r| r.0);
+            def.position = V::new(p[0], p[1]);
+            def.angle = body_angle(q);
+            inst.created_pose.insert(o, (p, q));
+        }
+        let body = self.world.create_body(&def);
+        self.world.reset_mass_data(body);
+        inst.bodies.insert(o, body);
+        // PhysicsManager2D::RegisterTransformChangeInterestForRigidbody (180bf71b0).
+        inst.interest[o] |= CHANGE_RB_T | CHANGE_RB_R | CHANGE_RB_S | CHANGE_RB_ANIM;
+        if rb.interpolate != 0 && rb.interpolate != 1 {
+            unimplemented!("mod-only: Rigidbody2D extrapolation");
+        }
+    }
+
+    /// PhysicsManager2D::SyncTransforms (180bf91d0), the start of every Simulate, for the instance's hierarchy.
+    /// The Rigidbody2D systems' changes first, objects in hierarchy order: a moved or turned body is set to its
+    /// Transform's pose and its contacts recalculated, then its joints recreated. Then the collider system's: an
+    /// enabled collider whose body scale or body-relative matrix moved past Vector3f::epsilon is recreated.
+    /// Unity gathers the changes as one job per range of hierarchies, so the order across several changed
+    /// hierarchies is the jobs' finishing order; within one it is the hierarchy's.
+    /// A position change within 0.0001 (x, y) of an interpolating body's current position is no move (180bf9318).
+    /// The instance's bodies were never given MovePosition/MoveRotation, so the RigidbodyMovementState2D resets leave
+    /// the b2 state alone.
+    pub fn sync_transforms(&mut self, inst: &mut Instance, prefab: &Prefab) {
+        const RB: u8 = CHANGE_RB_T | CHANGE_RB_R | CHANGE_RB_S | CHANGE_RB_ANIM;
+        for o in 0..inst.objects.len() {
+            let bits = inst.changed[o] & RB;
+            inst.changed[o] &= !RB;
+            if bits == 0 {
+                continue;
+            }
+            let Some(&body) = inst.bodies.get(&o) else { continue };
+            let anim = bits & CHANGE_RB_ANIM != 0 && self.world.body(body).kind != BodyType::Static;
+            let (t, r) = (bits & CHANGE_RB_T != 0, bits & CHANGE_RB_R != 0);
+            if t || r {
+                let (pos, rot) = (inst.position(o), inst.rotation(o));
+                let rb = match self.physicals.iter_mut().find(|ph| ph.rigidbody.body == body && !ph.destroyed) {
+                    Some(ph) => Some(&mut ph.rigidbody),
+                    None => self.node_rigidbodies.iter_mut().find(|n| n.rigidbody.body == body).map(|n| &mut n.rigidbody),
+                };
+                // A position change of an interpolating body (Rigidbody2D.interpolation Interpolate) whose Transform x and y
+                // are within 0.0001 of the movement state's current position is no move (a z-only write, FoliageBehaviour.Start):
+                // the body keeps its pose and its interpolation history.
+                let moved = t && !rb.as_ref().is_some_and(|rb| {
+                    let c = rb.movement.current.0;
+                    rb.movement.interpolating && rb.interpolation == 1 && (pos[0] - c[0]).abs() <= 0.0001 && (pos[1] - c[1]).abs() <= 0.0001
+                });
+                // The movement state's current pose is the Transform's; a moved or turned non-animated body's previous and
+                // body pose too, not interpolating.
+                if let Some(rb) = rb {
+                    rb.movement.current = (pos, rot);
+                    if !anim && (moved || r) {
+                        (rb.movement.previous, rb.movement.body, rb.movement.interpolating) = ((pos, rot), (pos, rot), false);
+                    }
+                }
+                if moved || r {
+                    let b = self.world.body(body);
+                    let p = if t { V::new(pos[0], pos[1]) } else { b.xf.p };
+                    let angle = if r { body_angle(rot) } else { b.sweep.a };
+                    self.world.set_transform(body, p, angle);
+                    self.rigidbody2d_recalculate_contacts(inst, prefab, body);
+                }
+                if anim {
+                    continue;
+                }
+            } else if anim || bits & CHANGE_RB_S == 0 {
+                continue;
+            }
+            self.rigidbody2d_recreate_joints(inst, prefab, o);
+        }
+        for o in 0..inst.objects.len() {
+            if inst.changed[o] & CHANGE_COLLIDER == 0 {
+                continue;
+            }
+            inst.changed[o] &= !CHANGE_COLLIDER;
+            for (c, (_, comp)) in prefab.objects[o].components.iter().enumerate() {
+                let Component::Collider2D(col) = comp else { continue };
+                if !inst.collider_enabled.get(&(o, c)).copied().unwrap_or(col.enabled) {
+                    continue;
+                }
+                // Deactivated since the change was flagged: out of the collider manager, no transform callback.
+                let Some(&st) = inst.colliders.get(&(o, c)) else { continue };
+                let (body_object, m) = self.collider_transformation(inst, prefab, o);
+                let scale = match body_object {
+                    Some(b) => {
+                        let s = inst.objects[b].trs.s;
+                        [s[0], s[1], s[2]]
+                    }
+                    None => [1.0; 3],
+                };
+                let d = [scale[0] - st.rigidbody_scale[0], scale[1] - st.rigidbody_scale[1], scale[2] - st.rigidbody_scale[2]];
+                const EPSILON: f32 = f32::from_bits(0x3727_c5ac);
+                // CompareApproximately(Matrix4x4f) (18073cbb0): every element within epsilon.
+                let same = (0..16).all(|i| EPSILON >= (st.relative_transform[i] - m[i]).abs());
+                if EPSILON * EPSILON < d[0] * d[0] + d[1] * d[1] + d[2] * d[2] || !same {
+                    self.collider2d_recreate(inst, prefab, o, c);
+                }
+            }
+        }
+    }
+
+    /// Rigidbody2D::RecalculateContacts (180c22660): Collider2D::RecalculateContacts on each enabled attached
+    /// collider with shapes (not used by an effector), then the body is woken.
+    fn rigidbody2d_recalculate_contacts(&mut self, inst: &Instance, prefab: &Prefab, body: BodyId) {
+        if self.world.body(body).fixtures.is_empty() {
+            return;
+        }
+        // GetAttachedColliders (180c1f350) sorts the Collider2D pointers. The order cannot show: each refilter only
+        // flags contacts, touches proxies (UpdatePairs sorts and dedups the pairs), wakes the body and remixes
+        // materials, so any order gives the same world.
+        let mut attached: Vec<(usize, usize)> = inst.fixtures.iter().filter(|(_, f)| f.iter().any(|&f| self.world.fixture_alive(f) && self.world.fixture(f).body == body)).map(|(&k, _)| k).collect();
+        attached.sort_unstable();
+        for &(o, c) in &attached {
+            let Component::Collider2D(col) = &prefab.objects[o].components[c].1 else { unreachable!() };
+            if inst.collider_enabled.get(&(o, c)).copied().unwrap_or(col.enabled) && !col.used_by_effector {
+                self.world.refilter_collider(inst.objects[o].components[c]);
+                if self.world.body(body).kind == BodyType::Static {
+                    // Collider2D::WakeAllBodyContacts (180c17960).
+                    self.world.wake_contact_bodies(body);
+                }
+            }
+        }
+        self.world.wake_body(body);
+    }
+
+    /// Collider2D::RecreateCollider(null) (180c14750) outside a composite: the body's contacts wake their bodies,
+    /// Cleanup(kColliderRecreate) (180c0d940) keeps the collider's collisions and destroys its fixtures (last
+    /// first) and resets the body mass, then CreateFixtures, and the attached Rigidbody2D is woken.
+    pub(super) fn collider2d_recreate(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize) {
+        let id = inst.objects[o].components[c];
+        let fixtures = inst.fixtures.remove(&(o, c)).unwrap_or_default();
+        if let Some(&first) = fixtures.first() {
+            let body = self.world.fixture(first).body;
+            self.world.wake_contact_bodies(body);
+            self.world.contacts2d.flag_for_recreate(id);
+            for &f in fixtures.iter().rev() {
+                self.world.destroy_fixture(body, f);
+            }
+            self.world.reset_mass_data(body);
+        }
+        if let Some(st) = inst.colliders.get_mut(&(o, c)) {
+            st.relative_transform = IDENTITY;
+        }
+        self.collider2d_create_fixtures(inst, prefab, o, c);
+        // The scripts that keep this collider's fixtures (the jet exhaust, SharpCollider, trigger zones) follow the new ones.
+        let remade = inst.fixtures.get(&(o, c)).cloned().unwrap_or_default();
+        if !fixtures.is_empty() {
+            let swap = |v: &mut Vec<FixtureId>| {
+                if *v == fixtures {
+                    v.clone_from(&remade);
+                }
+            };
+            self.jet_engines.iter_mut().for_each(|x| swap(&mut x.exhaustEffectorCollider));
+            self.sharp_on_all_sides.iter_mut().for_each(|x| swap(&mut x.SharpCollider));
+            self.lavas.iter_mut().for_each(|x| swap(&mut x.trigger_fixtures));
+            self.waters.iter_mut().for_each(|x| swap(&mut x.trigger_fixtures));
+            self.vacuums.iter_mut().for_each(|x| swap(&mut x.fixtures));
+        }
+        let created = inst.fixtures.get(&(o, c)).filter(|f| !f.is_empty()).map(|f| f[0]);
+        match created {
+            None => self.world.contacts2d.destroy_contacts(id),
+            Some(first) => {
+                let body = self.world.fixture(first).body;
+                if inst.bodies.values().any(|&b| b == body) {
+                    self.world.wake_body(body);
+                }
+            }
+        }
+    }
+
+    /// Collider2D.isTrigger = v (Collider2D::SetIsTrigger 180c15750): unchanged is nothing, else stored and
+    /// RecreateCollider(null); a collider of an inactive object has no fixtures to remake.
+    pub(super) fn collider_set_is_trigger(&mut self, inst: &mut Instance, (o, c): (usize, usize), v: bool) {
+        let Component::Collider2D(col) = &inst.prefab.objects[o].components[c].1 else { unreachable!("isTrigger of a non-collider") };
+        if inst.triggers.get(&(o, c)).copied().unwrap_or(col.is_trigger) == v {
+            return;
+        }
+        inst.triggers.insert((o, c), v);
+        let id = inst.objects[o].components[c];
+        for p in &mut self.physicals {
+            if let Some(k) = p.colliders.iter().position(|&x| x == id) {
+                p.collider_defs[k].is_trigger = v;
+            }
+        }
+        if inst.objects[o].active {
+            let prefab = inst.prefab.clone();
+            self.collider2d_recreate(inst, &prefab, o, c);
+        }
+    }
+
+    /// EdgeCollider2D.SetPoints(points): the shapes follow at once while the collider is enabled on an active object; otherwise the new points wait for its next CreateFixtures.
+    pub(super) fn edge_collider_set_points(&mut self, inst: &mut Instance, (o, c): (usize, usize), points: Vec<[f32; 2]>) {
+        let Component::Collider2D(col) = &inst.prefab.objects[o].components[c].1 else { unreachable!("SetPoints of a non-collider") };
+        let enabled = inst.collider_enabled.get(&(o, c)).copied().unwrap_or(col.enabled);
+        inst.edge_points.insert((o, c), points);
+        if enabled && inst.objects[o].active {
+            let prefab = inst.prefab.clone();
+            self.collider2d_recreate(inst, &prefab, o, c);
+        }
+    }
+
+    /// Collider2D.enabled = v (Collider2D::SetEnabled 180c15670): unchanged is nothing; Behaviour::SetEnabled
+    /// (180634d50) stores it and an active object's collider joins the collider TRS system; disabling runs
+    /// Cleanup(2) (the shapes go last first, the body's mass is reset, the contacts drop without callbacks), enabling
+    /// an active object's collider runs CreateFixtures(null).
+    pub(super) fn collider_set_enabled(&mut self, inst: &mut Instance, (o, c): (usize, usize), v: bool) {
+        let Component::Collider2D(col) = &inst.prefab.objects[o].components[c].1 else { unreachable!("enabled of a non-collider") };
+        if inst.collider_enabled.get(&(o, c)).copied().unwrap_or(col.enabled) == v {
+            return;
+        }
+        inst.collider_enabled.insert((o, c), v);
+        let id = inst.objects[o].components[c];
+        if !v {
+            // RemoveFromManager leaves the object's other colliders interested; a disabled one is skipped.
+            let fixtures: Vec<_> = inst.fixtures.remove(&(o, c)).unwrap_or_default().into_iter().filter(|&f| self.world.fixture_alive(f)).collect();
+            if let Some(&first) = fixtures.first() {
+                let body = self.world.fixture(first).body;
+                for &f in fixtures.iter().rev() {
+                    self.world.destroy_fixture(body, f);
+                }
+                self.world.reset_mass_data(body);
+            }
+            self.world.contacts2d.destroy_contacts(id);
+        } else if inst.objects[o].active {
+            inst.interest[o] |= CHANGE_COLLIDER;
+            let prefab = inst.prefab.clone();
+            self.collider2d_create_fixtures(inst, &prefab, o, c);
+        }
+    }
+
+    /// The clone and (object, component) of collider `id`.
+    fn collider_slot(&mut self, id: i32) -> Option<(&mut Instance, (usize, usize))> {
+        self.unsynced.iter_mut().chain(self.retained.iter_mut()).find_map(|inst| {
+            let k = inst.objects.iter().enumerate().find_map(|(o, x)| x.components.iter().position(|&k| k == id).map(|c| (o, c)))?;
+            Some((inst, k))
+        })
+    }
+
+    /// Collider2D.enabled of collider `id`: a script's run-time value, else the serialized one.
+    pub(super) fn collider_enabled(&mut self, id: i32) -> bool {
+        let (inst, (o, c)) = self.collider_slot(id).unwrap_or_else(|| unimplemented!("mod-only: Collider2D.enabled of collider {id} without a clone"));
+        let Component::Collider2D(col) = &inst.prefab.objects[o].components[c].1 else { unreachable!() };
+        inst.collider_enabled.get(&(o, c)).copied().unwrap_or(col.enabled)
+    }
+
+    /// Keeps Collider2D.enabled = false of a collider `collider_disable_one` cleaned up (a recording's physicals have
+    /// no clone).
+    pub(super) fn record_collider_disabled(&mut self, id: i32) {
+        if let Some((inst, k)) = self.collider_slot(id) {
+            inst.collider_enabled.insert(k, false);
+        }
+    }
+
+    /// Collider2D::AwakeFromLoad (180c0c370) in instantiate mode: CreateFixtures on an active object, and
+    /// Collider2D::AddToManager (180c0bcc0) on an enabled one, which registers the GameObject's interest in the
+    /// collider TRS system.
+    pub(super) fn collider2d_awake(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize) {
+        if inst.objects[o].active {
+            let Component::Collider2D(col) = &prefab.objects[o].components[c].1 else { unreachable!() };
+            // Collider2D +0xc8: the GameObject's Effector2D, found before the fixtures exist.
+            if col.used_by_effector {
+                let effector = Self::object_effector(inst, prefab, o);
+                self.world.effector_colliders.insert(inst.objects[o].components[c], effector);
+            }
+            self.collider2d_create_fixtures(inst, prefab, o, c);
+            if inst.collider_enabled.get(&(o, c)).copied().unwrap_or(col.enabled) {
+                inst.interest[o] |= CHANGE_COLLIDER;
+            }
+        }
+    }
+
+    /// The Rigidbody2D the collider's shapes go on and the collider-to-body matrix:
+    /// Collider2D::CalculateColliderTransformation (180c0c8b0). None is the ground body.
+    fn collider_transformation(&self, inst: &Instance, prefab: &Prefab, o: usize) -> (Option<usize>, [f32; 16]) {
+        let has_body = |i: usize| inst.objects[i].active && inst.bodies.contains_key(&i) && prefab.objects[i].components.iter().any(|(_, c)| matches!(c, Component::Rigidbody2D(_)));
+        if has_body(o) {
+            // The collider on its own body: the world matrix without translation, rotated back by the body's
+            // z rotation.
+            let mut m = local_to_world(&inst.chain(o));
+            (m[12], m[13], m[14]) = (0.0, 0.0, 0.0);
+            let a = z_rot_angle(inst.rotation(o));
+            let (s, c) = (crate::unity::sinf(a), crate::unity::cosf(a));
+            let r = quaternion_to_matrix([neg(0.0), neg(0.0), neg(s), c]);
+            return (Some(o), collider_product(&m, &r));
+        }
+        let mut p = inst.objects[o].parent;
+        while let Some(i) = p {
+            if has_body(i) {
+                let m = local_to_world(&inst.chain(o));
+                let a = z_rot_angle(inst.rotation(i));
+                let q = [neg(0.0), neg(0.0), neg(crate::unity::sinf(a)), crate::unity::cosf(a)];
+                let pos = inst.position(i);
+                let (px, py, pz) = (neg(pos[0]), neg(pos[1]), neg(pos[2]));
+                let [x, y, z, w] = q;
+                let (f10, f11, f12, f13) = (y * 2.0, z * 2.0, w * x * 2.0, x * x * 2.0);
+                let t = [
+                    (1.0 - (z * f11 + y * f10)) * px + (x * f10 - w * f11) * py + (w * f10 + x * f11) * pz,
+                    (1.0 - (z * f11 + f13)) * py + (w * f11 + x * f10) * px + (y * f11 - f12) * pz,
+                    (x * f11 - w * f10) * px + (f12 + y * f11) * py + (1.0 - (y * f10 + f13)) * pz,
+                ];
+                let mut r = quaternion_to_matrix(q);
+                (r[12], r[13], r[14]) = (t[0], t[1], t[2]);
+                return (Some(i), collider_product(&m, &r));
+            }
+            p = inst.objects[i].parent;
+        }
+        (None, local_to_world(&inst.chain(o)))
+    }
+
+    /// Collider2D::CreateFixtures (180c0dba0) with no explicit body, for a collider outside any composite.
+    fn collider2d_create_fixtures(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize) {
+        let Component::Collider2D(col) = &prefab.objects[o].components[c].1 else { unreachable!() };
+        if !inst.collider_enabled.get(&(o, c)).copied().unwrap_or(col.enabled) {
+            return;
+        }
+        if col.used_by_composite {
+            unimplemented!("mod-only: CompositeCollider2D");
+        }
+        let (body_object, m) = self.collider_transformation(inst, prefab, o);
+        let rigidbody_scale = match body_object {
+            Some(b) => {
+                let s = inst.objects[b].trs.s;
+                [s[0], s[1], s[2]]
+            }
+            None => [1.0; 3],
+        };
+        inst.colliders.insert((o, c), ColliderState { relative_transform: m, rigidbody_scale });
+        let matrix = ColliderMatrix([m[0], m[1], m[4], m[5], m[8], m[9], m[12], m[13]]);
+        let shapes: Vec<Shape> = match &col.shape {
+            ColliderShape::Box { tiling, auto_tiling, size, edge_radius } => {
+                // ColliderTilingExtension::IsTilingOn (180bfd370): auto-tiling over a sprite drawn sliced or tiled.
+                if *auto_tiling && tiling.draw_mode != 0 {
+                    unimplemented!("mod-only: BoxCollider2D auto-tiling (ScheduleGenerateBoxTilingShape)");
+                }
+                box_collider_polygon(V::new(col.offset[0], col.offset[1]), V::new(size[0], size[1]), *edge_radius, &matrix).map(Shape::Polygon).into_iter().collect()
+            }
+            // CircleCollider2D::PrepareShapes (180c13210): the offset through the matrix, and the radius times the
+            // larger absolute lossy scale axis, clamped to 0.0001..1e6.
+            ColliderShape::Circle { radius } => {
+                let (radius, offset) = inst.circles.get(&(o, c)).copied().unwrap_or((*radius, col.offset));
+                let s = inst.lossy_scale(o);
+                let scale = if s[1].abs() > s[0].abs() { s[1].abs() } else { s[0].abs() };
+                let r = scale * radius;
+                let r = if r <= 0.0001 { 0.0001 } else { f32::min(1e6, r) };
+                vec![Shape::Circle(Circle { radius: r, p: matrix.apply(V::new(offset[0], offset[1])) })]
+            }
+            ColliderShape::Polygon { tiling, auto_tiling, paths } => {
+                // ColliderTilingExtension::IsTilingOn (180bfd370)
+                if *auto_tiling && tiling.draw_mode != 0 {
+                    unimplemented!("mod-only: PolygonCollider2D auto-tiling");
+                }
+                polygon_collider_polygons(paths, &m, V::new(col.offset[0], col.offset[1])).into_iter().map(Shape::Polygon).collect()
+            }
+            ColliderShape::Edge { edge_radius, points, adjacent_start, adjacent_end } => {
+                edge_collider_chain(inst.edge_points.get(&(o, c)).map_or(&points[..], |v| &v[..]), &m, V::new(col.offset[0], col.offset[1]), *edge_radius, *adjacent_start, *adjacent_end).map(Shape::Chain).into_iter().collect()
+            }
+            ColliderShape::Capsule { size, direction } => capsule_collider(*size, *direction, V::new(col.offset[0], col.offset[1]), &m).map(Shape::Capsule).into_iter().collect(),
+        };
+        if shapes.is_empty() {
+            return;
+        }
+        let (friction, restitution) = self.collider_material_state(inst, prefab, o, c, body_object);
+        let body = match body_object {
+            Some(b) => inst.bodies[&b],
+            None => self.world.ground_body(),
+        };
+        let rb = body_object.and_then(|b| prefab.objects[b].components.iter().find_map(|(_, c)| match c {
+            Component::Rigidbody2D(r) => Some(r.clone()),
+            _ => None,
+        }));
+        let density = match rb {
+            Some(r) if r.use_auto_mass && r.body_type == 0 => col.density,
+            _ => 1.0,
+        };
+        let collider = ColliderRef { id: inst.objects[o].components[c], game_object: inst.objects[o].game_object };
+        let mut ids = Vec::new();
+        for shape in shapes {
+            let def = FixtureDef { shape, friction, restitution, density, is_sensor: inst.triggers.get(&(o, c)).copied().unwrap_or(col.is_trigger), filter: Default::default(), collider };
+            ids.push(self.world.create_fixture(body, &def, false));
+        }
+        self.world.reset_mass_data(body);
+        inst.fixtures.insert((o, c), ids);
+    }
+
+    /// Collider2D::GetColliderMaterialState (180c11360): the collider's PhysicsMaterial2D, else its body's, else
+    /// Physics2DSettings' default material, else friction 0.4 and bounciness 0.
+    fn collider_material_state(&self, inst: &Instance, prefab: &Prefab, o: usize, c: usize, body_object: Option<usize>) -> (f32, f32) {
+        let body_material = body_object.and_then(|b| (0..prefab.objects[b].components.len()).find_map(|k| prefab.materials.get(&(b, k)).filter(|_| matches!(prefab.objects[b].components[k].1, Component::Rigidbody2D(_)))));
+        if let Some(&m) = prefab.materials.get(&(o, c)) {
+            return m;
+        }
+        // The body's sharedMaterial: PhysicalBehaviour.SetProperties gives it the Properties' material.
+        let rigidbody = body_object.and_then(|b| (0..prefab.objects[b].components.len()).find(|&k| matches!(prefab.objects[b].components[k].1, Component::Rigidbody2D(_))).map(|k| inst.objects[b].components[k]));
+        if let Some(ph) = rigidbody.and_then(|id| self.physicals.iter().find(|ph| ph.rigidbody_has_material && !ph.destroyed && ph.rigidbody.component == id)) {
+            let props = &self.properties[ph.Properties];
+            return (props.friction.unwrap(), props.bounciness);
+        }
+        match body_material {
+            Some(&m) => m,
+            None => self.default_material2d.unwrap_or((0.4, 0.0)),
+        }
+    }
+
+    /// Joint2D::AwakeFromLoad (180c026e0) in instantiate mode: Cleanup (nothing to clean on a clone), then Create
+    /// on an active object with the joint enabled; HingeJoint2D::AwakeFromLoad's clamps run only for animation.
+    fn joint2d_awake(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize, j: &Joint2DData) {
+        if inst.objects[o].active && j.enabled {
+            match &j.kind {
+                JointData::Hinge { .. } => self.hinge_joint2d_create(inst, prefab, o, c, j),
+                JointData::Fixed { .. } | JointData::Slider { .. } | JointData::Spring { .. } | JointData::Distance { .. } | JointData::Wheel { .. } | JointData::Relative { .. } => self.anchored_joint2d_create(inst, prefab, o, c, j),
+            }
+        }
+    }
+
+    /// HingeJoint2D::Create (180bfcdc0), AnchoredJoint2D::ConfigureAnchors (180beaf30) and
+    /// Joint2D::FinalizeCreateJoint (180c048c0).
+    fn hinge_joint2d_create(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize, j: &Joint2DData) {
+        let JointData::Hinge { use_motor, motor_speed, max_motor_torque, use_limits, lower, upper } = j.kind else { unreachable!() };
+        let connected = joint_connected_object(prefab, o, c, j);
+        if let Some(b) = connected {
+            if !inst.objects[b].active {
+                return;
+            }
+        }
+        const DEG2RAD: f32 = f32::from_bits(0x3c8e_fa35);
+        let (mut lo, mut hi) = (lower * DEG2RAD, upper * DEG2RAD);
+        if hi < lo {
+            (lo, hi) = (hi, lo);
+        }
+        // FetchBodyA / FetchBodyB: the attached and connected Rigidbody2D (Create if needed) or the ground body.
+        let body_a = inst.bodies.get(&o).copied();
+        let body_b = match connected {
+            Some(b) => inst.bodies.get(&b).copied(),
+            None => Some(self.world.ground_body()),
+        };
+        let (Some(a), Some(b)) = (body_a, body_b) else { unimplemented!("mod-only: Joint2D on an object without a created Rigidbody2D") };
+        let mut st = *inst.hinges.entry((o, c)).or_insert(HingeState { connected_anchor: j.connected_anchor, ..Default::default() });
+        let (angle_a, angle_b) = (self.world.body(a).sweep.a, self.world.body(b).sweep.a);
+        let reference_angle = if !st.has_previous_state {
+            angle_b - angle_a
+        } else {
+            st.reference_angle = rewrapped_reference_angle(st.reference_angle, st.body_angle_a, st.body_angle_b, angle_a, angle_b);
+            st.reference_angle
+        };
+        let s = inst.lossy_scale(o);
+        let anchor_a = V::new(s[0] * j.anchor[0], s[1] * j.anchor[1]);
+        let sb = match connected {
+            Some(b) => inst.lossy_scale(b),
+            None => [1.0, 1.0, 1.0],
+        };
+        let anchor_b = if !j.auto_configure_connected_anchor || st.auto_configuration_complete {
+            V::new(sb[0] * st.connected_anchor[0], sb[1] * st.connected_anchor[1])
+        } else {
+            let xa = self.world.body(a).xf;
+            let wx = (anchor_a.x * xa.q.c - anchor_a.y * xa.q.s) + xa.p.x;
+            let wy = xa.q.s * anchor_a.x + anchor_a.y * xa.q.c + xa.p.y;
+            match connected {
+                None => {
+                    st.connected_anchor = [wx, wy];
+                    V::new(wx, wy)
+                }
+                Some(_) => {
+                    let xb = self.world.body(b).xf;
+                    let (dx, dy) = (wx - xb.p.x, wy - xb.p.y);
+                    let local = V::new(xb.q.c * dx + xb.q.s * dy, xb.q.c * dy - xb.q.s * dx);
+                    st.connected_anchor = [local.x / sb[0], local.y / sb[1]];
+                    local
+                }
+            }
+        };
+        inst.hinges.insert((o, c), st);
+        let def = RevoluteDef {
+            local_anchor_a: anchor_a,
+            local_anchor_b: anchor_b,
+            reference_angle,
+            enable_limit: use_limits,
+            lower_angle: lo,
+            upper_angle: hi,
+            enable_motor: use_motor,
+            motor_speed: motor_speed * DEG2RAD,
+            max_motor_torque,
+        };
+        if check_bodies(Some((a, 0u8)), (b, 0u8)).is_err() {
+            return;
+        }
+        let id = self.world.create_joint(def, a, b, j.enable_collision);
+        self.world.wake_joined(a);
+        self.world.wake_joined(b);
+        inst.joints.insert((o, c), id);
+        // FinalizeCreateJoint: AddBreakLimitsUpdate (to the back of the list, or off it when both are infinite).
+        let st = inst.hinges.get_mut(&(o, c)).unwrap();
+        let slot = *st.slot.get_or_insert_with(|| {
+            self.anchored_joints.push(AnchoredJoint { break_force: j.break_force, break_torque: j.break_torque, joint: None, hinge: None, component: inst.objects[o].components[c] });
+            self.anchored_joints.len() - 1
+        });
+        // The world is playing.
+        st.auto_configuration_complete = true;
+        // A hinge a script links (`Game::hinges`) keeps its place in the list as BreakJoint::Hinge.
+        let key = match self.anchored_joints[slot].hinge {
+            Some(h) => BreakJoint::Hinge(h),
+            None => {
+                self.anchored_joints[slot].joint = Some(id);
+                BreakJoint::Anchored(slot)
+            }
+        };
+        self.add_break_limits_update(key, j.break_force, j.break_torque);
+    }
+
+    /// FixedJoint2D::Create (180c04160), SliderJoint2D::Create (180c04400), SpringJoint2D::Create (180bfd060) and
+    /// DistanceJoint2D::Create (180bebd50) and WheelJoint2D::Create (180bec010)
+    /// with Joint2D::FinalizeCreateJoint (180c048c0): the definition the native side builds from the component,
+    /// bodies A (attached) and B (connected, or the ground body).
+    pub(super) fn anchored_joint2d_create(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize, c: usize, j: &Joint2DData) {
+        let connected = joint_connected_object(prefab, o, c, j);
+        // WheelJoint2D::Create returns without a connected Rigidbody2D.
+        if connected.is_none() && matches!(j.kind, JointData::Wheel { .. }) {
+            return;
+        }
+        if let Some(b) = connected {
+            if !inst.objects[b].active {
+                return;
+            }
+        }
+        let body_a = inst.bodies.get(&o).copied();
+        let body_b = match connected {
+            Some(b) => inst.bodies.get(&b).copied(),
+            None => Some(self.world.ground_body()),
+        };
+        let (Some(a), Some(b)) = (body_a, body_b) else { unimplemented!("mod-only: Joint2D on an object without a created Rigidbody2D") };
+        let AnchoredState { mut base, mut slider, spring, mut distance, wheel, mut relative, mut slot } = inst.anchored.remove(&(o, c)).unwrap_or_else(|| anchored_initial_state(j));
+        let mut spring = spring;
+        let frame = |g: &Self, id: BodyId| {
+            let bd = g.world.body(id);
+            BodyFrame { position: bd.xf.p, q: bd.xf.q, angle: bd.sweep.a }
+        };
+        let s = inst.lossy_scale(o);
+        let scale_a = V::new(s[0], s[1]);
+        let frame_a = frame(self, a);
+        let conn = match connected {
+            None => Connected::World,
+            Some(cb) => {
+                let sb = inst.lossy_scale(cb);
+                Connected::Body { frame: frame(self, b), lossy_scale: V::new(sb[0], sb[1]) }
+            }
+        };
+        let def: JointKind = match (slider.as_mut(), spring.as_mut(), distance.as_mut()) {
+            // RelativeJoint2D::Create (180c04290), as fixed_joint_create.
+            _ if relative.is_some() => {
+                let r = relative.as_mut().unwrap();
+                if r.auto_configure_offset && !base.anchor_configured {
+                    let frame_b = match conn {
+                        Connected::World => BodyFrame::default(),
+                        Connected::Body { frame, .. } => frame,
+                    };
+                    let (dx, dy) = (frame_b.position.x - frame_a.position.x, frame_b.position.y - frame_a.position.y);
+                    let (s, c) = (frame_a.q.s, frame_a.q.c);
+                    r.linear_offset = V::new(c * dx + s * dy, c * dy - s * dx);
+                    r.angular_offset = frame_b.angle - frame_a.angle;
+                }
+                crate::b2::motor_joint::MotorDef { linear_offset: r.linear_offset, angular_offset: r.angular_offset, max_force: r.max_force, max_torque: r.max_torque, correction_factor: r.correction_scale }.into()
+            }
+            _ if wheel.is_some() => {
+                // WheelJoint2D::Create: no auto-configuration, the anchors scaled by each transform's lossy scale.
+                let scale_b = match &conn {
+                    Connected::World => V::new(1.0, 1.0),
+                    Connected::Body { lossy_scale, .. } => *lossy_scale,
+                };
+                let (anchor, connected_anchor) = (V::new(base.anchor.x, base.anchor.y), V::new(base.connected_anchor.x, base.connected_anchor.y));
+                wheel.unwrap().create_def(anchor, connected_anchor, scale_a, scale_b).into()
+            }
+            (Some(sl), _, _) => sl.create_def(&mut base, scale_a, &frame_a, &conn).into(),
+            (None, Some(sp), _) => {
+                // SpringJoint2D::Create: the anchors, then the distance between them when it autoconfigures.
+                let (anchor_a, anchor_b) = base.configure_anchors(scale_a, &frame_a, &conn);
+                if sp.auto_configure_distance && !base.anchor_configured {
+                    let world = |f: &BodyFrame, p: V| V::new(p.x * f.q.c - p.y * f.q.s + f.position.x, f.q.s * p.x + p.y * f.q.c + f.position.y);
+                    let frame_b = match conn {
+                        Connected::World => BodyFrame::default(),
+                        Connected::Body { frame, .. } => frame,
+                    };
+                    let (wa, wb) = (world(&frame_a, anchor_a), world(&frame_b, anchor_b));
+                    let (dx, dy) = (wb.x - wa.x, wb.y - wa.y);
+                    let d = (dx * dx + dy * dy).sqrt();
+                    sp.distance = if 0.005 > d { 0.005 } else { f32::min(1_000_000.0, d) };
+                }
+                crate::b2::distance_joint::DistanceDef { local_anchor_a: anchor_a, local_anchor_b: anchor_b, length: sp.distance, frequency_hz: sp.frequency, damping_ratio: sp.damping_ratio }.into()
+            }
+            (None, None, Some(dj)) => {
+                // DistanceJoint2D::Create: the same anchors and autoconfigured distance; maxDistanceOnly makes it a
+                // b2RopeJoint of that maximum length, otherwise a rigid b2DistanceJoint (frequency 0, damping ratio 1).
+                let (anchor_a, anchor_b) = base.configure_anchors(scale_a, &frame_a, &conn);
+                if dj.auto_configure_distance && !base.anchor_configured {
+                    let world = |f: &BodyFrame, p: V| V::new(p.x * f.q.c - p.y * f.q.s + f.position.x, f.q.s * p.x + p.y * f.q.c + f.position.y);
+                    let frame_b = match conn {
+                        Connected::World => BodyFrame::default(),
+                        Connected::Body { frame, .. } => frame,
+                    };
+                    let (wa, wb) = (world(&frame_a, anchor_a), world(&frame_b, anchor_b));
+                    let (dx, dy) = (wb.x - wa.x, wb.y - wa.y);
+                    let d = (dx * dx + dy * dy).sqrt();
+                    dj.distance = if 0.005 > d { 0.005 } else { f32::min(1_000_000.0, d) };
+                }
+                if dj.max_distance_only {
+                    crate::b2::rope_joint::RopeDef { local_anchor_a: anchor_a, local_anchor_b: anchor_b, max_length: dj.distance }.into()
+                } else {
+                    crate::b2::distance_joint::DistanceDef { local_anchor_a: anchor_a, local_anchor_b: anchor_b, length: dj.distance, frequency_hz: 0.0, damping_ratio: 1.0 }.into()
+                }
+            }
+            (None, None, None) => base.create_def(scale_a, &frame_a, &conn).into(),
+        };
+        if check_bodies(Some((a, 0u8)), (b, 0u8)).is_ok() {
+            let id = self.world.create_joint(def, a, b, base.enable_collision);
+            self.world.wake_joined(a);
+            self.world.wake_joined(b);
+            inst.joints.insert((o, c), id);
+            // FinalizeCreateJoint: AddBreakLimitsUpdate (to the back of the list, or off it when both are infinite).
+            let slot = *slot.get_or_insert_with(|| {
+                self.anchored_joints.push(AnchoredJoint { break_force: base.break_force, break_torque: base.break_torque, joint: None, hinge: None, component: inst.objects[o].components[c] });
+                self.anchored_joints.len() - 1
+            });
+            self.anchored_joints[slot].joint = Some(id);
+            // The component's m_BreakForce/m_BreakTorque: a setter since the last create (CarBehaviour.Awake's) wrote the slot's.
+            (base.break_force, base.break_torque) = (self.anchored_joints[slot].break_force, self.anchored_joints[slot].break_torque);
+            self.add_break_limits_update(BreakJoint::Anchored(slot), base.break_force, base.break_torque);
+            base.finish_create();
+        }
+        inst.anchored.insert((o, c), AnchoredState { base, slider, spring, distance, wheel, relative, slot });
+    }
+
+    /// FixedJoint2D::Cleanup(false) (180c03480) / SliderJoint2D::Cleanup (180c03550): the live joint's reference
+    /// angle is kept for the next Create, then Joint2D::Cleanup destroys the b2 joint.
+    pub(super) fn anchored_joint2d_cleanup(&mut self, inst: &mut Instance, o: usize, c: usize) {
+        let Some(id) = inst.joints.remove(&(o, c)) else { return };
+        let st = inst.anchored.get_mut(&(o, c)).unwrap();
+        if st.spring.is_some() || st.distance.is_some() || st.wheel.is_some() || st.relative.is_some() {
+            // Joint2D::Cleanup alone: the auto-configuration is redone by the next Create.
+            st.base.anchor_configured = false;
+        } else {
+            st.base.cleanup(false, Some(self.world.joints[id].as_ref().unwrap().reference_angle()));
+        }
+        if let Some(slot) = st.slot {
+            self.anchored_joints[slot].joint = None;
+        }
+        // A script that adopted the component (misc.rs adopt_prefab_joint) holds the same b2 joint in its arena entry.
+        let comp = inst.objects[o].components[c];
+        match self.adopted_joints.get(&comp).copied().filter(|&f| self.fixed_joints[f].joint == Some(id)) {
+            Some(f) => self.fixed_joint_cleanup(f, false),
+            None => self.world.destroy_joint(id),
+        }
+    }
+
+    /// HingeJoint2D::Cleanup(false) (180bfc5e0) while the world plays: the joint's reference angle and both body
+    /// angles are kept for the next Create, then Joint2D::Cleanup destroys the b2 joint.
+    fn hinge_joint2d_cleanup(&mut self, inst: &mut Instance, o: usize, c: usize) {
+        let Some(id) = inst.joints.remove(&(o, c)) else { return };
+        let joint = self.world.joints[id].as_ref().unwrap();
+        let (a, b, reference_angle) = (joint.body_a, joint.body_b, joint.revolute().def.reference_angle);
+        let st = inst.hinges.get_mut(&(o, c)).unwrap();
+        st.reference_angle = reference_angle;
+        st.body_angle_a = self.world.body(a).sweep.a;
+        st.body_angle_b = self.world.body(b).sweep.a;
+        st.has_previous_state = true;
+        if let Some(slot) = st.slot {
+            self.anchored_joints[slot].joint = None;
+        }
+        // Joint2D::Cleanup (180c03500): the auto-configuration is redone by the next Create.
+        st.auto_configuration_complete = false;
+        self.world.destroy_joint(id);
+    }
+
+    /// Rigidbody2D::RecreateJoints (180c22780): Joint2D::ReCreate (180c05570) on each joint of the body, its joint
+    /// list from the head: Cleanup, then Create on an active GameObject with the joint enabled.
+    fn rigidbody2d_recreate_joints(&mut self, inst: &mut Instance, prefab: &Prefab, o: usize) {
+        let body = inst.bodies[&o];
+        for (_, id) in self.world.body(body).joints.clone().into_iter().rev() {
+            match inst.joints.iter().find(|(_, j)| **j == id).map(|(k, _)| *k) {
+                Some((jo, jc)) => self.joint2d_recreate_in(inst, prefab, jo, jc, id),
+                None => self.joint2d_recreate_any(id),
+            }
+        }
+    }
+
+    /// Joint2D::ReCreate (180c05570) of a joint whatever owns it (the caller has the clone it checked out):
+    /// Cleanup, then Create on an active GameObject with the joint enabled.
+    pub(super) fn joint2d_recreate_any(&mut self, id: JointId) {
+        // The HingeJoint2D a FirearmAttachmentPointBehaviour added to its firearm.
+        if self.attachment_joint_recreate(id) {
+            return;
+        }
+        // The HingeJoint2D the DragTool added to the held object's tool body.
+        if self.drag_joint_recreate(id) {
+            return;
+        }
+        // A Joint2D a script or tool added (HingeJointLimitAutofixBehaviour's, the wires', the pins').
+        if let Some(f) = self.fixed_joints.iter().position(|f| f.joint == Some(id)) {
+            self.fixed_joint_recreate(f);
+            return;
+        }
+        // A prefab-cloned Joint2D of another clone.
+        if self.with_joint_instance(id, |g, inst, jo, jc| {
+            let prefab = inst.prefab.clone();
+            g.joint2d_recreate_in(inst, &prefab, jo, jc, id);
+        }).is_some() {
+            return;
+        }
+        if let Some(l) = self.limbs.iter().position(|l| l.gore.joint == Some(id)) {
+            return self.gore_spring_recreate(l);
+        }
+        panic!("Joint2D::ReCreate: a limb hinge of a recording made before the recorder wrote the human's Clone records (re-record it)");
+    }
+
+    /// Runs `f` on the kept clone whose Joint2D component (jo, jc) has the b2 joint `id`; None when no kept clone
+    /// has it (the caller's checked-out clone is not searched).
+    pub(super) fn with_joint_instance<R>(&mut self, id: JointId, f: impl FnOnce(&mut Game, &mut Instance, usize, usize) -> R) -> Option<R> {
+        let has = |i: &Instance| i.joints.values().any(|&v| v == id);
+        let component = self.unsynced.iter().chain(&self.retained).find(|i| has(i)).map(|i| i.objects[0].components[0])?;
+        Some(self.with_component_instance(component, |g, inst, _| {
+            let (jo, jc) = *inst.joints.iter().find(|(_, v)| **v == id).unwrap().0;
+            f(g, inst, jo, jc)
+        }))
+    }
+
+    /// Joint2D::ReCreate of the clone's joint component (jo, jc), whose b2 joint is `id`.
+    fn joint2d_recreate_in(&mut self, inst: &mut Instance, prefab: &Prefab, jo: usize, jc: usize, id: JointId) {
+        {
+            let Component::Joint2D(j) = &prefab.objects[jo].components[jc].1 else { unreachable!() };
+            if matches!(j.kind, JointData::Fixed { .. } | JointData::Slider { .. } | JointData::Spring { .. } | JointData::Distance { .. } | JointData::Wheel { .. } | JointData::Relative { .. }) {
+                self.anchored_joint2d_cleanup(inst, jo, jc);
+                if inst.objects[jo].active && j.enabled {
+                    self.anchored_joint2d_create(inst, prefab, jo, jc, j);
+                }
+                return;
+            }
+            if !matches!(j.kind, JointData::Hinge { .. }) {
+                unimplemented!("mod-only: {}: Joint2D ReCreate for {:?}", prefab.objects[jo].name, j.kind);
+            }
+            // ReCreate takes the component's current properties: a linked hinge's, which scripts may have set.
+            let mut j = j.clone();
+            let linked = self.hinges.iter().position(|h| h.joint == Some(id));
+            if let Some(h) = linked {
+                let h = &self.hinges[h];
+                j.kind = JointData::Hinge { use_motor: h.useMotor, motor_speed: h.motor[0], max_motor_torque: h.motor[1], use_limits: h.useLimits, lower: h.limits[0], upper: h.limits[1] };
+                (j.enabled, j.anchor, j.break_force, j.break_torque) = (h.enabled, h.anchor, h.breakForce, h.breakTorque);
+            }
+            self.hinge_joint2d_cleanup(inst, jo, jc);
+            if inst.objects[jo].active && j.enabled {
+                self.hinge_joint2d_create(inst, prefab, jo, jc, &j);
+            }
+            if let Some(h) = linked {
+                self.hinges[h].joint = inst.joints.get(&(jo, jc)).copied();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::assets::mono::Value;
+
+    /// Every rewritten script on the Person prefab loads its serialized fields; prints the runtime-only ones.
+    #[test]
+    fn person_scripts_load_from_prefab() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let mut db = AssetDb::open(&game).unwrap();
+        let catalog = db.find_scripts("CatalogData").unwrap()[0];
+        let (_, _, cat) = db.mono(catalog).unwrap().unwrap();
+        let mut person = None;
+        for item in cat.get("Items").and_then(Value::array).unwrap().to_vec() {
+            let asset = db.resolve(catalog.file, item.pptr().unwrap()).unwrap();
+            let (_, _, sp) = db.mono(asset).unwrap().unwrap();
+            if let Some(p) = sp.get("Prefab").and_then(Value::pptr).and_then(|p| db.resolve(asset.file, p)) {
+                if db.game_object(p).unwrap().name == "Person" {
+                    person = Some(p);
+                }
+            }
+        }
+        let prefab = db.prefab(person.unwrap()).unwrap();
+        let mut runtime: std::collections::BTreeMap<String, Vec<&str>> = Default::default();
+        for o in &prefab.objects {
+            for (_, c) in &o.components {
+                let Component::Script { class, fields, .. } = c else { continue };
+                let r = match class.as_str() {
+                    "PhysicalBehaviour" => load_values(Physical::default().fields(), fields),
+                    "LimbBehaviour" => load_values(Limb::default().fields(), fields),
+                    "CirculationBehaviour" => load_values(Circulation::default().fields(), fields),
+                    "ConnectedNodeBehaviour" => load_values(Node::default().fields(), fields),
+                    "SkinMaterialHandler" => load_values(Skin::default().fields(), fields),
+                    "PersonBehaviour" => load_values(Person::default().fields(), fields),
+                    "GripBehaviour" => load_values(Grip::default().fields(), fields),
+                    _ => continue,
+                };
+                let names = r.unwrap_or_else(|e| panic!("{} {class}: {e}", o.name));
+                runtime.insert(class.clone(), names);
+            }
+        }
+        for (class, names) in &runtime {
+            eprintln!("{class} runtime: {}", names.join(" "));
+        }
+        assert_eq!(runtime.len(), 7);
+    }
+
+    /// The Person's objects in the order of their original instance ids: the recorder's `orig` lines and
+    /// `resource_load_order` agree.
+    #[test]
+    fn resource_load_order_matches_recording() {
+        let Some((_, _, prefab, db, _)) = spawn_recorded("dump31spawnrand") else { return };
+        let dump = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference-probe/game/dump31spawnrand.txt");
+        let mut snaps = dump::snapshots(&dump).unwrap();
+        snaps.next().unwrap();
+        let recorded = recorded_original_ids(&snaps.header, &prefab);
+        let order = db.resource_load_order().unwrap();
+        let mut objects: Vec<ObjRef> = recorded.keys().copied().collect();
+        objects.sort_by_key(|o| recorded[o]);
+        let mut by_order = objects.clone();
+        by_order.sort_by_key(|o| order[o]);
+        assert_eq!(objects, by_order);
+    }
+
+    /// The recorder's `orig` lines (original instance ids), matched to the prefab in pre-order (component names
+    /// repeat per object).
+    fn recorded_original_ids(header: &[String], prefab: &Prefab) -> HashMap<ObjRef, i32> {
+        let mut original_ids = HashMap::new();
+        let (mut gos, mut comps): (Vec<(&str, i32)>, Vec<(&str, &str, i32)>) = (Vec::new(), Vec::new());
+        for l in header.iter().filter_map(|l| l.strip_prefix("orig ")) {
+            let (rest, id) = l.rsplit_once(' ').unwrap();
+            let id: i32 = id.parse().unwrap();
+            if let Some(n) = rest.strip_prefix("GO ") {
+                gos.push((n, id));
+            } else {
+                let (go, ty) = rest.strip_prefix("C ").unwrap().rsplit_once(' ').unwrap();
+                comps.push((go, ty, id));
+            }
+        }
+        assert_eq!(gos.len() + comps.len(), 240, "orig lines");
+        let mut ci = 0;
+        for (i, o) in prefab.objects.iter().enumerate() {
+            assert_eq!(gos[i].0, o.name);
+            original_ids.insert(o.game_object, gos[i].1);
+            for (r, _) in &o.components {
+                assert_eq!(comps[ci].0, o.name);
+                original_ids.insert(*r, comps[ci].2);
+                ci += 1;
+            }
+        }
+        original_ids
+    }
+
+    /// The Person prefab spawned as a recording spawned it: the recorder's spawn point and original ids, the
+    /// clone ids from its Human, PersonBehaviour.Awake's recorded root scale, then the recorder's
+    /// Physics2D.SyncTransforms. Also returns the asset database and the first snapshot.
+    pub(crate) fn spawn_recorded(name: &str) -> Option<(Game, Instance, Prefab, AssetDb, dump::Snapshot)> {
+        let game = crate::game_assets::find_game(None).ok()?;
+        let dump = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("reference-probe/game/{name}.txt"));
+        let mut snaps = dump::snapshots(&dump).ok()?;
+        let first = snaps.next().unwrap();
+        let mut db = AssetDb::open(&game).unwrap();
+        let catalog = db.find_scripts("CatalogData").unwrap()[0];
+        let (_, _, cat) = db.mono(catalog).unwrap().unwrap();
+        let mut person = None;
+        for item in cat.get("Items").and_then(Value::array).unwrap().to_vec() {
+            let asset = db.resolve(catalog.file, item.pptr().unwrap()).unwrap();
+            let (_, _, sp) = db.mono(asset).unwrap().unwrap();
+            if let Some(p) = sp.get("Prefab").and_then(Value::pptr).and_then(|p| db.resolve(asset.file, p)) {
+                if db.game_object(p).unwrap().name == "Person" {
+                    person = Some(p);
+                }
+            }
+        }
+        let prefab = db.prefab(person.unwrap()).unwrap();
+        let root = first.of("TransformChain").find(|r| r.name == "Human").unwrap();
+        let hex3 = |k: &str| -> [f32; 3] {
+            let w: Vec<f32> = root.get(k).unwrap().split(',').map(|w| f32::from_bits(u32::from_str_radix(w, 16).unwrap())).collect();
+            [w[0], w[1], w[2]]
+        };
+        let spawn = hex3("lpos");
+        let original_ids = db.resource_load_order().unwrap();
+        let human_go = root.id + 2;
+        let mut g = Game::default();
+        g.apply_physics2d_settings(&Game::load_physics2d_settings(&db).unwrap());
+        g.next_instance_id = human_go;
+        let (mut inst, _) = g.instantiate_native(&prefab, spawn, [0.0, 0.0, 0.0, 1.0], &original_ids);
+        inst.set_local_scale(0, hex3("lscale"));
+        g.sync_transforms(&mut inst, &prefab);
+        Some((g, inst, prefab, db, first))
+    }
+
+    /// The recorder's name for an instance body: the object's name (spaces as underscores) and its Rigidbody2D id.
+    fn body_name(inst: &Instance, prefab: &Prefab, b: BodyId) -> String {
+        let o = *inst.bodies.iter().find(|(_, x)| **x == b).unwrap().0;
+        let c = prefab.objects[o].components.iter().position(|(_, c)| matches!(c, Component::Rigidbody2D(_))).unwrap();
+        format!("{}#{}", prefab.objects[o].name.replace(' ', "_"), inst.objects[o].components[c])
+    }
+
+    /// Every instance body against the first snapshot: its words, joint list and fixture proxies.
+    ///
+    /// `full` adds the body mass words, the fixtures' words and shapes and the proxy ids: for a person the scripts
+    /// (PhysicalBehaviour.Start's mass and material) and the other objects' proxies change those.
+    fn compare_bodies(g: &Game, inst: &Instance, prefab: &Prefab, first: &dump::Snapshot, full: bool, out: &mut Vec<String>) {
+        for (&o, &b) in &inst.bodies {
+            let name = body_name(inst, prefab, b);
+            let Some(e) = first.of("b2Edges").find(|r| r.name == name) else {
+                out.push(format!("{name}: no b2Edges"));
+                continue;
+            };
+            let mut game: Vec<u32> = e.get("body").unwrap().split(',').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            game[1] &= 0xffff;
+            let mut ours = dump::physics::body_words(g.world.body(b));
+            // PhysicalBehaviour.Start sets collisionDetectionMode (the bullet flag) from the user preference.
+            (game[1], ours[1]) = (game[1] & !8, ours[1] & !8);
+            for (k, (gw, ow)) in game.iter().zip(&ours).enumerate() {
+                if gw != ow {
+                    out.push(format!("{name} body.w{k}: game {gw:08x} ours {ow:08x}"));
+                }
+            }
+            // Mass, inverse mass, axis, inertia, inverse inertia, damping and gravity scale (not the sleep time).
+            let bw = g.world.body(b);
+            let mass_words: Vec<u32> = [bw.mass, bw.inv_mass, bw.axis.x, bw.axis.y, bw.i, bw.inv_i, bw.linear_damping, bw.angular_damping, bw.gravity_scale].map(f32::to_bits).to_vec();
+            let game_mass: Vec<u32> = e.get("mass").unwrap().split(',').take(9).map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            if full && game_mass != mass_words {
+                out.push(format!("{name} mass: game {game_mass:08x?} ours {mass_words:08x?}"));
+            }
+            // The body's joint list from the head: RecreateJoints reorders it.
+            let joint_names: Vec<String> = g.world.body(b).joints.iter().rev().map(|&(_, j)| {
+                let (&(jo, jc), _) = inst.joints.iter().find(|(_, x)| **x == j).unwrap();
+                format!("{}#{}", prefab.objects[jo].name, inst.objects[jo].components[jc])
+            }).collect();
+            let theirs: Vec<&str> = e.get("joints").unwrap().split(';').filter(|n| !n.is_empty()).collect();
+            if theirs != joint_names {
+                out.push(format!("{name} joints: game {theirs:?} ours {joint_names:?}"));
+            }
+            // Fixture proxies: the AABB and fat AABB of each fixture's single proxy.
+            for (&(fo, fc), fixtures) in &inst.fixtures {
+                if fo != o {
+                    continue;
+                }
+                let fname = format!("{}#{}:0", prefab.objects[fo].name.replace(' ', "_"), inst.objects[fo].components[fc]);
+                let Some(rec) = first.of("b2Fixture").find(|r| r.name == fname) else {
+                    out.push(format!("{fname}: no b2Fixture"));
+                    continue;
+                };
+                let word = |k: &str| -> Vec<u32> { rec.get(k).unwrap().split(',').map(|w| u32::from_str_radix(w, 16).unwrap()).collect() };
+                let fx = g.world.fixtures[fixtures[0]].as_ref().unwrap();
+                let (gf, gs) = (word("fixture"), word("shape"));
+                let md = fx.mass_data;
+                // The filter word's top byte is padding. Friction and restitution are the scripts' materials: a
+                // person's are not applied here.
+                let mut ours_f = [md.mass, md.center.x, md.center.y, md.inertia, md.area, fx.density, fx.friction, fx.restitution].map(f32::to_bits).to_vec();
+                ours_f.extend([fx.filter.category_bits as u32 | (fx.filter.mask_bits as u32) << 16, fx.filter.group_index as u16 as u32 | (fx.is_sensor as u32) << 16]);
+                let game_f: Vec<u32> = gf[..8].iter().copied().chain([gf[9], gf[10] & 0xff_ffff]).collect();
+                if full && game_f != ours_f {
+                    out.push(format!("{fname} fixture: game {game_f:08x?} ours {ours_f:08x?}"));
+                }
+                // The recorder's shape words from b2Shape::m_type: a circle to m_p, a capsule its two vertices, a
+                // chain its m_vertices pointer and m_count, a polygon to m_count.
+                let (ours_s, game_s): (Vec<u32>, Vec<u32>) = match &fx.shape {
+                    Shape::Polygon(poly) => {
+                        let mut ours_s = vec![2, poly.radius.to_bits(), poly.centroid.x.to_bits(), poly.centroid.y.to_bits()];
+                        ours_s.extend(poly.vertices[..poly.count].iter().flat_map(|v| [v.x.to_bits(), v.y.to_bits()]));
+                        let mut game_s = gs[..4 + 2 * poly.count].to_vec();
+                        game_s.extend(&gs[20..20 + 2 * poly.count]);
+                        ours_s.extend(poly.normals[..poly.count].iter().flat_map(|v| [v.x.to_bits(), v.y.to_bits()]));
+                        ours_s.push(poly.count as u32);
+                        game_s.push(gs[36]);
+                        (ours_s, game_s)
+                    }
+                    Shape::Circle(c) => (vec![0, c.radius.to_bits(), c.p.x.to_bits(), c.p.y.to_bits()], gs[..4].to_vec()),
+                    Shape::Capsule(c) => (vec![4, c.radius.to_bits(), c.vertices[0].x.to_bits(), c.vertices[0].y.to_bits(), c.vertices[1].x.to_bits(), c.vertices[1].y.to_bits()], gs[..6].to_vec()),
+                    Shape::Chain(c) => (vec![3, c.radius.to_bits(), c.vertices.len() as u32], vec![gs[0], gs[1], gs[4]]),
+                };
+                if full && game_s != ours_s {
+                    out.push(format!("{fname} shape: game {game_s:08x?} ours {ours_s:08x?}"));
+                }
+                let theirs: Vec<u32> = rec.get("proxies").unwrap().split_once(',').unwrap().1.split(',').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+                let f = g.world.fixtures[fixtures[0]].as_ref().unwrap();
+                let (aabb, proxy) = f.proxies[0];
+                let fat = g.world.broad_phase.tree.fat_aabb(proxy);
+                let ours: Vec<u32> = [aabb.lower.x, aabb.lower.y, aabb.upper.x, aabb.upper.y, fat.lower.x, fat.lower.y, fat.upper.x, fat.upper.y].map(f32::to_bits).to_vec();
+                if theirs != ours {
+                    out.push(format!("{fname} proxies: game {theirs:08x?} ours {ours:08x?}"));
+                }
+                let game_proxy = rec.get("proxies").unwrap().split_once(',').unwrap().0;
+                if full && game_proxy != proxy.to_string() {
+                    out.push(format!("{fname} proxy id: game {game_proxy} ours {proxy}"));
+                }
+            }
+        }
+    }
+
+    /// The Person prefab instantiated natively against dump26stabhead2's first snapshot: every limb body's words,
+    /// its fixture proxies and its hinge's b2 definition, after PersonBehaviour.Awake's rescale and the recorder's
+    /// Physics2D.SyncTransforms.
+    #[test]
+    fn person_spawn_matches_game() {
+        let Some((g, inst, prefab, _, first)) = spawn_recorded("dump26stabhead2") else { return };
+        let mut out = Vec::new();
+        // Body creation order: the game's list (head newest) restricted to the person.
+        let name_of = |b: BodyId| body_name(&inst, &prefab, b);
+        let ours: Vec<String> = g.world.body_list.iter().rev().filter(|b| inst.bodies.values().any(|x| x == *b)).map(|&b| name_of(b)).collect();
+        let world = first.of("b2World").next().unwrap();
+        let theirs: Vec<&str> = world.get("bodies").unwrap().split(';').filter(|n| ours.iter().any(|o| o == n)).collect();
+        if ours.len() != 14 || theirs != ours {
+            out.push(format!("bodies: game {theirs:?} ours {ours:?}"));
+        }
+        compare_bodies(&g, &inst, &prefab, &first, false, &mut out);
+        let game_joints = first.of("b2RevoluteJoint").filter(|r| inst.objects.iter().any(|o| o.components.contains(&r.id))).count();
+        if inst.joints.len() != 13 || game_joints != 13 {
+            out.push(format!("hinges: game {game_joints} ours {}", inst.joints.len()));
+        }
+        // Hinges: anchors (w0-3), motor (w8 low byte, w9, w10), limits (w11 low byte, w13, w14), reference angle (w12).
+        for (&(o, c), &id) in &inst.joints {
+            let name = format!("{}", prefab.objects[o].name);
+            let Some(rec) = first.of("b2RevoluteJoint").find(|r| r.name == name && r.id == inst.objects[o].components[c]) else {
+                out.push(format!("{name}: no b2RevoluteJoint"));
+                continue;
+            };
+            let w: Vec<u32> = rec.get("joint").unwrap().split(',').map(|w| u32::from_str_radix(w, 16).unwrap()).collect();
+            let r = g.world.joints[id].as_ref().unwrap().revolute();
+            let pairs = [
+                ("anchorA.x", w[0], r.def.local_anchor_a.x.to_bits()),
+                ("anchorA.y", w[1], r.def.local_anchor_a.y.to_bits()),
+                ("anchorB.x", w[2], r.def.local_anchor_b.x.to_bits()),
+                ("anchorB.y", w[3], r.def.local_anchor_b.y.to_bits()),
+                ("enableMotor", w[8] & 0xff, r.def.enable_motor as u32),
+                // maxMotorTorque: LimbBehaviour sets Joint.motor from MotorStrength (queue 0x14).
+                ("motorSpeed", w[10], r.def.motor_speed.to_bits()),
+                ("enableLimit", w[11] & 0xff, r.def.enable_limit as u32),
+                ("referenceAngle", w[12], r.def.reference_angle.to_bits()),
+                ("lower", w[13], r.def.lower_angle.to_bits()),
+                ("upper", w[14], r.def.upper_angle.to_bits()),
+            ];
+            for (k, gw, ow) in pairs {
+                if gw != ow {
+                    out.push(format!("{name} joint.{k}: game {gw:08x} ours {ow:08x}"));
+                }
+            }
+        }
+        assert!(out.is_empty(), "{} mismatches:
+{}", out.len(), out.join("
+"));
+    }
+
+    /// The Default map prefab instantiated natively (WORLD's child at the origin) against dump26stabhead2's first
+    /// snapshot: the map bodies' creation order, words and fixture proxies.
+    #[test]
+    fn map_spawn_matches_game() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let dump = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference-probe/game/dump26stabhead2.txt");
+        let Ok(mut snaps) = dump::snapshots(&dump) else { return };
+        let first = snaps.next().unwrap();
+        let mut db = AssetDb::open(&game).unwrap();
+        let mut map = None;
+        for m in db.find_scripts("Map").unwrap() {
+            let (_, _, v) = db.mono(m).unwrap().unwrap();
+            let p = v.get("Prefab").and_then(Value::pptr).and_then(|p| db.resolve(m.file, p)).unwrap();
+            if db.game_object(p).unwrap().name == "Default map" {
+                map = Some(p);
+            }
+        }
+        let prefab = db.prefab(map.unwrap()).unwrap();
+        let mut g = Game::default();
+        g.apply_physics2d_settings(&Game::load_physics2d_settings(&db).unwrap());
+        // LoadScene's natives come first: the ToolController's body and the two resize handles' fixtures.
+        let mut scene = g.load_scene_natives(&mut db).unwrap();
+        // The recorded clone of the map root: its GameObject is the first id, its Transform's plus 2.
+        g.next_instance_id = first.of("TransformChain").find(|r| r.name == "Default_map(Clone)").unwrap().id + 2;
+        let (mut inst, _) = g.instantiate_native(&prefab, [0.0; 3], [0.0, 0.0, 0.0, 1.0], &db.resource_load_order().unwrap());
+        g.sync_transforms(&mut inst, &prefab);
+        // ActivateIfTutorial.Awake: SetActive(UserPreferenceManager.Current.ShowTutorial), off in the recording.
+        let tutorial = prefab.objects.iter().position(|o| o.name == "tutorial").unwrap();
+        g.set_active(&mut inst, tutorial, false);
+        // PhysicalBehaviour.Start -> SetProperties: rigidbody.sharedMaterial = Properties.PhysicMaterial (the prefab
+        // Rigidbodies have none), whose friction and bounciness Rigidbody2D::SetMaterial gives the body's fixtures.
+        for (o, ob) in prefab.objects.iter().enumerate() {
+            for (_, c) in &ob.components {
+                let Component::Script { class, fields, .. } = c else { continue };
+                let (true, Some(&b)) = (class == "PhysicalBehaviour", inst.bodies.get(&o)) else { continue };
+                let props = db.resolve(ob.game_object.file, fields.get("Properties").and_then(Value::pptr).unwrap()).unwrap();
+                let (_, _, props) = db.mono(props).unwrap().unwrap();
+                let material = db.resolve(ob.game_object.file, props.get("PhysicMaterial").and_then(Value::pptr).unwrap()).map(|m| crate::assets::components::PhysicsMaterial2D::read(db.data(m)).unwrap());
+                if let Some(m) = material {
+                    for f in g.world.body(b).fixtures.clone() {
+                        let fixture = g.world.fixtures[f].as_mut().unwrap();
+                        (fixture.friction, fixture.restitution) = (m.friction, m.bounciness);
+                    }
+                }
+            }
+        }
+        // ResizeHandles.Update (the first frame): no targets, SetActive(false).
+        let handles = scene.roots.iter_mut().find(|r| r.prefab.objects[0].name == "Resizing handles").unwrap();
+        g.set_active(handles, 0, false);
+        // The recorded snapshot is long after the first steps: Solve clears the created-asleep flag, and an awake
+        // kinematic body's sweep angle becomes angle + dt * 0, then so does its previous angle.
+        for _ in 0..2 {
+            g.world.step(0.02, 32, 32);
+        }
+        let mut out = Vec::new();
+        let tool = scene.roots.iter().find(|r| r.bodies.values().any(|&b| b == scene.tool_body)).unwrap();
+        let name = |b: BodyId| match b {
+            b if Some(b) == g.world.ground => "ground".to_string(),
+            b if b == scene.tool_body => body_name(tool, &tool.prefab, b),
+            b => body_name(&inst, &prefab, b),
+        };
+        let ours: Vec<String> = g.world.body_list.iter().rev().map(|&b| name(b)).collect();
+        let world = first.of("b2World").next().unwrap();
+        let theirs: Vec<&str> = world.get("bodies").unwrap().split(';').filter(|n| ours.iter().any(|o| o == n)).collect();
+        if theirs != ours {
+            out.push(format!("bodies: game {theirs:?} ours {ours:?}"));
+        }
+        compare_bodies(&g, &inst, &prefab, &first, true, &mut out);
+        compare_bodies(&g, tool, &tool.prefab, &first, true, &mut out);
+        assert!(out.is_empty(), "{} mismatches:
+{}", out.len(), out.join("
+"));
+    }
+
+    /// The broad-phase leaf ids the scene's, the map's and the two removals leave free: the knife and the person
+    /// spawned after them take the game's recorded proxy ids.
+    #[test]
+    fn spawned_proxy_ids_follow_scene_and_map() {
+        let Some((_, _, person, mut db, first)) = spawn_recorded("dump26stabhead2") else { return };
+        let mut map = None;
+        let mut knife = None;
+        let catalog = db.find_scripts("CatalogData").unwrap()[0];
+        let (_, _, cat) = db.mono(catalog).unwrap().unwrap();
+        for item in cat.get("Items").and_then(Value::array).unwrap().to_vec() {
+            let asset = db.resolve(catalog.file, item.pptr().unwrap()).unwrap();
+            let (_, _, sp) = db.mono(asset).unwrap().unwrap();
+            if let Some(p) = sp.get("Prefab").and_then(Value::pptr).and_then(|p| db.resolve(asset.file, p)) {
+                if db.game_object(p).unwrap().name == "Knife" {
+                    knife = Some(p);
+                }
+            }
+        }
+        for m in db.find_scripts("Map").unwrap() {
+            let (_, _, v) = db.mono(m).unwrap().unwrap();
+            let p = v.get("Prefab").and_then(Value::pptr).and_then(|p| db.resolve(m.file, p)).unwrap();
+            if db.game_object(p).unwrap().name == "Default map" {
+                map = Some(p);
+            }
+        }
+        let (map, knife) = (db.prefab(map.unwrap()).unwrap(), db.prefab(knife.unwrap()).unwrap());
+        let ids = db.resource_load_order().unwrap();
+        let mut g = Game::default();
+        g.apply_physics2d_settings(&Game::load_physics2d_settings(&db).unwrap());
+        let mut scene = g.load_scene_natives(&mut db).unwrap();
+        g.next_instance_id = first.of("TransformChain").find(|r| r.name == "Default_map(Clone)").unwrap().id + 2;
+        let (mut m, _) = g.instantiate_native(&map, [0.0; 3], [0.0, 0.0, 0.0, 1.0], &ids);
+        let tutorial = map.objects.iter().position(|o| o.name == "tutorial").unwrap();
+        g.set_active(&mut m, tutorial, false);
+        g.set_active(scene.roots.iter_mut().find(|r| r.prefab.objects[0].name == "Resizing handles").unwrap(), 0, false);
+        // The recorded knife collider's id (b2Fixture Knife#<id>:0); the clones' ids descend in pre-order, each GameObject first.
+        let collider: i32 = first.of("b2Fixture").find_map(|r| r.name.strip_prefix("Knife#")?.strip_suffix(":0")?.parse().ok()).unwrap();
+        let mut pos = 0;
+        'find: for o in &knife.objects {
+            pos += 1;
+            for (_, c) in &o.components {
+                if matches!(c, Component::Collider2D(_)) {
+                    break 'find;
+                }
+                pos += 1;
+            }
+        }
+        g.next_instance_id = collider + 2 * pos;
+        let (k, _) = g.instantiate_native(&knife, [0.0; 3], [0.0, 0.0, 0.0, 1.0], &ids);
+        let root = first.of("TransformChain").find(|r| r.name == "Human").unwrap();
+        g.next_instance_id = root.id + 2;
+        let (p, _) = g.instantiate_native(&person, [0.0; 3], [0.0, 0.0, 0.0, 1.0], &ids);
+        let mut out = Vec::new();
+        for (inst, prefab) in [(&k, &knife), (&p, &person)] {
+            for (&(o, c), f) in &inst.fixtures {
+                let name = format!("{}#{}:0", prefab.objects[o].name.replace(' ', "_"), inst.objects[o].components[c]);
+                let Some(rec) = first.of("b2Fixture").find(|r| r.name == name) else {
+                    out.push(format!("{name}: no b2Fixture"));
+                    continue;
+                };
+                let ours = g.world.fixtures[f[0]].as_ref().unwrap().proxies[0].1.to_string();
+                let game = rec.get("proxies").unwrap().split_once(',').unwrap().0;
+                if game != ours {
+                    out.push(format!("{name}: game {game} ours {ours}"));
+                }
+            }
+        }
+        assert!(out.is_empty(), "{} mismatches:
+{}", out.len(), out.join("
+"));
+    }
+}

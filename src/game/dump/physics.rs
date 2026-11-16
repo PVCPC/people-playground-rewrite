@@ -1,0 +1,1129 @@
+//! `--physics-test <dump>`: each FixedUpdate's physics step (FM -> FE) replayed in a b2 world restored from
+//! the recorder's b2World/b2Edges/b2Fixture/b2Contact/b2RevoluteJoint records, then compared with the next
+//! snapshot word for word. Native lists are restored tail first, so every list matches the game's order.
+use super::*;
+use crate::b2::broadphase::Aabb;
+use crate::b2::collide::{ContactFeature, Manifold, ManifoldPoint, ManifoldType};
+use crate::b2::contacts2d::{Collision2D, ContactState, Manifold2D, Message, Report};
+use crate::b2::shape::{Circle, MassData, Polygon};
+use crate::b2::world::{Body, BodyId, JointKind, ColliderRef, ContactId, Filter, FixtureDef, FixtureId, JointId, RigidbodyRef, Shape, World, CONTACT_TOUCHING};
+
+pub struct Restored {
+    pub world: World,
+    pub bodies: HashMap<String, BodyId>,
+    pub fixtures: HashMap<String, FixtureId>,
+    /// Revolute joints by "HingeJoint2D name#id".
+    pub joints: HashMap<String, JointId>,
+    /// GameObjects by name (the recorder names components by their object); ids are this restore's own.
+    pub objects: HashMap<String, i32>,
+}
+
+/// "Name#id" (or "Name#id:shape") -> (Name, id).
+fn object_ref(text: &str) -> Result<(&str, i32), String> {
+    let (name, rest) = text.rsplit_once('#').ok_or(format!("bad reference {text}"))?;
+    let id = rest.split(':').next().unwrap().parse().map_err(|_| format!("bad reference {text}"))?;
+    Ok((name, id))
+}
+
+fn object_id(objects: &mut HashMap<String, i32>, name: &str) -> i32 {
+    let next = objects.len() as i32 + 1;
+    *objects.entry(name.to_string()).or_insert(next)
+}
+
+fn names(text: &str) -> Vec<&str> {
+    if text.is_empty() { Vec::new() } else { text.split(';').collect() }
+}
+
+/// b2Fixture words 0x00-0x18 (cached mass data, density), 0x30-0x38 (friction, restitution) and 0x40-0x4c
+/// (proxy count, filter, isSensor); shape words from b2Shape::m_type to b2PolygonShape::m_count.
+fn fixture_def(r: &Record) -> Result<(FixtureDef, MassData), String> {
+    let s = words(r.req("shape")?);
+    let fs = |i: usize| f32::from_bits(s[i]);
+    let shape = match s[0] {
+        // b2CircleShape: m_radius, then m_p.
+        0 => Shape::Circle(Circle { radius: fs(1), p: V::new(fs(2), fs(3)) }),
+        2 => {
+            let mut p = Polygon { radius: fs(1), centroid: V::new(fs(2), fs(3)), count: s[36] as usize, ..Default::default() };
+            for i in 0..8 {
+                p.vertices[i] = V::new(fs(4 + 2 * i), fs(5 + 2 * i));
+                p.normals[i] = V::new(fs(20 + 2 * i), fs(21 + 2 * i));
+            }
+            Shape::Polygon(p)
+        }
+        // b2CapsuleShape: m_radius, then m_vertices.
+        4 => Shape::Capsule(crate::b2::shape::Capsule { radius: fs(1), vertices: [V::new(fs(2), fs(3)), V::new(fs(4), fs(5))] }),
+        // b2ChainShape: m_radius, m_vertices (chain=), m_count, m_prevVertex, m_nextVertex, the hasVertex flags.
+        3 => {
+            let v = words(r.req("chain").map_err(|_| format!("{}: an EdgeCollider2D chain without chain= (re-record)", r.name))?);
+            if v.len() != 2 * s[4] as usize {
+                return Err(format!("{}: chain= holds {} words for {} vertices", r.name, v.len(), s[4]));
+            }
+            let vertices: Vec<V> = v.chunks(2).map(|p| V::new(f32::from_bits(p[0]), f32::from_bits(p[1]))).collect();
+            Shape::Chain(crate::b2::shape::Chain {
+                radius: fs(1),
+                vertices: vertices.into(),
+                prev: (s[9] & 0xff != 0).then(|| V::new(fs(5), fs(6))),
+                next: (s[9] >> 8 & 0xff != 0).then(|| V::new(fs(7), fs(8))),
+            })
+        }
+        t => return Err(format!("{}: shape type {t} is not a circle, polygon, chain or capsule", r.name)),
+    };
+    let w = words(r.req("fixture")?);
+    let fw = |i: usize| f32::from_bits(w[i]);
+    let def = FixtureDef {
+        shape,
+        density: fw(5),
+        friction: fw(6),
+        restitution: fw(7),
+        is_sensor: (w[10] >> 16) & 0xff != 0,
+        filter: Filter { category_bits: w[9] as u16, mask_bits: (w[9] >> 16) as u16, group_index: w[10] as u16 as i16 },
+        collider: ColliderRef::default(),
+    };
+    Ok((def, MassData { mass: fw(0), center: V::new(fw(1), fw(2)), inertia: fw(3), area: fw(4) }))
+}
+
+/// b2Manifold (0x48 bytes): two points, local normal and point, type, count; Unity's two contact offsets follow.
+fn manifold(w: &[u32]) -> Manifold {
+    let fl = |i: usize| f32::from_bits(w[i]);
+    let point = |o: usize| {
+        let [index_a, index_b, type_a, type_b] = w[o + 4].to_le_bytes();
+        ManifoldPoint {
+            local_point: V::new(fl(o), fl(o + 1)),
+            normal_impulse: fl(o + 2),
+            tangent_impulse: fl(o + 3),
+            id: ContactFeature { index_a, index_b, type_a, type_b },
+        }
+    };
+    Manifold {
+        points: [point(0), point(5)],
+        local_normal: V::new(fl(10), fl(11)),
+        local_point: V::new(fl(12), fl(13)),
+        kind: match w[14] {
+            0 => ManifoldType::Circles,
+            1 => ManifoldType::FaceA,
+            _ => ManifoldType::FaceB,
+        },
+        point_count: w[15] as usize,
+    }
+}
+
+fn manifold_words(m: &Manifold) -> Vec<u32> {
+    let mut out = Vec::new();
+    for p in &m.points {
+        out.extend([p.local_point.x.to_bits(), p.local_point.y.to_bits(), p.normal_impulse.to_bits(), p.tangent_impulse.to_bits(), p.id.key()]);
+    }
+    let kind = match m.kind {
+        ManifoldType::Circles => 0,
+        ManifoldType::FaceA => 1,
+        ManifoldType::FaceB => 2,
+    };
+    out.extend([m.local_normal.x.to_bits(), m.local_normal.y.to_bits(), m.local_point.x.to_bits(), m.local_point.y.to_bits(), kind, m.point_count as u32]);
+    out
+}
+
+/// load_body's words back from a body (b2Body 0x00-0x58).
+pub(crate) fn body_words(b: &Body) -> Vec<u32> {
+    let kind = match b.kind {
+        BodyType::Static => 0,
+        BodyType::Kinematic => 1,
+        BodyType::Dynamic => 2,
+    };
+    let f = [
+        b.xf.p.x, b.xf.p.y, b.xf.q.s, b.xf.q.c, b.sweep.local_center.x, b.sweep.local_center.y, b.sweep.c0.x, b.sweep.c0.y, b.sweep.c.x,
+        b.sweep.c.y, b.sweep.a0, b.sweep.a, b.sweep.alpha0, b.linear_velocity.x, b.linear_velocity.y, b.angular_velocity, b.force.x,
+        b.force.y, b.torque,
+    ];
+    [kind, b.flags as u32, b.island_index as u32].into_iter().chain(f.iter().map(|v| v.to_bits())).collect()
+}
+
+/// The world as the game holds it at one snapshot.
+pub fn restore(s: &Snapshot, gravity: V) -> Result<Restored, String> {
+    let mut world = World::new(gravity);
+    let mut objects = HashMap::new();
+    let edges: HashMap<&str, &Record> = s.of("b2Edges").map(|r| (r.name.as_str(), r)).collect();
+    let fixture_records: HashMap<&str, &Record> = s.of("b2Fixture").map(|r| (r.name.as_str(), r)).collect();
+    let order = names(s.of("b2World").next().ok_or("no b2World record")?.req("bodies")?);
+    let (mut bodies, mut fixtures) = (HashMap::new(), HashMap::new());
+    let mut proxies = Vec::new();
+    // Bodies in creation order (the native list is head first), so Unity's body arrays keep it too.
+    for &name in order.iter().rev() {
+        let e = edges.get(name).ok_or(format!("no b2Edges for {name}"))?;
+        let kind = match words(e.req("body")?)[0] {
+            0 => BodyType::Static,
+            1 => BodyType::Kinematic,
+            _ => BodyType::Dynamic,
+        };
+        let user = if name == "ground" {
+            None
+        } else {
+            let (object, id) = object_ref(name)?;
+            Some(RigidbodyRef { id, game_object: object_id(&mut objects, object) })
+        };
+        let id = world.create_body(&BodyDef { kind, user, ..Default::default() });
+        load_body(world.body_mut(id), e)?;
+        bodies.insert(name.to_string(), id);
+        if name == "ground" {
+            world.ground = Some(id);
+        }
+        for &f in names(e.req("fixtures")?).iter().rev() {
+            let (mut def, mass) = fixture_def(fixture_records.get(f).ok_or(format!("no b2Fixture {f}"))?)?;
+            let (object, collider) = object_ref(f)?;
+            def.collider = ColliderRef { id: collider, game_object: object_id(&mut objects, object) };
+            let fid = world.create_fixture(id, &def, false);
+            world.fixtures[fid].as_mut().unwrap().mass_data = mass;
+            fixtures.insert(f.to_string(), fid);
+            for p in names(fixture_records[f].req("proxies")?) {
+                // "id,aabb,fat": the id is decimal, the boxes hex words.
+                let (id, rest) = p.split_once(',').ok_or("bad proxy")?;
+                let w = words(rest);
+                let aabb = |o: usize| Aabb { lower: V::new(f32::from_bits(w[o]), f32::from_bits(w[o + 1])), upper: V::new(f32::from_bits(w[o + 2]), f32::from_bits(w[o + 3])) };
+                proxies.push((id.parse::<i32>().map_err(|_| "bad proxy id")?, fid, aabb(0), aabb(4)));
+            }
+        }
+    }
+    proxies.sort_by_key(|p| p.0);
+    let state = s.of("b2World").next().unwrap();
+    // From dump29 on the game's whole b2DynamicTree is dumped, so tree order (queries, pairs) is the game's own;
+    // before, a fresh tree of the dumped leaves (ids renumbered).
+    let proxy_ids: HashMap<i32, i32> = if let (Some(tree), Some(nodes)) = (state.get("tree"), state.get("nodes")) {
+        let t = words(tree);
+        let nodes = nodes
+            .split(';')
+            .map(|n| {
+                let w = words(n);
+                let aabb = Aabb { lower: V::new(f32::from_bits(w[0]), f32::from_bits(w[1])), upper: V::new(f32::from_bits(w[2]), f32::from_bits(w[3])) };
+                crate::b2::broadphase::TreeNode { aabb, user_data: 0, parent: w[4] as i32, child1: w[5] as i32, child2: w[6] as i32, height: w[7] as i32 }
+            })
+            .collect();
+        // Words: root +0, nodeCount +0x10, capacity +0x14, freeList +0x18, insertionCount +0x20.
+        let leaves: Vec<_> = proxies.iter().map(|&(id, f, a, _)| (id, f, a)).collect();
+        world.restore_tree(t[0] as i32, t[4] as i32, t[6] as i32, t[8] as i32, nodes, &leaves);
+        proxies.iter().map(|p| (p.0, p.0)).collect()
+    } else {
+        let ours = world.restore_proxies(&proxies.iter().map(|&(_, f, a, fat)| (f, a, fat)).collect::<Vec<_>>());
+        proxies.iter().map(|p| p.0).zip(ours).collect()
+    };
+    let moves = names(state.req("moves")?).iter().map(|m| proxy_ids.get(&m.parse::<i32>().unwrap()).copied().ok_or(format!("move of unknown proxy {m}"))).collect::<Result<Vec<_>, _>>()?;
+    let world_flags = words(state.req("flags")?)[0];
+    let inv_dt0 = f(state.req("invDt0")?);
+    // PersonBehaviour.SetCollisionIgnores: every limb collider pair of a person.
+    let limb_fixtures: Vec<FixtureId> = s
+        .of("Rigidbody2D")
+        .flat_map(|r| world.body(bodies[&format!("{}#{}", r.name, r.id)]).fixtures.clone())
+        .collect();
+    for &a in &limb_fixtures {
+        for &b in &limb_fixtures {
+            let (ca, cb) = (world.fixture(a).collider.id, world.fixture(b).collider.id);
+            if ca < cb {
+                world.ignored.insert((ca, cb));
+            }
+        }
+    }
+    // Physics2D.IgnoreCollision's whole set, when the recording has it (the scripts' Start set the item's pairs).
+    for r in s.of("IgnoredCollisions") {
+        for pair in r.req("pairs")?.trim_matches(['[', ']']).split(';').filter(|x| !x.is_empty()) {
+            let (a, b) = pair.split_once(',').ok_or("IgnoredCollisions pair")?;
+            world.ignored.insert((a.parse().map_err(|_| "IgnoredCollisions id")?, b.parse().map_err(|_| "IgnoredCollisions id")?));
+        }
+    }
+    // Hinges: body A is the joint's own Rigidbody2D, body B the connected one.
+    let mut joints: HashMap<String, JointId> = HashMap::new();
+    for (h, raw) in s.of("HingeJoint2D").zip(s.of("b2RevoluteJoint")) {
+        let j = raw.req("joint")?;
+        if j == "null" {
+            continue;
+        }
+        let own = s.of("Rigidbody2D").find(|r| r.name == h.name).ok_or(format!("hinge {} without a body", h.name))?;
+        let connected = h.req("connected")?.trim_start_matches('@');
+        let a = bodies[&format!("{}#{}", own.name, own.id)];
+        let b = if connected == "null" { world.ground_body() } else { *bodies.get(connected).ok_or(format!("hinge {} connects to {connected}", h.name))? };
+        joints.insert(format!("{}#{}", h.name, h.id), restore_revolute(&mut world, &words(j), a, b));
+    }
+    // DragTool's HingeJoint2D on the ToolController, made after the scene's hinges.
+    if let Some(tb) = s.of("ToolBody").next() {
+        let a = bodies[&format!("ToolController#{}", tb.id)];
+        for h in s.of("ToolJoint") {
+            let j = h.req("joint")?;
+            if j == "null" {
+                continue;
+            }
+            let connected = h.req("connected")?.trim_start_matches('@');
+            let b = *bodies.get(connected).ok_or(format!("drag joint connects to {connected}"))?;
+            joints.insert(format!("{}#{}", h.name, h.id), restore_revolute(&mut world, &words(j), a, b));
+        }
+    }
+    // The PPG_STAB item's own HingeJoint2Ds (a Machine Gun's mount, a Car's doors): body A its own Rigidbody2D.
+    for h in s.of("ItemHingeJoint2D") {
+        let j = h.req("joint")?;
+        if j == "null" {
+            continue;
+        }
+        let own = own_rigidbody(s, "ItemRigidbody2D", h).ok_or(format!("item hinge {} without a body", h.name))?;
+        let connected = h.req("connected")?.trim_start_matches('@');
+        let a = bodies[&format!("{}#{}", own.name, own.id)];
+        let b = if connected == "null" { world.ground_body() } else { *bodies.get(connected).ok_or(format!("item hinge {} connects to {connected}", h.name))? };
+        let id = restore_revolute(&mut world, &words(j), a, b);
+        world.joints[id].as_mut().unwrap().collide_connected = h.req("collide")? == "1";
+        joints.insert(format!("{}#{}", h.name, h.id), id);
+    }
+    // The map's own HingeJoint2Ds and FixedJoint2Ds (the Sea map's panels): body A `own`, body B the connected one.
+    for kind in ["MapHingeJoint2D", "MapFixedJoint2D", "MapSpringJoint2D", "MapDistanceJoint2D"] {
+        for h in s.of(kind) {
+            let j = h.req("joint")?;
+            // The DragTool's joint is on the scene's ToolController too: restored above as its ToolJoint.
+            // A pasted object's joints are its Item* records too (the recorder dumps the scene's and the pasted roots').
+            let item = ["ItemHingeJoint2D", "ItemFixedJoint2D", "ItemDistanceJoint2D", "ItemSpringJoint2D", "ItemWheelJoint2D", "ItemRelativeJoint2D"].iter().any(|k| s.of(k).any(|r| r.id == h.id));
+            if j == "null" || item || joints.contains_key(&format!("{}#{}", h.name, h.id)) {
+                continue;
+            }
+            let ground = world.ground_body();
+            let body = |k: &str| -> Result<BodyId, String> {
+                match h.req(k)?.trim_start_matches('@') {
+                    "null" => Ok(ground),
+                    name => bodies.get(name).copied().ok_or(format!("map joint {} {k} {name}", h.name)),
+                }
+            };
+            let (a, b) = (body("own")?, body("connected")?);
+            let id = match kind {
+                "MapHingeJoint2D" => restore_revolute(&mut world, &words(j), a, b),
+                "MapFixedJoint2D" => restore_weld(&mut world, &words(j), a, b),
+                _ => restore_distance(&mut world, &words(j), a, b),
+            };
+            world.joints[id].as_mut().unwrap().collide_connected = h.req("collide")? == "1";
+            joints.insert(format!("{}#{}", h.name, h.id), id);
+        }
+    }
+    // The item's WheelJoint2Ds (a Car's wheels): body A its own Rigidbody2D.
+    for h in s.of("ItemWheelJoint2D") {
+        let j = h.req("joint")?;
+        if j == "null" {
+            continue;
+        }
+        let own = own_rigidbody(s, "ItemRigidbody2D", h).ok_or(format!("item wheel {} without a body", h.name))?;
+        let connected = h.req("connected")?.trim_start_matches('@');
+        let a = bodies[&format!("{}#{}", own.name, own.id)];
+        let b = if connected == "null" { world.ground_body() } else { *bodies.get(connected).ok_or(format!("item wheel {} connects to {connected}", h.name))? };
+        joints.insert(format!("{}#{}", h.name, h.id), restore_wheel(&mut world, &words(j), a, b, h.req("collide")? == "1"));
+    }
+    // The item's SpringJoint2Ds (a tree's leaves on its twigs): body A its own Rigidbody2D.
+    for h in s.of("ItemSpringJoint2D") {
+        let j = h.req("joint")?;
+        if j == "null" {
+            continue;
+        }
+        let own = item_own_body(s, h).ok_or(format!("item spring {} without a body", h.name))?;
+        let connected = h.req("connected")?.trim_start_matches('@');
+        let a = bodies[&format!("{}#{}", own.name, own.id)];
+        let b = if connected == "null" { world.ground_body() } else { *bodies.get(connected).ok_or(format!("item spring {} connects to {connected}", h.name))? };
+        let id = restore_distance(&mut world, &words(j), a, b);
+        world.joints[id].as_mut().unwrap().collide_connected = h.req("collide")? == "1";
+        joints.insert(format!("{}#{}", h.name, h.id), id);
+    }
+    // A stab's SliderJoint2D on the item (body A) connected to the victim (body B).
+    for h in s.of("SliderJoint2D") {
+        let j = h.req("joint")?;
+        if j == "null" {
+            continue;
+        }
+        let a = slider_body(&bodies, h, s)?;
+        let connected = h.req("connected")?.trim_start_matches('@');
+        let b = if connected == "null" { world.ground_body() } else { *bodies.get(connected).ok_or(format!("slider {} connects to {connected}", h.name))? };
+        joints.insert(format!("{}#{}", h.name, h.id), restore_prismatic(&mut world, &words(j), a, b));
+    }
+    // A gore string's SpringJoint2D on the limb (body A) connected to Other (body B). A spring wire's (no gore string
+    // holds it) connects to the other body whose edge list names the joint, else the ground.
+    for h in s.of("SpringJoint2D") {
+        // A disintegrated limb's spring has no native joint (its Rigidbody2D is not simulated).
+        if h.req("joint")? == "null" {
+            continue;
+        }
+        let own = s.of("Rigidbody2D").find(|r| r.name == h.name).ok_or(format!("spring {} without a body", h.name))?;
+        let (key, own_key) = (format!("{}#{}", h.name, h.id), format!("{}#{}", own.name, own.id));
+        let b = match s.of("GoreStringBehaviour").find(|g| g.get("Joint").and_then(reference) == Some(h.id)) {
+            Some(gore) => *bodies.get(gore.req("Other")?.trim_start_matches('@')).ok_or(format!("gore string {} without its Other's body", h.name))?,
+            None => match edges.iter().find(|(n, e)| **n != own_key && e.get("joints").is_some_and(|j| names(j).contains(&key.as_str()))) {
+                Some((n, _)) if *n != "ground" => bodies[*n],
+                _ => world.ground_body(),
+            },
+        };
+        joints.insert(key, restore_distance(&mut world, &words(h.req("joint")?), bodies[&own_key], b));
+    }
+    // The wires' FixedJoint2D and DistanceJoint2D, on the limb (body A); `connected` names a Transform, the body shares its name.
+    // The PPG_STAB item's own FixedJoint2Ds (a Car's panels) as ItemFixedJoint2D, its bodies ItemRigidbody2D.
+    // Its DistanceJoint2Ds (a Light Machine Gun's oscillator) as ItemDistanceJoint2D.
+    for (kind, fixed) in [("FixedJoint2D", true), ("DistanceJoint2D", false), ("ItemFixedJoint2D", true), ("ItemDistanceJoint2D", false)] {
+        for h in s.of(kind) {
+            let j = h.req("joint")?;
+            if j == "null" {
+                continue;
+            }
+            let (human, item) = (s.of("Rigidbody2D"), s.of("ItemRigidbody2D"));
+            let order: Vec<&Record> = if kind.starts_with("Item") { item.chain(human).collect() } else { human.chain(item).collect() };
+            let body = |name: &str| order.iter().find(|r| r.name == name).map(|r| bodies[&format!("{}#{}", r.name, r.id)]).ok_or(format!("{kind} {name} without a body"));
+            let a = match kind.starts_with("Item").then(|| own_rigidbody(s, "ItemRigidbody2D", h)).flatten() {
+                Some(r) => bodies[&format!("{}#{}", r.name, r.id)],
+                None => body(&h.name)?,
+            };
+            // An item's names the connected Transform (name#transform id): a pasted contraption has several of one name.
+            let connected = h.req("connected")?.trim_start_matches('@');
+            let (name, t) = connected.split_once('#').unwrap_or((connected, ""));
+            let b = match name {
+                "null" => world.ground_body(),
+                _ => match t.parse().ok().filter(|_| kind.starts_with("Item")).and_then(|t| clone_rigidbody(s, t)).and_then(|rb| bodies.get(&format!("{name}#{rb}"))) {
+                    Some(&b) => b,
+                    None => body(name)?,
+                },
+            };
+            let w = words(j);
+            // maxDistanceOnly makes Unity build a b2RopeJoint. Recordings from fnw16 on have the field; older ones are told
+            // by the words: a rope's open with the two local anchors, a b2DistanceJoint's with frequency, damping and bias.
+            let anchors: Vec<u32> = [h.req("anchor")?, h.req("connectedAnchor")?].iter().flat_map(|x| words(x)).collect();
+            let rope = h.get("maxDistanceOnly").map_or(w[..4] == anchors[..], |v| v == "1");
+            let id = if fixed { restore_weld(&mut world, &w, a, b) } else if rope { restore_rope(&mut world, &w, a, b) } else { restore_distance(&mut world, &w, a, b) };
+            joints.insert(format!("{}#{}", h.name, h.id), id);
+        }
+    }
+    // The item's RelativeJoint2Ds (a Bicycle's Dinges): b2MotorJoint words from 0x98 are linearOffset, angularOffset,
+    // linearImpulse, angularImpulse, maxForce, maxTorque, correctionFactor; body A its own, B the connected body.
+    for h in s.of("ItemRelativeJoint2D") {
+        let j = h.req("joint")?;
+        if j == "null" {
+            continue;
+        }
+        let item: Vec<&Record> = s.of("ItemRigidbody2D").collect();
+        let body = |name: &str| item.iter().find(|r| r.name == name).map(|r| bodies[&format!("{}#{}", r.name, r.id)]).ok_or(format!("ItemRelativeJoint2D {name} without a body"));
+        let a = match own_rigidbody(s, "ItemRigidbody2D", h) {
+            Some(r) => bodies[&format!("{}#{}", r.name, r.id)],
+            None => body(&h.name)?,
+        };
+        // A Physics Gun's holds another object's body (the human's LowerArm): that one by its id.
+        let b = match h.req("connected")?.trim_start_matches('@') {
+            "null" => world.ground_body(),
+            // The recorder writes the connected body's Transform (name#transform id).
+            full => {
+                let (name, t) = full.split_once('#').unwrap_or((full, ""));
+                match t.parse().ok().and_then(|t| clone_rigidbody(s, t)).and_then(|rb| bodies.get(&format!("{name}#{rb}"))) {
+                    Some(&b) => b,
+                    None => body(name)?,
+                }
+            }
+        };
+        let w = words(j);
+        let fl = |i: usize| f32::from_bits(w[i]);
+        let def = crate::b2::motor_joint::MotorDef { linear_offset: V::new(fl(0), fl(1)), angular_offset: fl(2), max_force: fl(6), max_torque: fl(7), correction_factor: fl(8) };
+        let id = world.create_joint(def, a, b, h.req("collide")? == "1");
+        let m = world.joints[id].as_mut().unwrap().motor_mut();
+        (m.linear_impulse, m.angular_impulse) = (V::new(fl(3), fl(4)), fl(5));
+        joints.insert(format!("{}#{}", h.name, h.id), id);
+    }
+    // Contacts, list tail first.
+    let records: Vec<&Record> = s.of("b2Contact").collect();
+    let mut contacts: Vec<ContactId> = vec![usize::MAX; records.len()];
+    for (i, r) in records.iter().enumerate().rev() {
+        let fa = *fixtures.get(r.req("a")?).ok_or(format!("contact {i}: no fixture {}", r.req("a")?))?;
+        let fb = *fixtures.get(r.req("b")?).ok_or(format!("contact {i}: no fixture {}", r.req("b")?))?;
+        let id = world.restore_contact(fa, fb);
+        let toi = words(r.req("toi")?);
+        let index = words(r.req("index")?);
+        let c = world.contact_mut(id);
+        if (c.fixture_a, c.fixture_b) != (fa, fb) {
+            return Err(format!("contact {i}: fixtures swapped"));
+        }
+        c.flags = words(r.req("flags")?)[0];
+        c.child_a = index[0] as usize;
+        c.child_b = index[1] as usize;
+        c.manifold = manifold(&words(r.req("manifold")?));
+        c.toi_count = toi[0] as i32;
+        c.toi = f32::from_bits(toi[1]);
+        c.friction = f32::from_bits(toi[2]);
+        c.restitution = f32::from_bits(toi[3]);
+        c.tangent_speed = f32::from_bits(toi[4]);
+        c.manager_index = toi[5] as usize;
+        c.user_index = toi.get(6).map_or(-1, |&u| u as i32);
+        contacts[i] = id;
+    }
+    if let Some(r) = s.of("Contacts2D").next() {
+        world.contacts2d.simulation_id = r.req("sim")?.parse().map_err(|_| "bad sim")?;
+    }
+    // Unity's Collision2D records in m_Collisions order; touching contacts point at their pair's record.
+    for r in s.of("Collision2DRecord") {
+        let col = collision_record(r, &bodies, &fixtures, &contacts, &mut objects)?;
+        let rid = world.contacts2d.restore(col);
+        world.contacts2d.simulation_id = r.req("sim")?.parse().map_err(|_| "bad sim")?;
+        let _ = rid;
+    }
+    let recorded = s.of("Collision2DRecord").next().is_some();
+    for &id in &contacts {
+        let c = world.contact(id);
+        if c.flags & CONTACT_TOUCHING == 0 {
+            continue;
+        }
+        // Dumps from before the record recorder: rebuild the records as the listener would have begun them.
+        if !recorded {
+            world.begin_contact(id);
+            continue;
+        }
+        let (a, b) = (world.fixture(c.fixture_a).collider.id, world.fixture(c.fixture_b).collider.id);
+        let at = *world.contacts2d.index.get(&(a.min(b), a.max(b))).ok_or(format!("touching contact without a Collision2D record"))?;
+        let rid = world.contacts2d.collisions[at];
+        world.contact_mut(id).user_data = Some(rid);
+    }
+    // Edge lists in native order; contact creation already wakes bodies, so their state is loaded again.
+    for (name, &id) in &bodies {
+        let e = edges[name.as_str()];
+        let want_contacts: Vec<ContactId> = names(e.req("contacts")?).iter().rev().map(|i| contacts[i.parse::<usize>().unwrap()]).collect();
+        // The recorder writes no FrictionJoint2D (a SoftConnect's): the restore leaves it out, the bodies' states still compare.
+        let unrecorded = |j: &str| j.rsplit_once('#').is_some_and(|(_, id)| s.of("Clone").any(|c| c.get("comps").is_some_and(|x| x.contains(&format!("FrictionJoint2D:{id}]")) || x.contains(&format!("FrictionJoint2D:{id};")))));
+        let want_joints: Vec<JointId> = names(e.req("joints")?).iter().rev().filter(|j| joints.contains_key(**j) || !unrecorded(j)).map(|j| joints.get(*j).copied().ok_or(format!("unknown joint {j}"))).collect::<Result<_, _>>()?;
+        let b = world.body_mut(id);
+        let mut cs = std::mem::take(&mut b.contacts);
+        let mut js = std::mem::take(&mut b.joints);
+        if cs.len() != want_contacts.len() || js.len() != want_joints.len() {
+            return Err(format!("{name}: edge counts differ: contacts ours {} game {}, joints ours {:?} game {:?}", cs.len(), want_contacts.len(), js.iter().map(|e| e.1).collect::<Vec<_>>(), names(e.req("joints")?)));
+        }
+        b.contacts = want_contacts.iter().map(|c| cs.remove(cs.iter().position(|e| e.1 == *c).unwrap())).collect();
+        b.joints = want_joints.iter().map(|j| js.remove(js.iter().position(|e| e.1 == *j).unwrap())).collect();
+        load_body(b, e)?;
+    }
+    world.finish_restore(inv_dt0, world_flags & 1 != 0, moves)?;
+    Ok(Restored { world, bodies, fixtures, joints, objects })
+}
+
+/// A b2RevoluteJoint from its recorded words (0x98..0x130), with the warm-start impulses and limit state.
+/// b2DistanceJoint words from 0x98: frequency, damping, bias, anchors, gamma, impulse, length.
+pub(super) fn restore_distance(world: &mut World, w: &[u32], a: BodyId, b: BodyId) -> JointId {
+    let fl = |i: usize| f32::from_bits(w[i]);
+    let def = crate::b2::distance_joint::DistanceDef {
+        local_anchor_a: V::new(fl(3), fl(4)),
+        local_anchor_b: V::new(fl(5), fl(6)),
+        length: fl(9),
+        frequency_hz: fl(0),
+        damping_ratio: fl(1),
+    };
+    let id = world.create_joint(def, a, b, false);
+    world.joints[id].as_mut().unwrap().distance_mut().impulse = fl(8);
+    id
+}
+
+/// An item joint's own Rigidbody2D: the ItemRigidbody2D on the joint's GameObject (its Clone record lists both
+/// components), not just the first of that name (a Cardiopulmonary Bypass Machine's two Wheels).
+pub(super) fn item_own_body<'a>(s: &'a Snapshot, h: &Record) -> Option<&'a Record> {
+    let has = |comps: &str, id: i32| comps.contains(&format!(":{id};")) || comps.contains(&format!(":{id}]"));
+    let clone = s.of("Clone").find(|c| c.get("comps").is_some_and(|x| has(x, h.id)));
+    let named = |r: &&Record| r.name.replace(' ', "_") == h.name.replace(' ', "_");
+    s.of("ItemRigidbody2D").filter(named).find(|r| clone.is_none_or(|c| has(c.get("comps").unwrap(), r.id)))
+        .or_else(|| s.of("ItemRigidbody2D").find(named))
+}
+
+/// b2RopeJoint words from 0x98: local anchors, max length, length, impulse, u (the last step's InitVelocityConstraints:
+/// a check that runs no step reads them as they were).
+fn restore_rope(world: &mut World, w: &[u32], a: BodyId, b: BodyId) -> JointId {
+    let fl = |i: usize| f32::from_bits(w[i]);
+    let def = crate::b2::rope_joint::RopeDef { local_anchor_a: V::new(fl(0), fl(1)), local_anchor_b: V::new(fl(2), fl(3)), max_length: fl(4) };
+    let id = world.create_joint(def, a, b, false);
+    if let crate::b2::world::JointKind::Rope(r) = &mut world.joints[id].as_mut().unwrap().kind {
+        (r.length, r.impulse, r.u) = (fl(5), fl(6), V::new(fl(7), fl(8)));
+    }
+    id
+}
+
+/// b2WeldJoint words from 0x98: frequency, damping, bias, anchors, reference angle, gamma, impulse.
+fn restore_weld(world: &mut World, w: &[u32], a: BodyId, b: BodyId) -> JointId {
+    let fl = |i: usize| f32::from_bits(w[i]);
+    let def = crate::b2::weld::WeldDef {
+        local_anchor_a: V::new(fl(3), fl(4)),
+        local_anchor_b: V::new(fl(5), fl(6)),
+        reference_angle: fl(7),
+        frequency_hz: fl(0),
+        damping_ratio: fl(1),
+    };
+    let id = world.create_joint(def, a, b, false);
+    world.joints[id].as_mut().unwrap().weld_mut().impulse = [fl(9), fl(10), fl(11)];
+    id
+}
+
+fn restore_revolute(world: &mut World, w: &[u32], a: BodyId, b: BodyId) -> JointId {
+    let fl = |i: usize| f32::from_bits(w[i]);
+    let def = crate::b2::revolute::RevoluteDef {
+        local_anchor_a: V::new(fl(0), fl(1)),
+        local_anchor_b: V::new(fl(2), fl(3)),
+        enable_motor: w[8] & 0xff != 0,
+        max_motor_torque: fl(9),
+        motor_speed: fl(10),
+        enable_limit: w[11] & 0xff != 0,
+        reference_angle: fl(12),
+        lower_angle: fl(13),
+        upper_angle: fl(14),
+    };
+    let id = world.create_joint(def, a, b, false);
+    let rev = world.revolute_mut(id);
+    rev.impulse = [fl(4), fl(5), fl(6)];
+    rev.motor_impulse = fl(7);
+    rev.limit_state = w[37];
+    id
+}
+
+/// A b2WheelJoint from its recorded words (0x98..): frequency, damping ratio, local anchors, local x and y axes,
+/// impulse, motor and spring impulses, max motor torque, motor speed, enableMotor.
+fn restore_wheel(world: &mut World, w: &[u32], a: BodyId, b: BodyId, collide: bool) -> JointId {
+    let fl = |i: usize| f32::from_bits(w[i]);
+    let def = crate::b2::wheel_joint::WheelDef {
+        frequency_hz: fl(0),
+        damping_ratio: fl(1),
+        local_anchor_a: V::new(fl(2), fl(3)),
+        local_anchor_b: V::new(fl(4), fl(5)),
+        local_axis_a: V::new(fl(6), fl(7)),
+        max_motor_torque: fl(13),
+        motor_speed: fl(14),
+        enable_motor: w[15] & 0xff != 0,
+    };
+    let id = world.create_joint(def, a, b, collide);
+    let JointKind::Wheel(wheel) = &mut world.joints[id].as_mut().unwrap().kind else { unreachable!() };
+    wheel.local_y_axis_a = V::new(fl(8), fl(9));
+    wheel.impulse = fl(10);
+    wheel.motor_impulse = fl(11);
+    wheel.spring_impulse = fl(12);
+    id
+}
+
+/// A b2PrismaticJoint from its recorded words (0x98..0xe4): anchors, local axes, reference angle, impulses, limits,
+/// motor and limit state.
+fn restore_prismatic(world: &mut World, w: &[u32], a: BodyId, b: BodyId) -> JointId {
+    let id = world.create_joint(crate::b2::prismatic::PrismaticDef::default(), a, b, false);
+    load_prismatic(world.joints[id].as_mut().unwrap().prismatic_mut(), w);
+    id
+}
+
+/// A live b2PrismaticJoint's state from its recorded words (restore_prismatic's layout).
+pub(crate) fn load_prismatic(p: &mut crate::b2::prismatic::PrismaticJoint, w: &[u32]) {
+    let fl = |i: usize| f32::from_bits(w[i]);
+    p.def = crate::b2::prismatic::PrismaticDef {
+        local_anchor_a: V::new(fl(0), fl(1)),
+        local_anchor_b: V::new(fl(2), fl(3)),
+        local_axis_a: V::new(fl(4), fl(5)),
+        reference_angle: fl(8),
+        enable_limit: w[17] & 0xff != 0,
+        lower_translation: fl(13),
+        upper_translation: fl(14),
+        enable_motor: w[17] & 0xff00 != 0,
+        max_motor_force: fl(15),
+        motor_speed: fl(16),
+    };
+    // m_localXAxisA/m_localYAxisA as stored: the constructor's Normalize of an already unit axis can move it an ulp.
+    (p.local_x_axis_a, p.local_y_axis_a) = (V::new(fl(4), fl(5)), V::new(fl(6), fl(7)));
+    p.impulse = [fl(9), fl(10), fl(11)];
+    p.motor_impulse = fl(12);
+    p.limit_state = w[18];
+}
+
+/// restore_prismatic's words back from a live joint.
+pub(crate) fn prismatic_words(p: &crate::b2::prismatic::PrismaticJoint) -> Vec<u32> {
+    let d = &p.def;
+    let x = p.local_axis();
+    let y = V::new(x.y * -1.0, x.x);
+    let mut out: Vec<u32> = [d.local_anchor_a.x, d.local_anchor_a.y, d.local_anchor_b.x, d.local_anchor_b.y, x.x, x.y, y.x, y.y, d.reference_angle, p.impulse[0], p.impulse[1], p.impulse[2], p.motor_impulse, d.lower_translation, d.upper_translation, d.max_motor_force, d.motor_speed].iter().map(|v| v.to_bits()).collect();
+    out.push(d.enable_limit as u32 | (d.enable_motor as u32) << 8);
+    out.push(p.limit_state);
+    out
+}
+
+fn contact_state(v: u32) -> Result<ContactState, String> {
+    Ok(match v {
+        0 => ContactState::Invalid,
+        1 => ContactState::Enter,
+        2 => ContactState::Exit,
+        3 => ContactState::EnterAndExit,
+        4 => ContactState::Stay,
+        _ => return Err(format!("contact state {v}")),
+    })
+}
+
+/// A Collision2DRecord line: the record's state, pair, flags and manifolds (0x70 bytes each).
+fn collision_record(r: &Record, bodies: &HashMap<String, BodyId>, fixtures: &HashMap<String, FixtureId>, contacts: &[ContactId], objects: &mut HashMap<String, i32>) -> Result<Collision2D, String> {
+    let collider = |t: &str, objects: &mut HashMap<String, i32>| -> Result<ColliderRef, String> {
+        let (object, id) = object_ref(t)?;
+        Ok(ColliderRef { id, game_object: object_id(objects, object) })
+    };
+    let rb = |t: &str| -> Result<Option<BodyId>, String> { if t == "null" { Ok(None) } else { bodies.get(t).copied().map(Some).ok_or(format!("no body {t}")) } };
+    let state = words(r.req("state")?);
+    let flags = words(r.req("flags")?)[0].to_le_bytes();
+    let mut manifolds = Vec::new();
+    for m in names(r.req("manifolds")?) {
+        let parts: Vec<&str> = m.split(',').collect();
+        let w = words(&parts[4..].join(","));
+        let fl = |i: usize| f32::from_bits(w[i]);
+        let v = |i: usize| V::new(fl(i), fl(i + 1));
+        let fixture = |t: &str| fixtures.get(t).copied().ok_or(format!("no fixture {t}"));
+        manifolds.push(Manifold2D {
+            enabled: u32::from_str_radix(parts[0], 16).map_err(|_| "bad manifold")? & 0xff != 0,
+            contact: if parts[1] == "null" { None } else { Some(contacts[parts[1].parse::<usize>().map_err(|_| "bad manifold contact")?]) },
+            fixture_a: fixture(parts[2])?,
+            fixture_b: fixture(parts[3])?,
+            index_a: w[0] as usize,
+            index_b: w[1] as usize,
+            simulation_id: w[2] as i32,
+            point_count: w[3] as usize,
+            normal: v(4),
+            points: [v(6), v(8)],
+            relative_velocity: [v(10), v(12)],
+            separations: [fl(14), fl(15)],
+            normal_impulses: [fl(16), fl(17)],
+            tangent_impulses: [fl(18), fl(19)],
+        });
+    }
+    Ok(Collision2D {
+        manifolds,
+        state: contact_state(state[0])?,
+        contact_count: state[1] as i32,
+        collider_a: collider(r.req("a")?, objects)?,
+        collider_b: collider(r.req("b")?, objects)?,
+        rigidbody_a: rb(r.req("rba")?)?,
+        rigidbody_b: rb(r.req("rbb")?)?,
+        enabled: flags[0] != 0,
+        is_trigger: flags[1] != 0,
+        flag_for_recreate: flags[2] != 0,
+        swapped: flags[3] != 0,
+        rigidbody_ids: [None; 2],
+    })
+}
+
+fn manifold2d_words(m: &Manifold2D) -> Vec<u32> {
+    let mut w = vec![m.enabled as u32, m.index_a as u32, m.index_b as u32, m.simulation_id as u32, m.point_count as u32, m.normal.x.to_bits(), m.normal.y.to_bits()];
+    for v in m.points.iter().chain(&m.relative_velocity) {
+        w.extend([v.x.to_bits(), v.y.to_bits()]);
+    }
+    w.extend(m.separations.iter().chain(&m.normal_impulses).chain(&m.tangent_impulses).map(|f| f.to_bits()));
+    w
+}
+
+/// Unity's Collision2D records after ProcessContacts against the snapshot's, in array order. Point words past
+/// pointCount are stale in the game, so only live points compare.
+pub fn compare_contacts2d(r: &Restored, s: &Snapshot) -> Result<Vec<String>, String> {
+    let w = &r.world;
+    let mut out = Vec::new();
+    let fixture_name: HashMap<FixtureId, &str> = r.fixtures.iter().map(|(n, &f)| (f, n.as_str())).collect();
+    let contact_index: HashMap<ContactId, usize> = w.contact_list.iter().rev().enumerate().map(|(i, &c)| (c, i)).collect();
+    let game: Vec<&Record> = s.of("Collision2DRecord").collect();
+    let ours: Vec<&Collision2D> = w.contacts2d.collisions.iter().map(|&id| w.contacts2d.records[id].as_ref().unwrap()).collect();
+    if game.len() != ours.len() {
+        out.push(format!("Collision2D.count: game {} ours {}", game.len(), ours.len()));
+    }
+    for (i, (g, o)) in game.iter().zip(&ours).enumerate() {
+        let key = format!("{}/{}", g.req("a")?, g.req("b")?);
+        let ok_pair = (o.collider_a.id, o.collider_b.id) == (object_ref(g.req("a")?)?.1, object_ref(g.req("b")?)?.1);
+        if !ok_pair {
+            out.push(format!("Collision2D[{i}] pair: game {key} ours {}/{}", o.collider_a.id, o.collider_b.id));
+            continue;
+        }
+        let state = words(g.req("state")?);
+        let flags = words(g.req("flags")?)[0];
+        let our_flags = u32::from_le_bytes([o.enabled as u8, o.is_trigger as u8, o.flag_for_recreate as u8, o.swapped as u8]);
+        let our_state = [ContactState::Invalid, ContactState::Enter, ContactState::Exit, ContactState::EnterAndExit, ContactState::Stay].iter().position(|s| *s == o.state).unwrap() as u32;
+        for (k, gv, ov) in [("state", state[0], our_state), ("count", state[1], o.contact_count as u32), ("flags", flags, our_flags)] {
+            if gv != ov {
+                out.push(format!("Collision2D[{i}] {key}.{k}: game {gv:08x} ours {ov:08x}"));
+            }
+        }
+        let gm = names(g.req("manifolds")?);
+        if gm.len() != o.manifolds.len() {
+            out.push(format!("Collision2D[{i}] {key}.manifolds: game {} ours {}", gm.len(), o.manifolds.len()));
+            continue;
+        }
+        for (k, (gm, om)) in gm.iter().zip(&o.manifolds).enumerate() {
+            let parts: Vec<&str> = gm.split(',').collect();
+            let oc = om.contact.map_or("null".to_string(), |c| contact_index[&c].to_string());
+            let names_ours = [oc, fixture_name.get(&om.fixture_a).copied().unwrap_or("(a fixture not in the recording)").to_string(), fixture_name.get(&om.fixture_b).copied().unwrap_or("(a fixture not in the recording)").to_string()];
+            for (n, (gv, ov)) in ["contact", "fixtureA", "fixtureB"].iter().zip(parts[1..4].iter().zip(&names_ours)) {
+                if gv != ov {
+                    out.push(format!("Collision2D[{i}] {key}.m{k}.{n}: game {gv} ours {ov}"));
+                }
+            }
+            let mut gw = vec![u32::from_str_radix(parts[0], 16).unwrap() & 0xff];
+            gw.extend(words(&parts[4..].join(",")));
+            let ow = manifold2d_words(om);
+            let count = gw[4] as usize;
+            // Words: enabled, indexA/B, simulationId, pointCount, normal, points, relativeVelocity, separations, normal and tangent impulses.
+            let live = |j: usize| match j {
+                0..=6 => true,
+                7..=10 => (j - 7) / 2 < count,
+                11..=14 => (j - 11) / 2 < count,
+                15..=16 => j - 15 < count,
+                17..=18 => j - 17 < count,
+                _ => j - 19 < count,
+            };
+            for j in (0..gw.len()).filter(|&j| live(j)) {
+                if gw[j] != ow[j] {
+                    out.push(format!("Collision2D[{i}] {key}.m{k}.w{j}: game {:08x} ours {:08x}", gw[j], ow[j]));
+                }
+            }
+        }
+    }
+    for c in s.of("b2Contact") {
+        let key = format!("{}/{}", c.req("a")?, c.req("b")?);
+        let Some(&id) = w.contact_list.iter().find(|&&id| format!("{}/{}", fixture_name.get(&w.contact(id).fixture_a).copied().unwrap_or("(a fixture not in the recording)"), fixture_name.get(&w.contact(id).fixture_b).copied().unwrap_or("(a fixture not in the recording)")) == key) else { continue };
+        if let Some(&u) = words(c.req("toi")?).get(6) {
+            if u as i32 != w.contact(id).user_index {
+                out.push(format!("b2Contact {key}.userIndex: game {} ours {}", u as i32, w.contact(id).user_index));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn message_name(m: Message) -> &'static str {
+    match m {
+        Message::CollisionEnter => "OnCollisionEnter2D",
+        Message::CollisionStay => "OnCollisionStay2D",
+        Message::CollisionExit => "OnCollisionExit2D",
+        Message::TriggerEnter => "OnTriggerEnter2D",
+        Message::TriggerStay => "OnTriggerStay2D",
+        Message::TriggerExit => "OnTriggerExit2D",
+    }
+}
+
+/// The reports against the game's OnCollision*2D log: consecutive calls on one object with one collision are
+/// one delivery (one per receiving collider), compared by message, the receiving pair and every Collision2D field.
+fn compare_reports(r: &Restored, reports: &[Report], s: &Snapshot) -> Result<Vec<String>, String> {
+    let w = &r.world;
+    let mut out = Vec::new();
+    let mut game: Vec<(String, String)> = Vec::new();
+    for c in s.of("Collision2D") {
+        let method = c.name.split(':').next().unwrap().rsplit('.').next().unwrap();
+        let rest: Vec<String> = ["collider", "other", "rigidbody", "otherRigidbody", "rv", "enabled", "contacts"].iter().map(|k| format!("{k}={}", c.get(k).unwrap_or("?"))).collect();
+        let line = (method.to_string(), rest.join(" "));
+        if game.last() != Some(&line) {
+            game.push(line);
+        }
+    }
+    let collider_name: HashMap<i32, String> = r.fixtures.keys().map(|n| (object_ref(n).unwrap().1, n.rsplit_once(':').unwrap().0.to_string())).collect();
+    let rb_name: HashMap<i32, String> = r.bodies.keys().filter(|n| *n != "ground").map(|n| (object_ref(n).unwrap().1, n.clone())).collect();
+    let h = |f: f32| format!("{:08x}", f.to_bits());
+    let mut ours = Vec::new();
+    for rep in reports {
+        let Some(col) = &rep.collision else { continue };
+        for receiving in [rep.collider_a.id, rep.collider_b.id] {
+            let sc = w.script_collision(col, receiving);
+            let rbn = |b: Option<i32>| b.map_or("null".to_string(), |id| rb_name[&id].clone());
+            let contacts: Vec<String> = sc
+                .contacts
+                .iter()
+                .map(|p| {
+                    [h(p.point.x), h(p.point.y), h(p.normal.x), h(p.normal.y), h(p.separation), h(p.normal_impulse), h(p.tangent_impulse), h(p.relative_velocity.x), h(p.relative_velocity.y), (p.enabled as u8).to_string(), collider_name[&p.collider].clone(), collider_name[&p.other_collider].clone()].join(",")
+                })
+                .collect();
+            let line = format!(
+                "collider={} other={} rigidbody={} otherRigidbody={} rv={},{} enabled={} contacts=[{}]",
+                collider_name[&sc.collider],
+                collider_name[&sc.other_collider],
+                rbn(sc.rigidbody),
+                rbn(sc.other_rigidbody),
+                h(sc.relative_velocity.x),
+                h(sc.relative_velocity.y),
+                sc.enabled as u8,
+                contacts.join(";")
+            );
+            ours.push((message_name(rep.message).to_string(), line));
+        }
+    }
+    for (i, (g, o)) in game.iter().zip(&ours).enumerate() {
+        if g != o {
+            out.push(format!("Callback[{i}] {}: game {} ours {} {}", g.0, g.1, o.0, o.1));
+        }
+    }
+    if game.len() != ours.len() {
+        out.push(format!("Callback.count: game {} ours {}", game.len(), ours.len()));
+    }
+    Ok(out)
+}
+
+/// The world against the snapshot after its step: bodies, contacts (by fixture pair) and hinges.
+/// A SliderJoint2D's own body: the stab item's Rigidbody2D record, else (a launched projectile has none) the one b2
+/// body of that name.
+fn slider_body(bodies: &HashMap<String, BodyId>, h: &Record, s: &Snapshot) -> Result<BodyId, String> {
+    // A newer recording names the joint's Rigidbody2D (two map bodies share Heaviest_object_known_to_man).
+    if let Some(&b) = h.get("own").and_then(|o| bodies.get(o.trim_start_matches('@'))) {
+        return Ok(b);
+    }
+    let name = h.name.as_str();
+    if let Some(own) = s.of("ItemRigidbody2D").find(|r| r.name.replace(' ', "_") == name) {
+        return Ok(bodies[&format!("{name}#{}", own.id)]);
+    }
+    let mut named = bodies.iter().filter(|(k, _)| k.rsplit_once('#').is_some_and(|(n, _)| n == name));
+    match (named.next(), named.next()) {
+        (Some((_, &b)), None) => Ok(b),
+        _ => Err(format!("slider {name} without a body")),
+    }
+}
+
+pub fn compare_world(r: &Restored, s: &Snapshot) -> Result<Vec<String>, String> {
+    let w = &r.world;
+    let mut out = Vec::new();
+    let body_name: HashMap<BodyId, &str> = r.bodies.iter().map(|(n, &b)| (b, n.as_str())).collect();
+    let fixture_name: HashMap<FixtureId, &str> = r.fixtures.iter().map(|(n, &f)| (f, n.as_str())).collect();
+    let theirs = s.of("b2World").next().ok_or("no b2World record")?.req("bodies")?.to_string();
+    let ours = w.body_list.iter().rev().map(|b| body_name.get(b).copied().unwrap_or("?")).collect::<Vec<_>>().join(";");
+    if theirs != ours {
+        out.push(format!("b2World.bodies: game {theirs} ours {ours}"));
+    }
+    for e in s.of("b2Edges") {
+        let Some(&id) = r.bodies.get(&e.name) else {
+            out.push(format!("b2Body {}: missing", e.name));
+            continue;
+        };
+        let b = w.body(id);
+        let mut game = words(e.req("body")?);
+        game[1] &= 0xffff;
+        let ours = body_words(b);
+        for (k, (g, o)) in game.iter().zip(&ours).enumerate() {
+            if g != o {
+                out.push(format!("b2Body {}.w{k}: game {g:08x} ours {o:08x}", e.name));
+            }
+        }
+        let mw = words(e.req("mass")?);
+        for (k, o) in [(0usize, b.mass), (1, b.inv_mass), (4, b.i), (5, b.inv_i)] {
+            if mw[k] != o.to_bits() {
+                out.push(format!("b2Body {}.mass{k}: game {:08x} ours {:08x}", e.name, mw[k], o.to_bits()));
+            }
+        }
+        let sleep = words(e.req("mass")?)[9];
+        if sleep != b.sleep_time.to_bits() {
+            out.push(format!("b2Body {}.sleepTime: game {sleep:08x} ours {:08x}", e.name, b.sleep_time.to_bits()));
+        }
+    }
+    let pair = |c: ContactId| {
+        let c = w.contact(c);
+        let name = |f: FixtureId| fixture_name.get(&f).map_or_else(|| format!("(collider {} not in the recording)", w.fixtures[f].as_ref().map_or(0, |x| x.collider.id)), |n| n.to_string());
+        format!("{}/{}", name(c.fixture_a), name(c.fixture_b))
+    };
+    let ours_list: Vec<String> = w.contact_list.iter().rev().map(|&c| pair(c)).collect();
+    let mut game_list = Vec::new();
+    for c in s.of("b2Contact") {
+        let key = format!("{}/{}", c.req("a")?, c.req("b")?);
+        game_list.push(key.clone());
+        let Some(&id) = w.contact_list.iter().find(|&&id| pair(id) == key) else {
+            out.push(format!("b2Contact {key}: missing"));
+            continue;
+        };
+        let ct = w.contact(id);
+        let toi = words(c.req("toi")?);
+        let flags = words(c.req("flags")?)[0];
+        let mut fields = vec![("flags", flags, ct.flags), ("toiCount", toi[0], ct.toi_count as u32), ("managerIndex", toi[5], ct.manager_index as u32)];
+        // m_toi only means something under the TOI flag; otherwise it is a stale value.
+        if flags & crate::b2::world::CONTACT_TOI != 0 {
+            fields.push(("toi", toi[1], ct.toi.to_bits()));
+        }
+        for (k, g, o) in fields {
+            if g != o {
+                out.push(format!("b2Contact {key}.{k}: game {g:08x} ours {o:08x}"));
+            }
+        }
+        // Only the live manifold words: a separated b2Collide* sets pointCount 0 and leaves the rest stale.
+        let gm = words(c.req("manifold")?);
+        let count = gm[15] as usize;
+        let live = |k: usize| k == 15 || (count > 0 && (k >= 10 || k < 5 * count));
+        for (k, (g, o)) in gm.iter().zip(manifold_words(&ct.manifold)).enumerate().filter(|&(k, _)| live(k) && k < 16) {
+            if *g != o {
+                out.push(format!("b2Contact {key}.m{k}: game {g:08x} ours {o:08x}"));
+            }
+        }
+    }
+    for k in ours_list.iter().filter(|k| !game_list.contains(k)) {
+        out.push(format!("b2Contact {k}: extra"));
+    }
+    // The proxies' AABBs and fat tree AABBs (history-dependent: they decide which pairs the broad-phase finds).
+    for rec in s.of("b2Fixture") {
+        let Some(&f) = r.fixtures.get(&rec.name) else { continue };
+        let theirs: Vec<Vec<u32>> = names(rec.req("proxies")?).iter().map(|p| words(p.split_once(',').map_or("", |x| x.1))).collect();
+        let ours: Vec<Vec<u32>> = w.fixtures[f].as_ref().unwrap().proxies.iter().map(|(a, id)| {
+            let fat = w.broad_phase.tree.fat_aabb(*id);
+            [a.lower.x, a.lower.y, a.upper.x, a.upper.y, fat.lower.x, fat.lower.y, fat.upper.x, fat.upper.y].map(f32::to_bits).to_vec()
+        }).collect();
+        // The cached mass data, density, friction, restitution and filter (b2Fixture 0x00-0x18, 0x30-0x38, 0x40-0x4c).
+        let fx = w.fixtures[f].as_ref().unwrap();
+        let gw = words(rec.req("fixture")?);
+        let md = &fx.mass_data;
+        for (k, o) in [(0usize, md.mass), (1, md.center.x), (2, md.center.y), (3, md.inertia), (4, md.area), (5, fx.density), (6, fx.friction), (7, fx.restitution)] {
+            if gw[k] != o.to_bits() {
+                out.push(format!("b2Fixture {}.f{k}: game {:08x} ours {:08x}", rec.name, gw[k], o.to_bits()));
+            }
+        }
+        let fl = fx.filter;
+        if gw[9] != (fl.category_bits as u32 | (fl.mask_bits as u32) << 16) || gw[10] as u16 as i16 != fl.group_index {
+            out.push(format!("b2Fixture {}.filter: game {:08x} {:08x}", rec.name, gw[9], gw[10]));
+        }
+        // A polygon's radius, centroid, live vertices and normals, count.
+        if let crate::b2::world::Shape::Polygon(pg) = &fx.shape {
+            let gs = words(rec.req("shape")?);
+            let mut os = vec![2u32, pg.radius.to_bits(), pg.centroid.x.to_bits(), pg.centroid.y.to_bits()];
+            for v in pg.vertices.iter().chain(&pg.normals) {
+                os.extend([v.x.to_bits(), v.y.to_bits()]);
+            }
+            os.push(pg.count as u32);
+            for k in 0..os.len().min(gs.len()) {
+                let live = k < 4 || k == 36 || (k < 20 && (k - 4) / 2 < pg.count) || (20..36).contains(&k) && (k - 20) / 2 < pg.count;
+                if live && gs[k] != os[k] {
+                    out.push(format!("b2Fixture {}.shape{k}: game {:08x} ours {:08x}", rec.name, gs[k], os[k]));
+                }
+            }
+        }
+        if theirs != ours {
+            out.push(format!("b2Fixture {}.proxies: game {theirs:08x?} ours {ours:08x?}", rec.name));
+        }
+    }
+    if out.is_empty() && ours_list != game_list {
+        out.push(format!("b2World.contacts: game {} ours {}", game_list.join(";"), ours_list.join(";")));
+    }
+    for (h, raw) in s.of("HingeJoint2D").zip(s.of("b2RevoluteJoint")) {
+        let j = raw.req("joint")?;
+        if j == "null" {
+            continue;
+        }
+        let own = s.of("Rigidbody2D").find(|r| r.name == h.name).unwrap();
+        let Some(&a) = r.bodies.get(&format!("{}#{}", own.name, own.id)) else {
+            out.push(format!("b2Body {}#{}: missing", own.name, own.id));
+            continue;
+        };
+        let Some(&(_, id)) = w.body(a).joints.iter().find(|&&(o, id)| w.joints[id].as_ref().unwrap().body_a == a && { let c = h.req("connected").unwrap().trim_start_matches('@'); if c == "null" { w.body(o).user.is_none() } else { Some(o) == r.bodies.get(c).copied() } }) else {
+            out.push(format!("b2RevoluteJoint {}: missing", h.name));
+            continue;
+        };
+        let rev = &w.joints[id].as_ref().unwrap().revolute();
+        let g = words(j);
+        let ours = [rev.impulse[0].to_bits(), rev.impulse[1].to_bits(), rev.impulse[2].to_bits(), rev.motor_impulse.to_bits()];
+        for (k, (gw, o)) in g[4..8].iter().zip(ours).enumerate() {
+            if *gw != o {
+                out.push(format!("b2RevoluteJoint {}.w{}: game {gw:08x} ours {o:08x}", h.name, k + 4));
+            }
+        }
+        let d = &rev.def;
+        for (k, o) in [(0usize, d.local_anchor_a.x), (1, d.local_anchor_a.y), (2, d.local_anchor_b.x), (3, d.local_anchor_b.y), (9, d.max_motor_torque), (10, d.motor_speed), (12, d.reference_angle), (13, d.lower_angle), (14, d.upper_angle)] {
+            if g[k] != o.to_bits() {
+                out.push(format!("b2RevoluteJoint {}.def{k}: game {:08x} ours {:08x}", h.name, g[k], o.to_bits()));
+            }
+        }
+        if (g[8] & 0xff != 0) != d.enable_motor || (g[11] & 0xff != 0) != d.enable_limit {
+            out.push(format!("b2RevoluteJoint {}.flags: game {:08x} {:08x} ours {} {}", h.name, g[8], g[11], d.enable_motor, d.enable_limit));
+        }
+        if g[37] != rev.limit_state {
+            out.push(format!("b2RevoluteJoint {}.limitState: game {} ours {}", h.name, g[37], rev.limit_state));
+        }
+    }
+    // The bodies' contact edges in list order (the island search walks them).
+    for e in s.of("b2Edges") {
+        let Some(&id) = r.bodies.get(&e.name) else { continue };
+        let cl: Vec<_> = w.contact_list.iter().rev().copied().collect();
+        let oc: Vec<String> = w.body(id).contacts.iter().rev().map(|(_, c)| cl.iter().position(|x| x == c).map_or("?".into(), |i| i.to_string())).collect();
+        if oc.join(";") != e.req("contacts")? {
+            out.push(format!("b2Edges {}.contacts: game {} ours {}", e.name, e.req("contacts")?, oc.join(";")));
+        }
+    }
+    // Stab joints: every live b2PrismaticJoint of the game against ours, word by word (0x98..0xe4).
+    let mut game_sliders = 0;
+    for h in s.of("SliderJoint2D") {
+        let j = h.req("joint")?;
+        if j == "null" {
+            continue;
+        }
+        game_sliders += 1;
+        let a = slider_body(&r.bodies, h, s)?;
+        let connected = match h.req("connected")?.trim_start_matches('@') { "null" => w.ground, name => r.bodies.get(name).copied() };
+        let Some(&(_, id)) = w.body(a).joints.iter().find(|&&(o, id)| matches!(w.joints[id].as_ref().unwrap().kind, JointKind::Prismatic(_)) && w.joints[id].as_ref().unwrap().body_a == a && Some(o) == connected) else {
+            out.push(format!("b2PrismaticJoint {}: missing", h.name));
+            continue;
+        };
+        let ours = prismatic_words(w.joints[id].as_ref().unwrap().prismatic());
+        for (k, (gw, o)) in words(j).iter().zip(ours).enumerate() {
+            // Word 17 is m_enableLimit and m_enableMotor (bool bytes) and two padding bytes, which keep whatever the
+            // allocator's reused block held (after a Clear everything, an earlier object's bytes).
+            let gw = if k == 17 { gw & 0xffff } else { *gw };
+            if gw != o {
+                out.push(format!("b2PrismaticJoint {}.w{}: game {gw:08x} ours {o:08x}", h.name, k));
+            }
+        }
+    }
+    let ours_sliders = w.joints.iter().flatten().filter(|j| matches!(j.kind, JointKind::Prismatic(_))).count();
+    if ours_sliders != game_sliders {
+        out.push(format!("b2PrismaticJoint count: game {game_sliders} ours {ours_sliders}"));
+    }
+    Ok(out)
+}
+
+pub fn physics_test(dump: &Path) -> Result<(), String> {
+    let text = crate::game::dump::read_recording(dump)?;
+    let settings: HashMap<&str, &str> = text
+        .lines()
+        .find(|l| l.starts_with("physics "))
+        .ok_or("no physics line")?
+        .split(' ')
+        .skip(1)
+        .filter_map(|kv| kv.split_once('='))
+        .collect();
+    let iterations = |k: &str| -> Result<i32, String> { settings.get(k).ok_or(format!("physics {k}"))?.parse().map_err(|_| format!("physics {k}")) };
+    let (vel, pos) = (iterations("vel")?, iterations("pos")?);
+    // "gravity=x|hex y|hex": the y component is the token after the key.
+    let line = text.lines().find(|l| l.starts_with("physics ")).unwrap();
+    let g: Vec<f32> = line[line.find("gravity=").ok_or("physics gravity")? + 8..].split(' ').take(2).map(|c| f(c.rsplit('|').next().unwrap())).collect();
+    let snaps = parse(&text);
+    drop(text);
+    let (mut segments, mut failed) = (0, 0);
+    let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+    for pair in snaps.windows(2) {
+        if pair[0].pt != "FM" || pair[1].pt != "FE" {
+            continue;
+        }
+        segments += 1;
+        let dt = f(pair[0].snap("fixedDt"));
+        let mut r = restore(&pair[0], V::new(g[0], g[1]))?;
+        r.world.step(dt, vel, pos);
+        let reports = r.world.process_contacts(true);
+        let mut diffs = compare_world(&r, &pair[1])?;
+        if pair[0].of("Collision2DRecord").next().is_some() {
+            diffs.extend(compare_contacts2d(&r, &pair[1])?);
+            diffs.extend(compare_reports(&r, &reports, &pair[0])?);
+        }
+        if let Ok(path) = std::env::var("PPG_DIFFS") {
+            use std::io::Write;
+            let mut out = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+            for d in &diffs {
+                writeln!(out, "{segments} {d}").unwrap();
+            }
+        }
+        for d in &diffs {
+            let head = d.split(':').next().unwrap();
+            let ty = head.split(' ').next().unwrap();
+            let field = head.rsplit('.').next().unwrap();
+            *kinds.entry(format!("{ty}.{field}")).or_default() += 1;
+        }
+        if !diffs.is_empty() {
+            failed += 1;
+            if failed <= 1 {
+                eprintln!("segment FM {} ({} diffs):", pair[0].snap("frame"), diffs.len());
+                for d in diffs.iter().take(25) {
+                    eprintln!("  {d}");
+                }
+            }
+        }
+    }
+    for (k, n) in &kinds {
+        println!("  {n:5} {k}");
+    }
+    println!("physics segments {segments}, failed {failed}");
+    if failed == 0 && segments > 0 { Ok(()) } else { Err(format!("{failed} of {segments} segments differ")) }
+}
+
+/// A joint record's own Rigidbody2D record (`kind`): the one on the GameObject whose Clone record lists the joint's id,
+/// else (no Clone records) the first of the joint's name (two same-named objects, a machine's two Wheels, need the clone).
+fn own_rigidbody<'a>(s: &'a Snapshot, kind: &'a str, h: &Record) -> Option<&'a Record> {
+    match clone_rigidbody(s, h.id) {
+        Some(id) => s.of(kind).find(|r| r.id == id),
+        None => s.of(kind).find(|r| r.name == h.name),
+    }
+}
+
+/// The Rigidbody2D id of the Clone (recorded object) that has component `id`.
+pub(super) fn clone_rigidbody(s: &Snapshot, id: i32) -> Option<i32> {
+    let comps = |c: &Record| -> Vec<(String, i32)> {
+        c.get("comps").unwrap_or("").trim_matches(['[', ']']).split(';').filter_map(|x| x.split_once(':')).filter_map(|(t, id)| Some((t.to_string(), id.parse().ok()?))).collect()
+    };
+    s.of("Clone").map(comps).find(|cs| cs.iter().any(|(_, c)| *c == id)).and_then(|cs| cs.into_iter().find(|(t, _)| t == "Rigidbody2D").map(|(_, id)| id))
+}

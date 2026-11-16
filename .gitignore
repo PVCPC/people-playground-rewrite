@@ -1,0 +1,23 @@
+# Locally generated reference material and original game content.
+/assets/
+/unity-export/
+/decompiled/
+/ghidra/
+/tools/
+/source-sha256.json
+/asset-manifest.json
+/local-cache/
+/local-cache-*/
+/LOCAL_REFERENCE.md
+/start-ghidra.ps1
+/AGENTS.md
+/reference-probe/
+*.log
+
+# Build output.
+/target/
+__pycache__/
+
+# Built locally (dotnet build -c Release in tools/recorder); not tracked: every merge conflicted on them.
+tools/recorder/bin/
+tools/recorder/obj/

@@ -1,0 +1,306 @@
+//! Healthy static-pose motor commands (HingeJoint2D speed and torque) for the muscles.
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MotorInput {
+    pub current_angle: f32,
+    pub reference_angle: f32,
+    pub target_angle: f32,
+    pub previous_speed: f32,
+    pub rigidity: f32,
+    pub rigidity_modifier: f32,
+    pub global_rigidity: f32,
+    pub angle_offset: f32,
+    pub mass: f32,
+    pub initial_mass: f32,
+    pub base_strength: f32,
+    pub force_multiplier: f32,
+    pub active: bool,
+    pub strength_multipliers: Vec<f32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MotorOutput {
+    pub speed: f32,
+    pub torque: f32,
+}
+
+impl MotorOutput {
+    #[cfg(test)]
+    pub fn clamp_native_properties(mut self) -> Self {
+        // Unity's native HingeJoint2D setter maps NaN to each property's lower bound.
+        self.speed = if self.speed.is_nan() {
+            -1_000_000.0
+        } else {
+            self.speed.clamp(-1_000_000.0, 1_000_000.0)
+        };
+        self.torque = if self.torque.is_nan() {
+            0.0
+        } else {
+            self.torque.clamp(0.0, 1_000_000.0)
+        };
+        self
+    }
+}
+
+/// Mathf.DeltaAngle; the original chooses positive 180 degrees at the exact half-turn boundary.
+pub fn delta_angle(current: f32, target: f32) -> f32 {
+    let delta = target - current;
+    let repeated = (delta - (delta / 360.0).floor() * 360.0).clamp(0.0, 360.0);
+    if repeated > 180.0 { repeated - 360.0 } else { repeated }
+}
+
+pub fn command(input: &MotorInput) -> MotorOutput {
+    let mass_ratio = input.mass / input.initial_mass;
+    let force = if input.active {
+        input.force_multiplier
+    } else {
+        1.0
+    };
+    let mut strength = input.base_strength * force * 0.9 * mass_ratio;
+    for multiplier in &input.strength_multipliers {
+        strength *= multiplier;
+        if strength.abs() <= f32::from_bits(1) {
+            break;
+        }
+    }
+    let modifier = if input.active {
+        (1.0 + input.rigidity_modifier).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let speed = if input.active {
+        let target = input.reference_angle + input.target_angle * input.angle_offset;
+        let angle = delta_angle(input.current_angle, target);
+        let desired =
+            angle * input.global_rigidity * input.rigidity * (1.0 + input.rigidity_modifier);
+        input.previous_speed + (desired - input.previous_speed) * 0.5
+    } else {
+        input.previous_speed
+    };
+    MotorOutput {
+        speed,
+        torque: strength * modifier,
+    }
+}
+
+pub fn compare_reference(executable: &std::path::Path) -> Result<(), String> {
+    let mut cases = Vec::new();
+    let mut state = 0x1234_5678u32;
+    let mut random = || {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        state
+    };
+    for i in 0..2048 {
+        cases.push(MotorInput {
+            current_angle: (random() % 1441) as f32 - 720.0,
+            reference_angle: (random() % 121) as f32 - 60.0,
+            target_angle: (random() % 361) as f32 - 180.0,
+            previous_speed: (random() % 401) as f32 - 200.0,
+            rigidity: (random() % 40 + 1) as f32 / 8.0,
+            rigidity_modifier: [-0.9, 0.0, 0.5][i % 3],
+            global_rigidity: [0.5, 1.0, 2.0][i % 3],
+            angle_offset: if i % 2 == 0 { 1.0 } else { -1.0 },
+            mass: (random() % 64 + 1) as f32 / 16.0,
+            initial_mass: (random() % 32 + 1) as f32 / 16.0,
+            base_strength: (random() % 160 + 1) as f32 / 8.0,
+            force_multiplier: [0.0, 0.7, 1.0, 2.0][i % 4],
+            active: i % 7 != 0,
+            strength_multipliers: match i % 3 {
+                0 => vec![],
+                1 => vec![0.5, 1.25],
+                _ => vec![0.0, 2.0],
+            },
+        });
+    }
+    for target in [-540.0, -180.0, 180.0, 540.0] {
+        let mut case = cases[0].clone();
+        case.current_angle = 0.0;
+        case.reference_angle = 0.0;
+        case.target_angle = target;
+        case.previous_speed = 0.0;
+        case.angle_offset = 1.0;
+        case.active = true;
+        cases.push(case);
+    }
+    let expected: Vec<MotorOutput> = run_reference(executable, &cases)?;
+    let mut mismatches = 0;
+    for (index, (input, reference)) in cases.iter().zip(&expected).enumerate() {
+        let actual = command(input);
+        if actual.speed.to_bits() != reference.speed.to_bits()
+            || actual.torque.to_bits() != reference.torque.to_bits()
+        {
+            mismatches += 1;
+            if mismatches <= 5 {
+                eprintln!(
+                    "Reference mismatch {index}: Rust={actual:?}, C#={reference:?}, input={input:?}"
+                );
+            }
+        }
+    }
+    if mismatches != 0 {
+        return Err(format!(
+            "Motor reference comparison failed: {mismatches}/{} cases differ",
+            cases.len()
+        ));
+    }
+    println!(
+        "MOTOR REFERENCE PASSED: {} static healthy-limb cases match the extracted C# methods bit-for-bit (speed and torque). Native physics, animation, injury and random behavior are outside this check.",
+        cases.len()
+    );
+    Ok(())
+}
+
+pub fn run_reference<I: Serialize, O: serde::de::DeserializeOwned>(
+    executable: &std::path::Path,
+    cases: &[I],
+) -> Result<Vec<O>, String> {
+    run_probe(executable, cases, cases.len())
+}
+
+pub fn run_probe<I: Serialize + ?Sized, O: serde::de::DeserializeOwned>(
+    executable: &std::path::Path,
+    cases: &I,
+    count: usize,
+) -> Result<Vec<O>, String> {
+    use std::process::{Command, Stdio};
+    let mut process = Command::new(executable);
+    process
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(0x08000000);
+    }
+    let mut child = process
+        .spawn()
+        .map_err(|e| format!("Cannot start private reference probe: {e}"))?;
+    serde_json::to_writer(child.stdin.take().unwrap(), cases).map_err(|e| e.to_string())?;
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "Reference probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let expected: Vec<O> = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Invalid reference output: {e}"))?;
+    if expected.len() != count {
+        return Err("Reference probe returned an incomplete case set".into());
+    }
+    Ok(expected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::b2::{math::Vec2 as V, revolute::RevoluteDef, world::*};
+    fn input() -> MotorInput {
+        MotorInput {
+            current_angle: 0.0,
+            reference_angle: 0.0,
+            target_angle: 180.0,
+            previous_speed: 0.0,
+            rigidity: 4.0,
+            rigidity_modifier: 0.0,
+            global_rigidity: 1.0,
+            angle_offset: 1.0,
+            mass: 1.0,
+            initial_mass: 1.0,
+            base_strength: 10.0,
+            force_multiplier: 1.0,
+            active: true,
+            strength_multipliers: vec![],
+        }
+    }
+    #[test]
+    fn native_setter_clamps_motor_fields_before_the_next_command() {
+        for (speed, torque, expected_speed, expected_torque) in [
+            (2_000_000.0, 2_000_000.0, 1_000_000.0, 1_000_000.0),
+            (-2_000_000.0, -1.0, -1_000_000.0, 0.0),
+            (f32::NAN, f32::NAN, -1_000_000.0, 0.0),
+            (f32::INFINITY, f32::INFINITY, 1_000_000.0, 1_000_000.0),
+            (7.0, 9.0, 7.0, 9.0),
+        ] {
+            let result = MotorOutput { speed, torque }.clamp_native_properties();
+            assert_eq!(result.speed, expected_speed);
+            assert_eq!(result.torque, expected_torque);
+        }
+    }
+
+    #[test]
+    fn original_half_turn_rule_selects_positive_rotation() {
+        assert_eq!(command(&input()).speed, 360.0);
+        let mut negative = input();
+        negative.target_angle = -180.0;
+        assert_eq!(command(&negative).speed, 360.0);
+    }
+    #[test]
+    fn inactive_pose_keeps_velocity_and_ignores_pose_force_and_softness() {
+        let mut inactive = input();
+        inactive.active = false;
+        inactive.previous_speed = 7.0;
+        inactive.force_multiplier = 2.0;
+        inactive.rigidity_modifier = -0.9;
+        let output = command(&inactive);
+        assert_eq!(output.speed, 7.0);
+        assert_eq!(output.torque, 9.0);
+    }
+
+    fn dynamic(world: &mut World, position: V, angle: f32, mass: f32, inertia: f32) -> BodyId {
+        let rigidbody = RigidbodyMass { mass, inertia: Some(inertia), ..RigidbodyMass::default() };
+        let def = BodyDef { kind: BodyType::Dynamic, position, angle, allow_sleep: false, rigidbody, ..BodyDef::default() };
+        let id = world.create_body(&def);
+        world.reset_mass_data(id);
+        id
+    }
+
+    #[test]
+    fn velocity_commands_settle_an_isolated_hinge_without_a_spring() {
+        let mut world = World::new(V::ZERO);
+        let parent = world.create_body(&BodyDef::default());
+        let child = dynamic(&mut world, V::new(-0.1 * 0.7f32.sin(), 0.1 * 0.7f32.cos()), 0.7, 0.5, 0.01);
+        let def = RevoluteDef { local_anchor_a: V::new(0.0, -0.1), ..RevoluteDef::default() };
+        let joint = world.create_joint(def, child, parent, false);
+        let mut previous = 0.0;
+        for target in [0.0f32, 90.0] {
+            for _ in 0..250 {
+                let mut case = input();
+                case.current_angle = crate::hinge::joint_angle(world.body(child).sweep.a, 0.0, 0.0).to_degrees();
+                case.target_angle = target;
+                case.rigidity = 2.0;
+                case.previous_speed = previous;
+                let output = command(&case);
+                previous = output.speed;
+                let def = &mut world.joints[joint].as_mut().unwrap().revolute_mut().def;
+                def.enable_motor = true;
+                def.motor_speed = output.speed.to_radians();
+                def.max_motor_torque = output.torque;
+                world.step(0.02, 16, 16);
+            }
+            let (angle, speed) = (world.body(child).sweep.a, world.body(child).angular_velocity);
+            assert!((angle + target.to_radians()).abs() < 0.01 && speed.abs() < 0.02, "angle={angle}, speed={speed}");
+        }
+    }
+
+    #[test]
+    fn motor_respects_total_torque_budget_and_conserves_angular_momentum() {
+        let mut world = World::new(V::ZERO);
+        let a = dynamic(&mut world, V::ZERO, 0.0, 1.0, 2.0);
+        let b = dynamic(&mut world, V::ZERO, 0.0, 1.0, 3.0);
+        let def = RevoluteDef { enable_motor: true, motor_speed: 10.0, max_motor_torque: 0.5, ..RevoluteDef::default() };
+        let joint = world.create_joint(def, a, b, false);
+        world.step(0.02, 16, 16);
+        let (spin_a, spin_b) = (world.body(a).angular_velocity, world.body(b).angular_velocity);
+        assert!((spin_a + 0.005).abs() < 0.00001, "torque budget: spin_a={spin_a}");
+        assert!((2.0 * spin_a + 3.0 * spin_b).abs() < 0.00001, "angular momentum changed");
+        world.destroy_joint(joint);
+        world.body_mut(a).angular_velocity = 0.0;
+        world.body_mut(b).angular_velocity = 0.0;
+        world.step(0.02, 16, 16);
+        assert_eq!(world.body(a).angular_velocity, 0.0);
+        assert_eq!(world.body(b).angular_velocity, 0.0);
+    }
+}

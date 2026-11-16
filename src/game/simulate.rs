@@ -1,0 +1,1794 @@
+//! PhysicsManager2D::Simulate (180bf88f0) for the scene's one PhysicsScene2D: the step, the Transform writeback,
+//! joint breaking and the contact callbacks.
+use super::*;
+use crate::b2::contacts2d::{Message, Report, ScriptCollision};
+use crate::b2::math::Vec2;
+use crate::b2::prismatic::{self, SliderJoint2d};
+use crate::b2::weld::{check_bodies, clamp_break, BodyFrame, Connected, FixedJoint2d};
+use crate::b2::world::{BodyId, JointId, JointKind};
+use crate::unity::{acosf, atan2f, cosf, sinf, transform};
+
+/// Quaternionf operator* (1800b7f20), in its single-precision operation order.
+pub(super) fn qmul(l: [f32; 4], r: [f32; 4]) -> [f32; 4] {
+    let [lx, ly, lz, lw] = l;
+    let [rx, ry, rz, rw] = r;
+    [
+        ((rx * lw + lx * rw) + rz * ly) - ry * lz,
+        ((ry * lw + ly * rw) + rx * lz) - rz * lx,
+        ((rz * lw + lz * rw) + ry * lx) - rx * ly,
+        ((lw * rw - rx * lx) - ry * ly) - lz * rz,
+    ]
+}
+
+/// Slerp (1807421f0) on Quaternionf, in its single-precision operation order.
+fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let [x1, y1, z1, w1] = a;
+    let mut dot = ((b[0] * x1 + b[1] * y1) + b[2] * z1) + b[3] * w1;
+    let mut b = b;
+    if 0.0 > dot {
+        dot = -dot;
+        b = b.map(|c| -c);
+    }
+    let [x2, y2, z2, w2] = b;
+    if dot < f32::from_bits(0x3f733333) {
+        let angle = acosf(dot);
+        let inv = 1.0 / sinf(angle);
+        let s1 = sinf(angle * t);
+        let s0 = sinf((1.0 - t) * angle);
+        return [(x1 * s0 + x2 * s1) * inv, (y1 * s0 + y2 * s1) * inv, (z1 * s0 + z2 * s1) * inv, (w1 * s0 + w2 * s1) * inv];
+    }
+    let r = if 0.0 > ((x1 * x2 + y1 * y2) + z1 * z2) + w1 * w2 {
+        [x1 - (x1 + x2) * t, y1 - (y1 + y2) * t, z1 - (z1 + z2) * t, w1 - (w1 + w2) * t]
+    } else {
+        [(x2 - x1) * t + x1, (y2 - y1) * t + y1, (z2 - z1) * t + z1, (w2 - w1) * t + w1]
+    };
+    let len = (((r[1] * r[1] + r[0] * r[0]) + r[2] * r[2]) + r[3] * r[3]).sqrt();
+    r.map(|c| c / len)
+}
+
+/// PhysicsManager2D::Update's pose between the last two steps.
+fn interpolated_pose(m: MovementState, t: f32) -> ([f32; 3], [f32; 4]) {
+    let (prev, body) = (m.previous, m.body);
+    let s = 1.0 - t;
+    ([t * body.0[0] + s * prev.0[0], t * body.0[1] + s * prev.0[1], prev.0[2]], slerp(prev.1, body.1, t))
+}
+
+/// The write-back pose of a body: its x/y at the Transform's z, and the rotation's z turn replaced by the body angle.
+fn written_pose(b: &crate::b2::world::Body, z: f32, rotation: [f32; 4]) -> ([f32; 3], [f32; 4]) {
+    let (x, y, a) = (b.xf.p.x, b.xf.p.y, b.sweep.a);
+    let mut cur = rotation;
+    if cur[3] < 0.0 {
+        cur = cur.map(|c| -c);
+    }
+    let h = atan2f(cur[2], cur[3]);
+    let turn = (h + h) * 0.5;
+    let undo = [-0.0, -0.0, -sinf(turn), cosf(turn)];
+    let half = a * 0.5;
+    let body = [0.0, 0.0, sinf(half), cosf(half)];
+    ([x, y, z], qmul(qmul(body, undo), cur))
+}
+
+/// b2Body's wake as the movement code writes it: the awake flag and a zero sleep time, nothing else.
+fn wake_if_moving(b: &mut crate::b2::world::Body, speed_sq: f32) {
+    if speed_sq > 0.0 {
+        b.flags |= BODY_AWAKE;
+        b.sleep_time = 0.0;
+    }
+}
+
+/// SetupMovementStatesJobData::Job (180bf2680) for one listed, simulated Rigidbody2D: the last pose becomes the
+/// one to interpolate from; a pending MovePosition becomes the velocity that reaches its target in this step
+/// (from the body origin) and a pending MoveRotation the angular velocity that turns the wrapped difference, each
+/// with its damping at 0 for the step; a non-interpolating body then leaves the list.
+fn setup_movement_state(world: &mut World, rb: &mut Rigidbody, inv_dt: f32) {
+    let m = &mut rb.movement;
+    m.interpolating = rb.interpolation != 0;
+    if m.interpolating {
+        m.previous = m.body;
+    }
+    if rb.detached.is_none() {
+        let b = world.body_mut(rb.body);
+        if m.linear_pending {
+            m.saved_velocity = [b.linear_velocity.x, b.linear_velocity.y];
+            let v = [(m.linear_target[0] - b.xf.p.x) * inv_dt, (m.linear_target[1] - b.xf.p.y) * inv_dt];
+            if b.kind != BodyType::Static {
+                wake_if_moving(b, v[0] * v[0] + v[1] * v[1]);
+                (b.linear_velocity.x, b.linear_velocity.y) = (v[0], v[1]);
+            }
+            m.zeroed_damping[0] = Some(m.zeroed_damping[0].unwrap_or(b.linear_damping));
+            b.linear_damping = 0.0;
+        }
+        if m.angular_pending {
+            m.saved_angular_velocity = b.angular_velocity;
+            let d = m.angular_target - b.sweep.a;
+            let w = atan2f(sinf(d), cosf(d)) * inv_dt;
+            if b.kind != BodyType::Static && b.flags & BODY_FIXED_ROTATION == 0 {
+                wake_if_moving(b, w * w);
+                b.angular_velocity = w;
+            }
+            m.zeroed_damping[1] = Some(m.zeroed_damping[1].unwrap_or(b.angular_damping));
+            b.angular_damping = 0.0;
+        }
+    }
+    if !m.interpolating {
+        m.listed = false;
+    }
+}
+
+/// RigidbodyMovementState2D::ResetLinearMoveState (180c22cc0) then ResetAngularMoveState (180c22c50): a pending
+/// move is cleared, the saved velocity put back (waking the body when it moves) and the damping set to the
+/// component's drag.
+fn reset_move_states(world: &mut World, rb: &mut Rigidbody) {
+    let m = &mut rb.movement;
+    if m.linear_pending {
+        m.linear_pending = false;
+        if rb.detached.is_none() {
+            let b = world.body_mut(rb.body);
+            if b.kind != BodyType::Static {
+                let v = m.saved_velocity;
+                wake_if_moving(b, v[0] * v[0] + v[1] * v[1]);
+                (b.linear_velocity.x, b.linear_velocity.y) = (v[0], v[1]);
+            }
+            b.linear_damping = m.zeroed_damping[0].take().unwrap_or(b.linear_damping);
+        }
+    }
+    if m.angular_pending {
+        m.angular_pending = false;
+        if rb.detached.is_none() {
+            let b = world.body_mut(rb.body);
+            if b.kind != BodyType::Static && b.flags & BODY_FIXED_ROTATION == 0 {
+                let w = m.saved_angular_velocity;
+                wake_if_moving(b, w * w);
+                b.angular_velocity = w;
+            }
+            b.angular_damping = m.zeroed_damping[1].take().unwrap_or(b.angular_damping);
+        }
+    }
+}
+
+impl Game {
+    /// Rigidbody2D.MovePosition (Rigidbody2D::MovePosition 180c205f0): a static body only warns; otherwise the
+    /// target is kept for the next step's SetupMovementStates and the body joins the scene's movement list.
+    pub fn rigidbody_move_position(&mut self, owner: BodyOwner, target: [f32; 2]) {
+        self.rigidbody_move(owner, "MovePosition", |m| (m.linear_target, m.linear_pending) = (target, true));
+    }
+
+    /// Rigidbody2D.MoveRotation(float angle) (Rigidbody2D::MoveRotation 180c208d0): as MovePosition, the angle in
+    /// degrees times Deg2Rad.
+    pub fn rigidbody_move_rotation(&mut self, owner: BodyOwner, angle: f32) {
+        self.rigidbody_move(owner, "MoveRotation", |m| (m.angular_target, m.angular_pending) = (angle * f32::from_bits(0x3c8efa35), true));
+    }
+
+    fn rigidbody_move(&mut self, owner: BodyOwner, what: &str, set: impl FnOnce(&mut MovementState)) {
+        let rb = self.owner_rigidbody_mut(owner);
+        if rb.bodyType == 2 {
+            let msg = format!("Cannot use '{what}' on a static body.");
+            self.log_message_received(&msg, super::menu::LogType::Warning);
+            return;
+        }
+        // Without a b2 body (or outside a scene) nothing is kept.
+        if rb.detached.is_some() {
+            return;
+        }
+        set(&mut rb.movement);
+        rb.movement.listed = true;
+    }
+
+    /// The move-state reset Rigidbody2D::SetPosition, SetRotation, SetBodyType and SetSimulated start with.
+    pub fn rigidbody_reset_move_states(&mut self, owner: BodyOwner) {
+        let rb = match owner {
+            BodyOwner::Physical(p) => &mut self.physicals[p].rigidbody,
+            BodyOwner::Node(k) => &mut self.node_rigidbodies[k].rigidbody,
+        };
+        reset_move_states(&mut self.world, rb);
+    }
+
+    /// PhysicsManager2D::Simulate after the FixedUpdate scripts, then the rest of the fixed step's delayed calls.
+    pub fn simulate_physics(&mut self) {
+        self.simulate_to_fixed_waits();
+        self.fixed_delayed_calls();
+    }
+
+    /// PhysicsManager2D::Simulate up to the WaitForFixedUpdate coroutines, where the recorder takes its FE snapshot.
+    pub fn simulate_to_fixed_waits(&mut self) {
+        self.sync_pending();
+        let dt = self.time.fixedDeltaTime;
+        self.last_simulation = (self.time.fixedTimeAsDouble, dt);
+        // SetupMovementStatesJobData::Job (180bf2680) over the listed bodies, with the 1 / dt Simulate passes it.
+        let inv_dt = 1.0 / dt;
+        let world = &mut self.world;
+        for rb in self.physicals.iter_mut().map(|p| &mut p.rigidbody).chain(self.node_rigidbodies.iter_mut().map(|n| &mut n.rigidbody)) {
+            if rb.movement.listed && rb.simulated {
+                setup_movement_state(world, rb, inv_dt);
+            }
+        }
+        self.extras_pre_step(dt);
+        self.world.step(dt, self.velocityIterations, self.positionIterations);
+        self.extras_post_step(dt);
+        self.mishap_pre_step();
+        self.write_back_transforms();
+        // The write-back loop ends each Rigidbody2D of the update lists, whatever path it took, with
+        // RigidbodyMovementState2D::ResetLinearMoveState and ResetAngularMoveState (180bf8f33).
+        let world = &mut self.world;
+        for rb in self.physicals.iter_mut().map(|p| &mut p.rigidbody).chain(self.node_rigidbodies.iter_mut().map(|n| &mut n.rigidbody)) {
+            reset_move_states(world, rb);
+        }
+        // The ToolController's Rigidbody2D gets PhysicsManager2D::Simulate's CorrectBodyState too.
+        if let Some(body) = self.tool.as_ref().map(|t| t.body) {
+            self.correct_body_state_if_invalid(body);
+        }
+        self.tool_write_back();
+        // After a Rigidbody2D joined or changed, the list is rebuilt from every non-static body.
+        if self.rigidbody_hierarchy_changed {
+            for rb in self.physicals.iter_mut().map(|p| &mut p.rigidbody).chain(self.node_rigidbodies.iter_mut().map(|n| &mut n.rigidbody)) {
+                rb.movement.listed = rb.bodyType != 2 && rb.detached.is_none();
+            }
+            self.rigidbody_hierarchy_changed = false;
+        }
+        self.update_effectors(dt);
+        self.update_joints(dt);
+        let reports = self.world.process_contacts(true);
+        self.send_callback_reports(&reports);
+        // FixedUpdate.ScriptRunDelayedFixedFrameRate runs its queue by time: what earlier steps queued, the delayed
+        // Start of behaviours instantiated during this one, then the coroutines that reached WaitForFixedUpdate; one
+        // that waits for it again here waits for the next step.
+        // The queue is sorted by time: the coroutines waiting since the last step (a replay's recorder among them) come
+        // before what Update and the end of the frame queued since (a landmine's Destroy after its Explode).
+        self.delayed_calls_before(false, self.time.fixedTimeAsDouble - self.time.fixedDeltaTime as f64);
+        self.run_pending_starts();
+        // In the order they got there: those behind a replay's recorder coroutine wait for its FE snapshot.
+        for c in std::mem::take(&mut self.fixed_update_waits) {
+            match self.recorder_wait_seq {
+                Some(r) if c.seq > r => self.after_recorder_waits.push(c),
+                _ => self.resume_coroutine(c),
+            }
+        }
+    }
+
+    /// A replay's recorder coroutine took its FE snapshot and waits again: the waits queued after it resume.
+    pub fn resume_after_recorder(&mut self) {
+        self.recorder_wait_seq = Some(self.coroutine_seq);
+        for c in std::mem::take(&mut self.after_recorder_waits) {
+            self.resume_coroutine(c);
+        }
+    }
+
+    /// The end of ScriptRunDelayedFixedFrameRate: the calls this step queued, after the WaitForFixedUpdate coroutines.
+    pub fn fixed_delayed_calls(&mut self) {
+        self.gore_string_delayed_calls(false);
+        self.splats_destroying.clear();
+    }
+
+    /// PhysicsManager2D::Simulate's write-back over the rigidbody update lists: each awake Rigidbody2D's body pose
+    /// to its Transform (the position's x/y, and the rotation's z turn replaced by the body angle, keeping any x/y
+    /// tilt). A body driven by a parent Rigidbody2D is written asleep too, as is a static one below the root.
+    fn write_back_transforms(&mut self) {
+        // One list by depth: a body without a PhysicalBehaviour (an instance root given a Rigidbody2D) may parent physicals.
+        // Bodies of one depth never parent each other, so their order within it cannot show.
+        let mut order: Vec<BodyOwner> = self.rigidbody_order().into_iter().map(BodyOwner::Physical).chain((0..self.node_rigidbodies.len()).map(BodyOwner::Node)).collect();
+        if !self.node_rigidbodies.is_empty() {
+            order.sort_by_key(|&o| match o {
+                BodyOwner::Physical(p) => self.depth(p).min(63),
+                BodyOwner::Node(k) => self.node_depth(self.node_rigidbodies[k].node).min(63),
+            });
+        }
+        for o in order {
+            match o {
+                BodyOwner::Physical(p) => self.write_back_physical(p),
+                BodyOwner::Node(k) => self.write_back_node(k),
+            }
+        }
+        self.update_attached_clones();
+    }
+
+    /// GetTransformDepth of a Transform node.
+    fn node_depth(&self, n: usize) -> usize {
+        let (mut d, mut up) = (0, self.transform_nodes[n].parent);
+        while let Some(i) = up {
+            d += 1;
+            up = self.transform_nodes[i].parent;
+        }
+        d
+    }
+
+    fn write_back_physical(&mut self, p: usize) {
+        {
+            // A disintegrated object's Rigidbody2D left the scene's list with its body.
+            if self.physicals[p].rigidbody.detached.is_some() || !self.physicals[p].rigidbody.simulated {
+                return;
+            }
+            let ph = &self.physicals[p];
+            let b = self.world.body(ph.rigidbody.body);
+            if b.user.is_none() {
+                return;
+            }
+            if ph.driven_by.is_none() && b.flags & BODY_AWAKE == 0 && !(ph.rigidbody.bodyType == 2 && self.depth(p) > 0) {
+                return;
+            }
+            if let Some(parent) = ph.driven_by
+                && ph.rigidbody.bodyType == 1
+                && self.world.body(parent).flags & BODY_AWAKE != 0
+            {
+                let (body, pose) = (ph.rigidbody.body, (ph.transform.position, ph.transform.rotation));
+                self.follow_transform(body, pose);
+                let m = &mut self.physicals[p].rigidbody.movement;
+                (m.current, m.body) = (pose, pose);
+                return;
+            }
+            let body = ph.rigidbody.body;
+            self.correct_body_state_if_invalid(body);
+            let b = self.world.body(body);
+            let chain = self.parent_chain(p);
+            let t = &mut self.physicals[p].transform;
+            let pose = written_pose(b, t.position[2], t.rotation);
+            // Transform::SetPositionAndRotation stores it local to the parent; Transform.position/rotation read
+            // it back.
+            let (local, world) = transform::set_world(&chain, pose.0, pose.1);
+            (t.position, t.rotation, t.local) = (world.0, world.1, Some(local));
+            let m = &mut self.physicals[p].rigidbody.movement;
+            (m.current, m.body) = (pose, pose);
+            self.refresh_nested(p);
+        }
+    }
+
+    fn write_back_node(&mut self, k: usize) {
+        {
+            let nb = &self.node_rigidbodies[k];
+            if nb.rigidbody.detached.is_some() || !nb.rigidbody.simulated {
+                return;
+            }
+            let b = self.world.body(nb.rigidbody.body);
+            if b.user.is_none() {
+                return;
+            }
+            if nb.driven_by.is_none() && b.flags & BODY_AWAKE == 0 && !(nb.rigidbody.bodyType == 2 && self.transform_nodes[nb.node].parent.is_some()) {
+                return;
+            }
+            let node = nb.node;
+            if let Some(parent) = nb.driven_by
+                && nb.rigidbody.bodyType == 1
+                && self.world.body(parent).flags & BODY_AWAKE != 0
+            {
+                let (body, pose) = (nb.rigidbody.body, self.node_world(node));
+                self.follow_transform(body, pose);
+                let m = &mut self.node_rigidbodies[k].rigidbody.movement;
+                (m.current, m.body) = (pose, pose);
+                return;
+            }
+            let body = nb.rigidbody.body;
+            self.correct_body_state_if_invalid(body);
+            let b = self.world.body(body);
+            let (position, rotation) = self.node_world(node);
+            let pose = written_pose(b, position[2], rotation);
+            self.set_node_world(node, pose);
+            self.node_rigidbodies[k].rigidbody.movement.current = pose;
+            self.node_rigidbodies[k].rigidbody.movement.body = pose;
+            // The physicals below move with it; CheckAndClearChangedForMultipleSystems keeps their bodies where they are.
+            self.refresh_below_node(node);
+        }
+    }
+
+    /// Simulate's write-back: a body whose x, y or angle is infinite or NaN (all exponent bits set) first gets
+    /// Rigidbody2D::CorrectBodyState (180c1e5c0): SetTransform to the origin at angle 0; a non-static body loses
+    /// its linear velocity and, without fixed rotation, its angular velocity (zero wakes nothing); then each joint
+    /// on its list from the head gets Joint2D::ReCreate.
+    fn correct_body_state_if_invalid(&mut self, body: BodyId) {
+        let b = self.world.body(body);
+        let bad = |v: f32| v.to_bits() & 0x7f80_0000 == 0x7f80_0000;
+        if !(bad(b.xf.p.x) || bad(b.xf.p.y) || bad(b.sweep.a)) {
+            return;
+        }
+        self.world.set_transform(body, V::new(0.0, 0.0), 0.0);
+        let b = self.world.body_mut(body);
+        if b.kind != crate::b2::world::BodyType::Static {
+            b.linear_velocity = V::new(0.0, 0.0);
+            if b.flags & crate::b2::world::BODY_FIXED_ROTATION == 0 {
+                b.angular_velocity = 0.0;
+            }
+        }
+        for (_, j) in self.world.body(body).joints.clone().into_iter().rev() {
+            self.joint2d_recreate_any(j);
+        }
+    }
+
+    /// Simulate's write-back for a kinematic body below an awake parent body: the body goes to its Transform (x/y,
+    /// and the z turn of the rotation with w made non-negative) and is woken; the Transform keeps its pose.
+    fn follow_transform(&mut self, body: BodyId, (position, rotation): ([f32; 3], [f32; 4])) {
+        let (mut z, mut w) = (rotation[2], rotation[3]);
+        if 0.0 > w {
+            (z, w) = (-z, -w);
+        }
+        let h = atan2f(z, w);
+        self.world.set_transform(body, Vec2::new(position[0], position[1]), h + h);
+        self.world.body_mut(body).wake();
+    }
+
+    /// A node's Transform ancestors, direct parent first.
+    pub(super) fn node_parent_chain(&self, n: usize) -> Vec<transform::Trs> {
+        let mut chain = Vec::new();
+        let mut up = self.transform_nodes[n].parent;
+        while let Some(i) = up {
+            chain.push(self.node_trs(i));
+            up = self.transform_nodes[i].parent;
+        }
+        chain
+    }
+
+    /// Transform.position/rotation of a node.
+    pub(crate) fn node_world(&self, n: usize) -> ([f32; 3], [f32; 4]) {
+        let trs = self.node_trs(n);
+        let (mut v, mut r) = ([trs.t[0], trs.t[1], trs.t[2], 0.0], trs.q);
+        for p in &self.node_parent_chain(n) {
+            (v, r) = (transform::global_position(p, v), transform::global_rotation(p, r));
+        }
+        ([v[0], v[1], v[2]], r)
+    }
+
+    /// Transform::SetPositionAndRotation on a node: its local pose.
+    fn set_node_world(&mut self, n: usize, pose: ([f32; 3], [f32; 4])) {
+        let (local, _) = transform::set_world(&self.node_parent_chain(n), pose.0, pose.1);
+        let trs = &mut self.transform_nodes[n].trs;
+        (trs.t[0], trs.t[1], trs.t[2], trs.q) = (local.0[0], local.0[1], local.0[2], local.1);
+    }
+
+    /// The b2 body of a Rigidbody2D's owner.
+    pub(crate) fn owner_body(&self, o: BodyOwner) -> BodyId {
+        match o {
+            BodyOwner::Physical(p) => self.physicals[p].rigidbody.body,
+            BodyOwner::Node(k) => self.node_rigidbodies[k].rigidbody.body,
+        }
+    }
+
+    /// Transform.lossyScale of a Rigidbody2D's owner.
+    pub(super) fn owner_lossy_scale(&self, o: BodyOwner) -> [f32; 3] {
+        match o {
+            BodyOwner::Physical(p) => self.lossy_scale(p),
+            BodyOwner::Node(k) => {
+                let n = self.node_rigidbodies[k].node;
+                let mut nodes = vec![self.node_trs(n)];
+                nodes.extend(self.node_parent_chain(n));
+                transform::lossy_scale(&nodes, self.node_world(n).1)
+            }
+        }
+    }
+
+    /// Rigidbody2D.simulated = true (Rigidbody2D::SetSimulated 180c23ea0, called by the property setter): the movement
+    /// state restarts from the body pose (previous and current := body, interpolating cleared), the body goes to the
+    /// Transform's position and angle (b2Body::SetTransform) and b2Body::SetActive(true) creates its proxies. A
+    /// Rigidbody2D without a body (its object inactive) only keeps the flag. A pending MovePosition/MoveRotation is reset
+    /// first (ResetLinearMoveState, ResetAngularMoveState).
+    pub(super) fn rigidbody_set_simulated(&mut self, id: i32) {
+        let owner = self.rigidbody_owner(id).expect("Rigidbody2D.simulated: a Rigidbody2D outside the arenas");
+        let (position, rotation) = match owner {
+            BodyOwner::Physical(p) => (self.physicals[p].transform.position, self.physicals[p].transform.rotation),
+            BodyOwner::Node(k) => self.node_world(self.node_rigidbodies[k].node),
+        };
+        let rb = self.owner_rigidbody_mut(owner);
+        rb.simulated = true;
+        if rb.detached.is_some() {
+            return;
+        }
+        let body = rb.body;
+        rb.movement.previous = rb.movement.body;
+        rb.movement.current = rb.movement.body;
+        rb.movement.interpolating = false;
+        // ResetLinearMoveState and ResetAngularMoveState (180c23f21).
+        self.rigidbody_reset_move_states(owner);
+        self.world.set_transform(body, Vec2::new(position[0], position[1]), super::spawn::body_angle(rotation));
+        self.world.activate_body(body);
+    }
+
+    /// PhysicsScene2D's rigidbody update lists (AddRigidbodyUpdates, 180c1c280): by GetTransformDepth capped at 63,
+    /// creation order within a depth.
+    fn rigidbody_order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.physicals.len()).collect();
+        if !self.node_bodies.is_empty() {
+            order.sort_by_key(|&p| self.depth(p).min(63));
+        }
+        order
+    }
+
+    /// GetTransformDepth (1807f17f0): the physical's ancestor count.
+    fn depth(&self, p: usize) -> usize {
+        let (mut d, mut n) = (0, self.physicals[p].parent);
+        while let Some(i) = n {
+            d += 1;
+            n = self.transform_nodes[i].parent;
+        }
+        d
+    }
+
+    /// The node that is physical `p`'s own Transform (it parents other physicals).
+    pub(crate) fn body_node(&self, p: usize) -> Option<usize> {
+        self.node_bodies.iter().find_map(|(&n, &q)| (q == p).then_some(n))
+    }
+
+    /// A transform node's TRS; a body's node has its physical's local pose.
+    pub(crate) fn node_trs(&self, n: usize) -> transform::Trs {
+        let mut trs = self.transform_nodes[n].trs;
+        if let Some(&p) = self.node_bodies.get(&n) {
+            let (t, q) = self.physicals[p].transform.local.expect("a body node without a local pose");
+            (trs.t[0], trs.t[1], trs.t[2], trs.q) = (t[0], t[1], t[2], q);
+        }
+        trs
+    }
+
+    /// Transform.position/rotation of the physicals under body `p`'s Transform once it moved: their local poses
+    /// through the new chain.
+    pub(super) fn refresh_nested(&mut self, p: usize) {
+        let Some(node) = self.body_node(p) else { return };
+        self.refresh_below_node(node);
+    }
+
+    /// `refresh_nested` for the physicals under Transform node `node`.
+    pub(super) fn refresh_below_node(&mut self, node: usize) {
+        for q in 0..self.physicals.len() {
+            let mut n = self.physicals[q].parent;
+            while n.is_some_and(|i| i != node) {
+                n = self.transform_nodes[n.unwrap()].parent;
+            }
+            if n.is_none() {
+                continue;
+            }
+            let chain = self.parent_chain(q);
+            let (t, mut r) = self.physicals[q].transform.local.expect("a nested physical without a local pose");
+            let mut v = [t[0], t[1], t[2], 0.0];
+            for n in &chain {
+                (v, r) = (transform::global_position(n, v), transform::global_rotation(n, r));
+            }
+            let pose = &mut self.physicals[q].transform;
+            (pose.position, pose.rotation) = ([v[0], v[1], v[2]], r);
+        }
+    }
+
+    /// PhysicsManager2D::SyncTransforms for the instances with Transform changes, in the order they were made
+    /// (`Instance::sync_transforms` has the cross-hierarchy caveat).
+    pub fn sync_pending(&mut self) {
+        // A recording's Transform.position: SetTransform, RecalculateContacts, RecreateJoints.
+        for (p, rotated) in std::mem::take(&mut self.recorded_moves) {
+            let body = self.physicals[p].rigidbody.body;
+            let (at, angle) = (self.physicals[p].transform.position, if rotated { super::spawn::body_angle(self.physicals[p].transform.rotation) } else { self.world.body(body).sweep.a });
+            self.world.set_transform(body, V::new(at[0], at[1]), angle);
+            // As SyncTransforms does it (spawn.rs sync_transforms): current, previous and body pose the Transform's, not interpolating.
+            let pose = (at, self.physicals[p].transform.rotation);
+            let m = &mut self.physicals[p].rigidbody.movement;
+            (m.current, m.previous, m.body, m.interpolating) = (pose, pose, pose, false);
+            for c in self.physicals[p].colliders.clone() {
+                self.world.refilter_collider(c);
+            }
+            self.world.wake_body(body);
+            for (_, id) in self.world.body(body).joints.clone().into_iter().rev() {
+                // An item's FixedJoint2D, or a person's limb hinge (a grip pulling a limb to the hand).
+                self.joint2d_recreate_any(id);
+            }
+        }
+        for mut inst in std::mem::take(&mut self.unsynced) {
+            let prefab = inst.prefab.clone();
+            self.sync_transforms(&mut inst, &prefab);
+            self.refresh_autofix_joints(&inst);
+            // Later SetActive, Destroy, SetParent and bodyType changes need the clone.
+            self.retained.push(inst);
+        }
+        // The kept clones a Start moved (FoliageBehaviour.Start): their changed bits go through SyncTransforms too.
+        for id in std::mem::take(&mut self.retained_sync) {
+            let Some(i) = self.retained.iter().position(|i| i.objects.iter().any(|x| x.components.contains(&id))) else { continue };
+            let mut inst = self.retained.remove(i);
+            let prefab = inst.prefab.clone();
+            self.sync_transforms(&mut inst, &prefab);
+            self.retained.insert(i, inst);
+        }
+        // ResizeHandles.HandleDisplay moves the handles' body-less colliders.
+        if let Some((mut inst, o)) = self.resize_handles.take() {
+            let prefab = inst.prefab.clone();
+            self.sync_transforms(&mut inst, &prefab);
+            self.resize_handles = Some((inst, o));
+        }
+    }
+
+    /// The physical's Transform ancestors, direct parent first.
+    pub(super) fn parent_chain(&self, p: usize) -> Vec<transform::Trs> {
+        let mut chain = Vec::new();
+        let mut n = self.physicals[p].parent;
+        while let Some(i) = n {
+            chain.push(self.node_trs(i));
+            n = self.transform_nodes[i].parent;
+        }
+        chain
+    }
+
+    /// PhysicsManager2D::Update (180bf9980) before the Update scripts: each awake interpolating body's Transform
+    /// goes to its pose between the last two physics steps, by how far the frame time is past the last one.
+    pub fn interpolate_bodies(&mut self) {
+        self.sync_pending();
+        let (last_time, last_delta) = self.last_simulation;
+        if last_delta < f32::from_bits(0x34000000) {
+            return;
+        }
+        let r = (self.time.timeAsDouble - last_time) / last_delta as f64;
+        let t = (if 0.0 <= r { r.min(1.0) } else { 0.0 }) as f32;
+        for p in self.rigidbody_order() {
+            let rb = &self.physicals[p].rigidbody;
+            // A kinematic body driven by a parent body follows the parent instead.
+            if !rb.simulated || !rb.interpolating() || self.world.body(rb.body).flags & BODY_AWAKE == 0 || rb.bodyType == 1 && self.physicals[p].driven_by.is_some() {
+                continue;
+            }
+            // RigidbodyInterpolation2D.Extrapolate is never set by the game (prefabs and Global.CurrentInterpolationMode
+            // only use None and Interpolate).
+            assert_eq!(rb.interpolation, 1, "Rigidbody2D extrapolation");
+            let pose = interpolated_pose(rb.movement, t);
+            let chain = self.parent_chain(p);
+            let ph = &mut self.physicals[p];
+            ph.rigidbody.movement.current = pose;
+            let (local, world) = transform::set_world(&chain, pose.0, pose.1);
+            (ph.transform.position, ph.transform.rotation, ph.transform.local) = (world.0, world.1, Some(local));
+            self.refresh_nested(p);
+        }
+        for k in 0..self.node_rigidbodies.len() {
+            let nb = &self.node_rigidbodies[k];
+            let rb = &nb.rigidbody;
+            if !rb.simulated || !rb.interpolating() || self.world.body(rb.body).flags & BODY_AWAKE == 0 || rb.bodyType == 1 && nb.driven_by.is_some() {
+                continue;
+            }
+            assert_eq!(rb.interpolation, 1, "Rigidbody2D extrapolation");
+            let pose = interpolated_pose(rb.movement, t);
+            let node = nb.node;
+            self.node_rigidbodies[k].rigidbody.movement.current = pose;
+            self.set_node_world(node, pose);
+        }
+    }
+
+    /// Joint2D::SetBreakForce: the joint moves to the back of the scene's break-limit list, or leaves it once
+    /// both limits are infinite (Joint2D::AddBreakLimitsUpdate).
+    pub fn set_hinge_break_force(&mut self, h: usize, v: f32) {
+        self.hinges[h].set_break_force(v);
+        self.update_break_limits(h);
+    }
+
+    /// Joint2D::SetBreakTorque.
+    pub fn set_hinge_break_torque(&mut self, h: usize, v: f32) {
+        self.hinges[h].set_break_torque(v);
+        self.update_break_limits(h);
+    }
+
+    fn update_break_limits(&mut self, h: usize) {
+        // Joint2D::SetBreakForce (180c05980) only stores the value once deactivating took the joint out of its scene:
+        // an inactive limb's joint keeps its place in the list. (A joint that lost its connected body stays in.)
+        if self.limbs.iter().any(|l| l.Joint == Some(h) && !self.physicals[l.PhysicalBehaviour].active) {
+            return;
+        }
+        let (force, torque) = (self.hinges[h].breakForce, self.hinges[h].breakTorque);
+        self.add_break_limits_update(BreakJoint::Hinge(h), force, torque);
+    }
+
+    /// Joint2D::AddBreakLimitsUpdate / SetBreakForce: to the back of the list, or out of it when both limits are
+    /// infinite.
+    pub fn add_break_limits_update(&mut self, j: BreakJoint, force: f32, torque: f32) {
+        self.joint_break_limits.retain(|&k| k != j);
+        if force != f32::INFINITY || torque != f32::INFINITY {
+            self.joint_break_limits.push(j);
+        }
+    }
+
+    /// PhysicsScene2D::UpdateJoints (180c24cc0): a joint over its force (reaction magnitude) or torque (signed)
+    /// gets OnJointBreak2D and is destroyed. The next joint is taken before each one is handled, as the native
+    /// list walk does.
+    pub(super) fn update_joints(&mut self, dt: f32) {
+        let mut next = self.joint_break_limits.first().copied();
+        while let Some(j) = next {
+            let at = self.joint_break_limits.iter().position(|&k| k == j).unwrap();
+            next = self.joint_break_limits.get(at + 1).copied();
+            let (force, torque, joint) = match j {
+                BreakJoint::Hinge(h) => (self.hinges[h].breakForce, self.hinges[h].breakTorque, self.hinges[h].joint),
+                // SpringJoint2D keeps Joint2D::Reset's infinite breakTorque.
+                BreakJoint::Spring(l) => (self.limbs[l].gore.breakForce, f32::INFINITY, self.limbs[l].gore.joint),
+                BreakJoint::Fixed(f) => (self.fixed_joints[f].state.break_force, self.fixed_joints[f].state.break_torque, self.fixed_joints[f].joint),
+                BreakJoint::Anchored(a) => (self.anchored_joints[a].break_force, self.anchored_joints[a].break_torque, self.anchored_joints[a].joint),
+            };
+            // Joint2D::GetReactionForce/Torque: zero without a b2 joint or under 0.0001s. b2RevoluteJoint gives
+            // inv_dt times the point impulse and inv_dt times the limit impulse as torque; b2DistanceJoint gives
+            // (inv_dt * impulse) * u and no torque.
+            let inv_dt = 1.0 / dt;
+            let ([fx, fy], t) = match joint.filter(|_| 0.0001 <= dt).map(|id| &self.world.joints[id].as_ref().unwrap().kind) {
+                None => ([0.0, 0.0], 0.0),
+                Some(JointKind::Revolute(r)) => ([r.impulse[0] * inv_dt, r.impulse[1] * inv_dt], r.impulse[2] * inv_dt),
+                Some(JointKind::Weld(w)) => {
+                    let f = w.reaction_force(inv_dt);
+                    ([f.x, f.y], w.reaction_torque(inv_dt))
+                }
+                Some(JointKind::Distance(d)) => {
+                    let f = d.reaction_force(inv_dt);
+                    ([f.x, f.y], 0.0)
+                }
+                Some(JointKind::Rope(r)) => {
+                    let f = r.reaction_force(inv_dt);
+                    ([f.x, f.y], 0.0)
+                }
+                Some(JointKind::Wheel(w)) => {
+                    let f = w.reaction_force(inv_dt);
+                    ([f.x, f.y], w.motor_torque(inv_dt))
+                }
+                Some(JointKind::Prismatic(p)) => {
+                    let f = p.reaction_force(inv_dt);
+                    ([f.x, f.y], p.reaction_torque(inv_dt))
+                }
+                Some(JointKind::Friction(f)) => {
+                    let force = f.reaction_force(inv_dt);
+                    ([force.x, force.y], f.reaction_torque(inv_dt))
+                }
+                Some(JointKind::Motor(m)) => {
+                    let force = m.reaction_force(inv_dt);
+                    ([force.x, force.y], m.reaction_torque(inv_dt))
+                }
+            };
+            let broken = (force != f32::INFINITY && (fx * fx + fy * fy).sqrt() > force) || (torque != f32::INFINITY && t > torque);
+            if broken {
+                match j {
+                    BreakJoint::Hinge(h) => {
+                        self.send_joint_break_scripts(j, false);
+                        self.on_joint_break(h);
+                        self.send_joint_break_scripts(j, true);
+                        // DestroyObjectHighLevel: HingeJoint2D::Cleanup destroys the b2 joint.
+                        if let Some(j) = self.hinges[h].joint.take() {
+                            self.world.destroy_joint(j);
+                        }
+                        self.hinges[h].destroyed = true;
+                    }
+                    BreakJoint::Spring(l) => {
+                        // SendMessage("OnJointBreak2D") to the limb: only its GoreStringBehaviour owns the joint.
+                        self.send_joint_break_scripts(j, false);
+                        self.gore_string_on_joint_break(l);
+                        self.send_joint_break_scripts(j, true);
+                        // DestroyObjectHighLevel, ahead of the script's own delayed Destroy.
+                        self.remove_spring_joint(l);
+                    }
+                    BreakJoint::Anchored(a) => {
+                        // SendMessage("OnJointBreak2D") finds PhysicalBehaviour, LimbBehaviour and
+                        // CirculationBehaviour at most, and each only compares the joint with its own penetration or
+                        // limb joint, never a prefab's. DestroyObjectHighLevel then runs Joint2D::Cleanup.
+                        self.send_joint_break_scripts(j, false);
+                        self.send_joint_break_scripts(j, true);
+                        if let Some(id) = self.anchored_joints[a].joint.take() {
+                            self.world.destroy_joint(id);
+                        }
+                        // The component is gone: `(bool)joint` reads false.
+                        self.destroyed_components.insert(self.anchored_joints[a].component);
+                    }
+                    BreakJoint::Fixed(f) => {
+                        // SendMessage("OnJointBreak2D") to the joint's GameObject: PhysicalBehaviour's only compares
+                        // `penetration.Joint` (a SliderJoint2D) with it, and no other rewritten script sits on a piece
+                        // (a stabber's other scripts compare against their own joints too).
+                        self.send_joint_break_scripts(j, false);
+                        if let (true, BodyOwner::Physical(p)) = (self.fixed_joints[f].slider.is_some(), self.fixed_joints[f].attached) {
+                            self.physical_on_joint_break_slider(p, Some(f));
+                        }
+                        self.sticky_grenade_on_joint_break(f);
+                        self.blood_wire_on_joint_break(f);
+                        self.root_wire_on_joint_break(f);
+                        self.pin_on_joint_break(f);
+                        self.send_joint_break_scripts(j, true);
+                        // DestroyObjectHighLevel then removes the component.
+                        self.fixed_joint_destroy(f);
+                    }
+                }
+                // The JointBreakSoundBehaviours on the joint's GameObject come after the scripts above in component
+                // order, and the destroy draws nothing.
+                self.joint_break_sound_on_break(j);
+                if let Some(id) = self.break_joint_component(j) {
+                    self.break_joint_scripts_on_break(id);
+                }
+                self.joint_helpers_on_break(j);
+                self.joint_break_limits.retain(|&k| k != j);
+            }
+            if next.is_some_and(|n| !self.joint_break_limits.contains(&n)) {
+                next = None;
+            }
+        }
+    }
+
+    /// SendMessage("OnJointBreak2D") to the hinge's GameObject (its limb).
+    fn on_joint_break(&mut self, h: usize) {
+        self.joint_break_messages(h);
+    }
+
+    /// PhysicsContacts2D::SendCallbackReports (after ProcessContacts): each report to collider A's GameObject and
+    /// its rigidbody's (when on another object), then to B's.
+    fn send_callback_reports(&mut self, reports: &[Report]) {
+        for r in reports {
+            let Some(col) = &r.collision else {
+                // OnTriggerEnter2D/OnTriggerExit2D(other) of the WaterBehaviour on the trigger's GameObject; a point's
+                // FirearmAttachmentPointBehaviour.OnTriggerEnter2D.
+                if matches!(r.message, Message::TriggerEnter | Message::TriggerExit) {
+                    for (own, other) in [(r.collider_a, r.collider_b), (r.collider_b, r.collider_a)] {
+                        if let Some(w) = self.waters.iter().position(|w| w.trigger == own.id) {
+                            self.unity_callback(|g| g.water_on_trigger(w, other.id));
+                        }
+                    }
+                }
+                if r.message == Message::TriggerEnter {
+                    for (own, other) in [(r.collider_a, r.collider_b), (r.collider_b, r.collider_a)] {
+                        if let Some(pt) = self.attachment_points.iter().position(|x| x.colliders.contains(&own.id)) {
+                            self.unity_callback(|g| g.attachment_point_trigger_enter(pt, other.id));
+                        }
+                    }
+                    // ImmobilityFieldBehaviour.OnTriggerEnter2D (sent to a disabled behaviour too).
+                    for (own, rigidbody, other) in [(r.collider_a, r.rigidbody_a, r.collider_b), (r.collider_b, r.rigidbody_b, r.collider_a)] {
+                        for i in 0..self.immobility_fields.len() {
+                            if !self.destroyed_components.contains(&self.immobility_fields[i].id) && self.immobility_field_receives(i, own.id, rigidbody) {
+                                self.unity_callback(|g| g.immobility_field_trigger_enter(i, other.id));
+                            }
+                        }
+                    }
+                    // ForcefieldGeneratorBehaviour.OnTriggerEnter2D (sent to a disabled behaviour too).
+                    for (own, rigidbody, other) in [(r.collider_a, r.rigidbody_a, r.collider_b), (r.collider_b, r.rigidbody_b, r.collider_a)] {
+                        for i in 0..self.forcefields.len() {
+                            if !self.destroyed_components.contains(&self.forcefields[i].id) && self.forcefield_receives(i, own.id, rigidbody) {
+                                self.unity_callback(|g| g.forcefield_trigger_enter(i, other.id));
+                            }
+                        }
+                    }
+                    // NeedleBehaviour.OnTriggerEnter2D (a private message reaches a disabled behaviour too).
+                    for (own, rigidbody, other) in [(r.collider_a, r.rigidbody_a, r.collider_b), (r.collider_b, r.rigidbody_b, r.collider_a)] {
+                        for i in 0..self.needles.len() {
+                            if !self.destroyed_components.contains(&self.needles[i].id) && self.needle_receives(i, own.id, rigidbody) {
+                                self.unity_callback(|g| g.needle_trigger_enter(i, other.id));
+                            }
+                        }
+                    }
+                    // DecimatorBehaviour.OnTriggerEnter2D (collision messages reach a disabled behaviour; it checks).
+                    for (own, rigidbody, other) in [(r.collider_a, r.rigidbody_a, r.collider_b), (r.collider_b, r.rigidbody_b, r.collider_a)] {
+                        for i in 0..self.decimators.len() {
+                            if !self.destroyed_components.contains(&self.decimators[i].id) && self.decimator_receives(i, own.id, rigidbody) {
+                                self.unity_callback(|g| g.decimator_trigger_enter(i, other.id));
+                            }
+                        }
+                    }
+                    // TriggerEventBehaviour.OnTriggerEnter2D (sent to a disabled behaviour too).
+                    for (own, rigidbody, other) in [(r.collider_a, r.rigidbody_a, r.collider_b), (r.collider_b, r.rigidbody_b, r.collider_a)] {
+                        for i in 0..self.trigger_events.len() {
+                            if !self.destroyed_components.contains(&self.trigger_events[i].id) && self.trigger_event_receives(i, own.id, rigidbody) {
+                                self.unity_callback(|g| g.trigger_event_enter(i, other.id));
+                            }
+                        }
+                    }
+                }
+                if r.message == Message::TriggerExit {
+                    // TriggerEventBehaviour.OnTriggerExit2D (sent to a disabled behaviour too).
+                    for (own, rigidbody, other) in [(r.collider_a, r.rigidbody_a, r.collider_b), (r.collider_b, r.rigidbody_b, r.collider_a)] {
+                        for i in 0..self.trigger_events.len() {
+                            if !self.destroyed_components.contains(&self.trigger_events[i].id) && self.trigger_event_receives(i, own.id, rigidbody) {
+                                self.unity_callback(|g| g.trigger_event_exit(i, other.id));
+                            }
+                        }
+                    }
+                    for (own, rigidbody, other) in [(r.collider_a, r.rigidbody_a, r.collider_b), (r.collider_b, r.rigidbody_b, r.collider_a)] {
+                        for i in 0..self.immobility_fields.len() {
+                            if !self.destroyed_components.contains(&self.immobility_fields[i].id) && self.immobility_field_receives(i, own.id, rigidbody) {
+                                self.unity_callback(|g| g.immobility_field_trigger_exit(i, other.id));
+                            }
+                        }
+                    }
+                }
+                // The translated scripts: A (then its rigidbody's object), then B (messages.rs).
+                for (own, rigidbody, other) in [(r.collider_a, r.rigidbody_a, r.collider_b), (r.collider_b, r.rigidbody_b, r.collider_a)] {
+                    self.send_trigger_message(r.message, own.id, rigidbody, other.id);
+                }
+                continue;
+            };
+            for (collider, rigidbody) in [(r.collider_a, r.rigidbody_a), (r.collider_b, r.rigidbody_b)] {
+                let c = self.world.script_collision(col, collider.id);
+                // The collider's own GameObject first (a TorchBehaviour without a PhysicalBehaviour), then the physical's.
+                self.torch_collision_on_collider(collider.id, r.message, &c);
+                self.gorse_projectile_collision(collider.id, r.message, &c);
+                self.fireball_collision(collider.id, r.message, &c);
+                // EnergySwordBladeClashBehaviour.OnCollisionEnter2D: Instantiate(CollideWithOtherSwordVFX,
+                // GetContact(0).point, identity). The VFX has no physics; only its instance ids matter.
+                if r.message == Message::CollisionEnter {
+                    let vfx: Vec<_> = self.blade_clashes.iter().filter(|(id, cs, _)| cs.contains(&collider.id) && !self.destroyed_components.contains(id)).map(|x| x.2).collect();
+                    for v in vfx {
+                        let p = c.contacts.first().unwrap_or_else(|| crate::game::menu::throw("IndexOutOfRangeException: Index was outside the bounds of the array.")).point;
+                        self.spawn_prefab(v, [p.x, p.y, 0.0]);
+                    }
+                }
+                if let Some(p) = self.physical_of_collider(collider.id) {
+                    self.send_collision_message(p, r.message, &c);
+                }
+                if let Some(rb) = rigidbody {
+                    let w = &self.world;
+                    if let Some(p) = self.physicals.iter().position(|ph| ph.rigidbody.detached.is_none() && w.body(ph.rigidbody.body).user.is_some_and(|u| u.id == rb.id)) {
+                        self.send_collision_message(p, r.message, &c);
+                    }
+                }
+            }
+        }
+    }
+
+    /// GameObject.SendMessage of a collision message to a physical object's GameObject, in component order
+    /// (PhysicalBehaviour, then LimbBehaviour; a DestroyableBehaviour where it sits). Collision messages reach
+    /// disabled behaviours too.
+    fn send_collision_message(&mut self, p: usize, m: Message, c: &ScriptCollision) {
+        let limb = self.limbs.iter().position(|l| l.PhysicalBehaviour == p);
+        let destroyable = self.destroyables.iter().position(|x| x.PhysicalBehaviour == p);
+        let explosives = self.explosives_on(p);
+        // The other scripts that take collisions, before and after the PhysicalBehaviour, in component order.
+        let act_on_collide = self.act_on_collides.iter().position(|x| x.physical == Some(p));
+        let side = |g: &Self, after: bool| -> Vec<(usize, super::acts::CollisionScript)> {
+            use super::acts::CollisionScript as S;
+            let mut v = Vec::new();
+            if let Some(x) = destroyable.filter(|&x| g.destroyables[x].after_physical == after) {
+                v.push((g.destroyables[x].index, S::Destroyable(x)));
+            }
+            for &e in explosives.iter().filter(|&&e| g.explosives[e].after_physical == after) {
+                v.push((g.explosives[e].index, S::Explosive(e)));
+            }
+            if let Some(a) = act_on_collide.filter(|&a| g.act_on_collides[a].after_physical == after) {
+                v.push((g.act_on_collides[a].index, S::ActOnCollide(a)));
+            }
+            if let Some(s) = g.sticky_grenades.iter().position(|s| s.physical == Some(p) && s.after_physical == after) {
+                v.push((g.sticky_grenades[s].index, S::Sticky(s)));
+            }
+            if let Some(b) = g.bulbs.iter().position(|b| b.Phys == p && b.after_physical == after) {
+                v.push((g.bulbs[b].index, S::Bulb(b)));
+            }
+            if let Some(s) = g.soaps.iter().position(|x| x.physical == Some(p) && x.after_physical == after) {
+                v.push((g.soaps[s].index, S::Soap(s)));
+            }
+            if let Some(h) = g.power_hammers.iter().position(|x| x.physical == Some(p) && x.after_physical == after) {
+                v.push((g.power_hammers[h].index, S::PowerHammer(h)));
+            }
+            if let Some(b) = g.balloons.iter().position(|x| x.physical == Some(p) && x.after_physical == after) {
+                v.push((g.balloons[b].index, S::Balloon(b)));
+            }
+            if let Some(t) = g.torches.iter().position(|x| x.physical == Some(p) && x.after_physical == after) {
+                v.push((g.torches[t].index, S::Torch(t)));
+            }
+            if let Some(t) = g.televisions.iter().position(|x| x.physical == p && x.after_physical == after) {
+                v.push((g.televisions[t].index, S::Television(t)));
+            }
+            if let Some(m) = g.javelin_missiles.iter().position(|x| x.physical == p && x.after_physical == after) {
+                v.push((g.javelin_missiles[m].index, S::JavelinMissile(m)));
+            }
+            if let Some(w) = g.wrenches.iter().position(|x| x.physical == p && x.after_physical == after) {
+                v.push((g.wrenches[w].index, S::Wrench(w)));
+            }
+            for n in (0..g.no_collide_body_parts.len()).filter(|&n| g.no_collide_body_parts[n].physical == p && g.no_collide_body_parts[n].after_physical == after) {
+                v.push((g.no_collide_body_parts[n].index, S::NoCollideBodyPart(n)));
+            }
+            if let Some(x) = g.planes.iter().position(|x| x.physical == Some(p) && x.after_physical == after) {
+                v.push((g.planes[x].index, S::Plane(x)));
+            }
+            if let Some(x) = g.wings.iter().position(|x| x.physical == Some(p) && x.after_physical == after) {
+                v.push((g.wings[x].index, S::Wing(x)));
+            }
+            v.extend(g.tr.collision_scripts.iter().filter(|s| s.physical == p && s.after_physical == after).map(|s| (s.index, S::Translated(s.b))));
+            v.sort_by_key(|&(i, _)| i);
+            v
+        };
+        let (before, after) = (side(self, false), side(self, true));
+        match m {
+            Message::CollisionEnter => {
+                for (_, s) in before {
+                    self.unity_callback(|g| g.collision_enter_script(s, c));
+                }
+                self.unity_callback(|g| g.physical_on_collision_enter(p, c));
+                if let Some(l) = limb {
+                    self.unity_callback(|g| g.limb_on_collision_enter(l, c));
+                }
+                for (_, s) in after {
+                    self.unity_callback(|g| g.collision_enter_script(s, c));
+                }
+            }
+            Message::CollisionStay => {
+                for (_, s) in before {
+                    self.unity_callback(|g| g.collision_stay_script(s, c));
+                }
+                self.unity_callback(|g| g.physical_on_collision_stay(p, c));
+                if let Some(l) = limb {
+                    self.unity_callback(|g| g.limb_on_collision_stay(l, c));
+                }
+                for (_, s) in after {
+                    self.unity_callback(|g| g.collision_stay_script(s, c));
+                }
+            }
+            Message::CollisionExit => {
+                for (_, s) in before {
+                    self.unity_callback(|g| g.collision_exit_script(s, c));
+                }
+                self.unity_callback(|g| g.physical_on_collision_exit(p, c));
+                for (_, s) in after {
+                    self.unity_callback(|g| g.collision_exit_script(s, c));
+                }
+            }
+            Message::TriggerEnter | Message::TriggerStay | Message::TriggerExit => {}
+        }
+    }
+}
+
+/// UnityEngine.FixedJoint2D over its b2 weld joint, with the Joint2D/AnchoredJoint2D fields native Create reads.
+/// A SliderJoint2D shares the arena and every Joint2D/AnchoredJoint2D setter: `slider` holds its own state and the
+/// joint is a b2PrismaticJoint (BreakJoint::Fixed covers both).
+#[derive(Clone, Debug)]
+pub struct FixedJoint {
+    pub state: FixedJoint2d,
+    pub slider: Option<SliderJoint2d>,
+    /// A HingeJoint2D added by script, all defaults (a b2RevoluteJoint): what Cleanup stored for the next Create.
+    pub hinge: Option<HingeState>,
+    /// A SpringJoint2D's own fields (a b2DistanceJoint): distance, damping ratio, frequency and autoConfigureDistance.
+    pub spring: Option<super::spawn::SpringState>,
+    /// A FrictionJoint2D's maxForce (+0x98) and maxTorque (+0x9c).
+    pub friction: Option<(f32, f32)>,
+    /// A DistanceJoint2D's own fields: distance (+0x98), maxDistanceOnly (+0x9c) and autoConfigureDistance (+0x9d).
+    pub distance: Option<super::spawn::DistanceState>,
+    /// A RelativeJoint2D's own fields.
+    pub relative: Option<RelativeState>,
+    /// m_Joint (+0x58)
+    pub joint: Option<JointId>,
+    /// The owner of the Rigidbody2D that is body A, and the connectedBody's (None: the scene's ground body).
+    pub attached: BodyOwner,
+    pub connected: Option<BodyOwner>,
+    /// GameObject.activeInHierarchy and Behaviour.enabled: Create only runs when both hold.
+    pub active: bool,
+    pub enabled: bool,
+    /// The component has been destroyed.
+    pub destroyed: bool,
+}
+
+/// HingeJoint2D +0xac..+0xb8: body angles A and B and the reference angle Cleanup kept, and whether it did.
+#[derive(Clone, Copy, Debug)]
+pub struct HingeState {
+    pub body_angle_a: f32,
+    pub body_angle_b: f32,
+    pub reference_angle: f32,
+    pub has_previous: bool,
+    /// HingeJoint2D.useMotor and motor (speed in degrees per second, maximum torque): off at 0 and 10000 until a script sets them.
+    pub use_motor: bool,
+    pub motor: [f32; 2],
+}
+
+impl Default for HingeState {
+    fn default() -> Self {
+        Self { body_angle_a: 0.0, body_angle_b: 0.0, reference_angle: 0.0, has_previous: false, use_motor: false, motor: [0.0, 10000.0] }
+    }
+}
+
+/// RelativeJoint2D +0x80..+0x98: maxForce, maxTorque, correctionScale, linearOffset, angularOffset and autoConfigureOffset.
+#[derive(Clone, Copy, Debug)]
+pub struct RelativeState {
+    pub max_force: f32,
+    pub max_torque: f32,
+    pub correction_scale: f32,
+    pub linear_offset: Vec2,
+    pub angular_offset: f32,
+    pub auto_configure_offset: bool,
+}
+
+/// What FixedJoint2D::Create reads from its two ends.
+#[derive(Clone, Copy, Debug)]
+struct Ends {
+    body_a: BodyId,
+    body_b: Option<BodyId>,
+    scale_a: Vec2,
+    scale_b: Vec2,
+}
+
+impl Game {
+    fn body_frame(&self, id: BodyId) -> BodyFrame {
+        let b = self.world.body(id);
+        BodyFrame { position: b.xf.p, q: b.xf.q, angle: b.sweep.a }
+    }
+
+    fn fixed_ends(&self, f: usize) -> Ends {
+        let j = &self.fixed_joints[f];
+        let scale = |o: BodyOwner| {
+            let s = self.owner_lossy_scale(o);
+            Vec2::new(s[0], s[1])
+        };
+        Ends {
+            body_a: self.owner_body(j.attached),
+            body_b: j.connected.map(|c| self.owner_body(c)),
+            scale_a: scale(j.attached),
+            scale_b: j.connected.map_or(Vec2::new(1.0, 1.0), scale),
+        }
+    }
+
+    /// AddComponent<FixedJoint2D>(): Reset's defaults, then AddToManager (180c02580) creates the joint (to the
+    /// ground body: connectedBody is still unset) when the GameObject is active and the component enabled.
+    pub fn add_fixed_joint_component(&mut self, attached: usize) -> usize {
+        self.add_fixed_joint_component_on(BodyOwner::Physical(attached))
+    }
+
+    /// AddComponent<FixedJoint2D>() on the GameObject of any Rigidbody2D owner.
+    pub fn add_fixed_joint_component_on(&mut self, attached: BodyOwner) -> usize {
+        let f = self.fixed_joints.len();
+        self.fixed_joints.push(FixedJoint { hinge: None, state: FixedJoint2d::reset(), slider: None, spring: None, friction: None, distance: None, relative: None, joint: None, attached, connected: None, active: true, enabled: true, destroyed: false });
+        self.fixed_joint_create_if_active(f);
+        f
+    }
+
+    /// AddComponent<HingeJoint2D>(): HingeJoint2D::Reset (180bfd980) over AnchoredJoint2D::Reset, then AddToManager
+    /// creates the joint (to the ground body) when the GameObject is active and the component enabled.
+    pub fn add_hinge_joint_component(&mut self, attached: usize) -> usize {
+        self.add_hinge_joint_component_on(BodyOwner::Physical(attached))
+    }
+
+    /// AddComponent<HingeJoint2D>() on the GameObject of any Rigidbody2D owner.
+    pub fn add_hinge_joint_component_on(&mut self, attached: BodyOwner) -> usize {
+        let f = self.fixed_joints.len();
+        self.fixed_joints.push(FixedJoint { hinge: Some(HingeState::default()), state: FixedJoint2d::reset(), slider: None, spring: None, friction: None, distance: None, relative: None, joint: None, attached, connected: None, active: true, enabled: true, destroyed: false });
+        self.fixed_joint_create_if_active(f);
+        f
+    }
+
+    /// AddComponent<SliderJoint2D>(): SliderJoint2D::Reset (180c05740) turns autoConfigureConnectedAnchor off, then
+    /// AddToManager creates the joint (to the ground body) when the GameObject is active and the component enabled.
+    pub fn add_slider_joint_component(&mut self, attached: usize) -> usize {
+        self.add_slider_joint_component_on(BodyOwner::Physical(attached))
+    }
+
+    /// AddComponent<SliderJoint2D>() on the GameObject of any Rigidbody2D owner.
+    pub fn add_slider_joint_component_on(&mut self, attached: BodyOwner) -> usize {
+        let f = self.fixed_joints.len();
+        let mut state = FixedJoint2d::reset();
+        state.auto_configure_connected_anchor = false;
+        self.fixed_joints.push(FixedJoint { hinge: None, state, slider: Some(SliderJoint2d::reset()), spring: None, friction: None, distance: None, relative: None, joint: None, attached, connected: None, active: true, enabled: true, destroyed: false });
+        self.fixed_joint_create_if_active(f);
+        f
+    }
+
+    /// AddComponent<SpringJoint2D>(): SpringJoint2D::Reset (180bfd9c0) over AnchoredJoint2D::Reset: distance 1,
+    /// damping ratio 0, frequency 1, autoConfigureDistance on and autoConfigureConnectedAnchor off; AddToManager
+    /// creates the joint (to the ground body) when the GameObject is active and the component enabled.
+    pub fn add_spring_joint_component(&mut self, attached: usize) -> usize {
+        self.add_spring_joint_component_on(BodyOwner::Physical(attached))
+    }
+
+    /// AddComponent<SpringJoint2D>() on the GameObject of any Rigidbody2D owner.
+    pub fn add_spring_joint_component_on(&mut self, attached: BodyOwner) -> usize {
+        let f = self.fixed_joints.len();
+        let mut state = FixedJoint2d::reset();
+        state.auto_configure_connected_anchor = false;
+        let spring = super::spawn::SpringState { auto_configure_distance: true, distance: 1.0, damping_ratio: 0.0, frequency: 1.0 };
+        self.fixed_joints.push(FixedJoint { hinge: None, state, slider: None, spring: Some(spring), friction: None, distance: None, relative: None, joint: None, attached, connected: None, active: true, enabled: true, destroyed: false });
+        self.fixed_joint_create_if_active(f);
+        f
+    }
+
+    /// AddComponent<FrictionJoint2D>(): FrictionJoint2D::Reset (180bf79a0) over Joint2D::Reset: zero anchors,
+    /// autoConfigureConnectedAnchor on, maxForce and maxTorque 1; AddToManager creates the joint (to the ground body)
+    /// when the GameObject is active and the component enabled.
+    pub fn add_friction_joint_component(&mut self, attached: usize) -> usize {
+        let f = self.fixed_joints.len();
+        self.fixed_joints.push(FixedJoint { hinge: None, state: FixedJoint2d::reset(), slider: None, spring: None, friction: Some((1.0, 1.0)), distance: None, relative: None, joint: None, attached: BodyOwner::Physical(attached), connected: None, active: true, enabled: true, destroyed: false });
+        self.fixed_joint_create_if_active(f);
+        f
+    }
+
+    /// AddComponent<RelativeJoint2D>(): RelativeJoint2D::Reset (180c056f0) over Joint2D::Reset: maxForce and maxTorque
+    /// 10000, correctionScale 0.3, zero offsets, autoConfigureOffset on; AddToManager creates the joint (to the ground
+    /// body) when the GameObject is active and the component enabled.
+    pub fn add_relative_joint_component(&mut self, attached: usize) -> usize {
+        let f = self.fixed_joints.len();
+        let relative = RelativeState { max_force: 10000.0, max_torque: 10000.0, correction_scale: 0.3, linear_offset: Vec2::new(0.0, 0.0), angular_offset: 0.0, auto_configure_offset: true };
+        self.fixed_joints.push(FixedJoint { hinge: None, state: FixedJoint2d::reset(), slider: None, spring: None, friction: None, distance: None, relative: Some(relative), joint: None, attached: BodyOwner::Physical(attached), connected: None, active: true, enabled: true, destroyed: false });
+        self.fixed_joint_create_if_active(f);
+        f
+    }
+
+    /// RelativeJoint2D::SetMaxForce (180c06100) / SetMaxTorque (180c06160): clamped to [0, 1e6] (a NaN is kept), written
+    /// through to the live b2 motor joint.
+    pub fn relative_joint_set_max_force(&mut self, f: usize, v: f32) {
+        let v = if 0.0 > v { 0.0 } else { f32::min(1_000_000.0, v) };
+        self.fixed_joints[f].relative.as_mut().expect("a RelativeJoint2D").max_force = v;
+        if let Some(id) = self.fixed_joints[f].joint {
+            self.world.joints[id].as_mut().unwrap().motor_mut().def.max_force = v;
+        }
+    }
+
+    pub fn relative_joint_set_max_torque(&mut self, f: usize, v: f32) {
+        let v = if 0.0 > v { 0.0 } else { f32::min(1_000_000.0, v) };
+        self.fixed_joints[f].relative.as_mut().expect("a RelativeJoint2D").max_torque = v;
+        if let Some(id) = self.fixed_joints[f].joint {
+            self.world.joints[id].as_mut().unwrap().motor_mut().def.max_torque = v;
+        }
+    }
+
+    /// AddComponent<DistanceJoint2D>(): DistanceJoint2D::Reset (180bf7930) over Joint2D::Reset: zero anchors, distance 1,
+    /// maxDistanceOnly off, autoConfigureDistance on and autoConfigureConnectedAnchor off; AddToManager creates the joint
+    /// (to the ground body) when the GameObject is active and the component enabled.
+    pub fn add_distance_joint_component(&mut self, attached: usize) -> usize {
+        self.add_distance_joint_component_on(BodyOwner::Physical(attached))
+    }
+
+    /// AddComponent<DistanceJoint2D>() on the GameObject of any Rigidbody2D owner.
+    pub fn add_distance_joint_component_on(&mut self, attached: BodyOwner) -> usize {
+        let f = self.fixed_joints.len();
+        let mut state = FixedJoint2d::reset();
+        state.auto_configure_connected_anchor = false;
+        let distance = super::spawn::DistanceState { auto_configure_distance: true, distance: 1.0, max_distance_only: false };
+        self.fixed_joints.push(FixedJoint { hinge: None, state, slider: None, spring: None, friction: None, distance: Some(distance), relative: None, joint: None, attached, connected: None, active: true, enabled: true, destroyed: false });
+        self.fixed_joint_create_if_active(f);
+        f
+    }
+
+    /// FrictionJoint2D::SetMaxForce (180bf8700) / SetMaxTorque (180bf8730): clamped to [0, 1e6] (a NaN is kept),
+    /// written through to the live b2 joint.
+    pub fn friction_joint_set_max_force(&mut self, f: usize, v: f32) {
+        let v = if 0.0 > v { 0.0 } else if 1_000_000.0 < v { 1_000_000.0 } else { v };
+        self.fixed_joints[f].friction.as_mut().expect("a FrictionJoint2D").0 = v;
+        if let Some(id) = self.fixed_joints[f].joint {
+            self.world.joints[id].as_mut().unwrap().friction_mut().def.max_force = v;
+        }
+    }
+
+    pub fn friction_joint_set_max_torque(&mut self, f: usize, v: f32) {
+        let v = if 0.0 > v { 0.0 } else if 1_000_000.0 < v { 1_000_000.0 } else { v };
+        self.fixed_joints[f].friction.as_mut().expect("a FrictionJoint2D").1 = v;
+        if let Some(id) = self.fixed_joints[f].joint {
+            self.world.joints[id].as_mut().unwrap().friction_mut().def.max_torque = v;
+        }
+    }
+
+    fn fixed_joint_create_if_active(&mut self, f: usize) {
+        let j = &self.fixed_joints[f];
+        if j.active && j.enabled {
+            let ends = self.fixed_ends(f);
+            self.fixed_joint_create(f, ends);
+        }
+    }
+
+    /// FixedJoint2D::Create (180c04160) with Joint2D::FinalizeCreateJoint (180c048c0). The refusals (no body, the
+    /// same body at both ends, bodies of different worlds) log and leave `joint` unset; the connected anchor
+    /// Create auto-configured before them stays stored.
+    fn fixed_joint_create(&mut self, f: usize, ends: Ends) {
+        if !self.fixed_joints[f].active {
+            return;
+        }
+        // RelativeJoint2D::Create also returns when the connected body's GameObject is inactive.
+        if self.fixed_joints[f].relative.is_some() && matches!(self.fixed_joints[f].connected, Some(BodyOwner::Physical(q)) if !self.physicals[q].active) {
+            return;
+        }
+        let frame_a = self.body_frame(ends.body_a);
+        let connected = match ends.body_b {
+            None => Connected::World,
+            Some(b) => Connected::Body { frame: self.body_frame(b), lossy_scale: ends.scale_b },
+        };
+        let j = &mut self.fixed_joints[f];
+        let def: JointKind = match (j.slider.as_mut(), j.spring.as_mut()) {
+            // HingeJoint2D::Create (180bfcdc0): limits off (0..359 degrees), the motor off at 10000.
+            (None, None) if j.hinge.is_some() => {
+                let h = j.hinge.as_mut().unwrap();
+                let angle_b = match connected {
+                    Connected::World => 0.0,
+                    Connected::Body { frame, .. } => frame.angle,
+                };
+                let reference_angle = if h.has_previous {
+                    h.reference_angle = super::spawn::rewrapped_reference_angle(h.reference_angle, h.body_angle_a, h.body_angle_b, frame_a.angle, angle_b);
+                    h.reference_angle
+                } else {
+                    angle_b - frame_a.angle
+                };
+                let (local_anchor_a, local_anchor_b) = j.state.configure_anchors(ends.scale_a, &frame_a, &connected);
+                const DEG2RAD: f32 = f32::from_bits(0x3c8e_fa35);
+                crate::b2::revolute::RevoluteDef { local_anchor_a, local_anchor_b, reference_angle, enable_limit: false, lower_angle: 0.0, upper_angle: 359.0 * DEG2RAD, enable_motor: h.use_motor, motor_speed: h.motor[0] * DEG2RAD, max_motor_torque: h.motor[1] }.into()
+            }
+            // FrictionJoint2D::Create (180bebf40): the anchors, maxForce and maxTorque.
+            (None, None) if j.friction.is_some() => {
+                let (anchor_a, anchor_b) = j.state.configure_anchors(ends.scale_a, &frame_a, &connected);
+                let (max_force, max_torque) = j.friction.unwrap();
+                crate::b2::friction_joint::FrictionDef { local_anchor_a: anchor_a, local_anchor_b: anchor_b, max_force, max_torque }.into()
+            }
+            // RelativeJoint2D::Create (180c04290): with autoConfigureOffset, and before the joint was first created, the
+            // offsets become body B's position in body A's frame and the angle between them (b2MotorJointDef::Initialize).
+            (None, None) if j.relative.is_some() => {
+                let r = j.relative.as_mut().unwrap();
+                if r.auto_configure_offset && !j.state.anchor_configured {
+                    let frame_b = match connected {
+                        Connected::World => BodyFrame::default(),
+                        Connected::Body { frame, .. } => frame,
+                    };
+                    let (dx, dy) = (frame_b.position.x - frame_a.position.x, frame_b.position.y - frame_a.position.y);
+                    let (s, c) = (frame_a.q.s, frame_a.q.c);
+                    r.linear_offset = Vec2::new(c * dx + s * dy, c * dy - s * dx);
+                    r.angular_offset = frame_b.angle - frame_a.angle;
+                }
+                crate::b2::motor_joint::MotorDef { linear_offset: r.linear_offset, angular_offset: r.angular_offset, max_force: r.max_force, max_torque: r.max_torque, correction_factor: r.correction_scale }.into()
+            }
+            // DistanceJoint2D::Create (180bebd50): the anchors, then the distance between them when it autoconfigures;
+            // maxDistanceOnly makes a b2RopeJoint of that maximum length, otherwise a rigid b2DistanceJoint.
+            (None, None) if j.distance.is_some() => {
+                let (anchor_a, anchor_b) = j.state.configure_anchors(ends.scale_a, &frame_a, &connected);
+                let dj = j.distance.as_mut().unwrap();
+                if dj.auto_configure_distance && !j.state.anchor_configured {
+                    let world = |f: &BodyFrame, p: Vec2| Vec2::new(p.x * f.q.c - p.y * f.q.s + f.position.x, f.q.s * p.x + p.y * f.q.c + f.position.y);
+                    let frame_b = match connected {
+                        Connected::World => BodyFrame::default(),
+                        Connected::Body { frame, .. } => frame,
+                    };
+                    let (wa, wb) = (world(&frame_a, anchor_a), world(&frame_b, anchor_b));
+                    let (dx, dy) = (wb.x - wa.x, wb.y - wa.y);
+                    let d = (dx * dx + dy * dy).sqrt();
+                    dj.distance = if 0.005 > d { 0.005 } else { f32::min(1_000_000.0, d) };
+                }
+                if dj.max_distance_only {
+                    crate::b2::rope_joint::RopeDef { local_anchor_a: anchor_a, local_anchor_b: anchor_b, max_length: dj.distance }.into()
+                } else {
+                    crate::b2::distance_joint::DistanceDef { local_anchor_a: anchor_a, local_anchor_b: anchor_b, length: dj.distance, frequency_hz: 0.0, damping_ratio: 1.0 }.into()
+                }
+            }
+            (Some(slider), _) => slider.create_def(&mut j.state, ends.scale_a, &frame_a, &connected).into(),
+            // SpringJoint2D::Create: the anchors, then the distance between them when it autoconfigures.
+            (None, Some(sp)) => {
+                let (anchor_a, anchor_b) = j.state.configure_anchors(ends.scale_a, &frame_a, &connected);
+                if sp.auto_configure_distance && !j.state.anchor_configured {
+                    let world = |f: &BodyFrame, p: Vec2| Vec2::new(p.x * f.q.c - p.y * f.q.s + f.position.x, f.q.s * p.x + p.y * f.q.c + f.position.y);
+                    let frame_b = match connected {
+                        Connected::World => BodyFrame::default(),
+                        Connected::Body { frame, .. } => frame,
+                    };
+                    let (wa, wb) = (world(&frame_a, anchor_a), world(&frame_b, anchor_b));
+                    let (dx, dy) = (wb.x - wa.x, wb.y - wa.y);
+                    let d = (dx * dx + dy * dy).sqrt();
+                    sp.distance = if 0.005 > d { 0.005 } else { f32::min(1_000_000.0, d) };
+                }
+                crate::b2::distance_joint::DistanceDef { local_anchor_a: anchor_a, local_anchor_b: anchor_b, length: sp.distance, frequency_hz: sp.frequency, damping_ratio: sp.damping_ratio }.into()
+            }
+            (None, None) => j.state.create_def(ends.scale_a, &frame_a, &connected).into(),
+        };
+        // FinalizeCreateJoint: body B is the connected body, or the scene's ground body. The one scene has one
+        // world, so the different-worlds refusal cannot arise.
+        let body_b = ends.body_b.unwrap_or_else(|| self.world.ground_body());
+        if check_bodies(Some((ends.body_a, 0u8)), (body_b, 0u8)).is_err() {
+            return;
+        }
+        let collide = self.fixed_joints[f].state.enable_collision;
+        let id = self.world.create_joint(def, ends.body_a, body_b, collide);
+        self.world.wake_joined(ends.body_a);
+        self.world.wake_joined(body_b);
+        let j = &mut self.fixed_joints[f];
+        j.joint = Some(id);
+        let (force, torque) = (j.state.break_force, j.state.break_torque);
+        self.add_break_limits_update(BreakJoint::Fixed(f), force, torque);
+        self.fixed_joints[f].state.finish_create();
+    }
+
+    /// FixedJoint2D::Cleanup (180c03480): a live b2 joint is destroyed (DestroyJoint wakes both ends; the
+    /// FlushSimulationChanges after it does nothing while playing).
+    pub(super) fn fixed_joint_cleanup(&mut self, f: usize, destroyed: bool) {
+        // HingeJoint2D::Cleanup (180bfc5e0)
+        if self.fixed_joints[f].hinge.is_some() {
+            let stored = self.fixed_joints[f].joint.map(|id| {
+                let j = self.world.joints[id].as_ref().unwrap();
+                (j.reference_angle(), self.world.body(j.body_a).sweep.a, self.world.body(j.body_b).sweep.a)
+            });
+            let h = self.fixed_joints[f].hinge.as_mut().unwrap();
+            if destroyed {
+                h.has_previous = false;
+            } else if let Some((reference_angle, body_angle_a, body_angle_b)) = stored {
+                *h = HingeState { body_angle_a, body_angle_b, reference_angle, has_previous: true, ..*h };
+            }
+            if let Some(id) = self.fixed_joints[f].joint.take() {
+                self.fixed_joints[f].state.anchor_configured = false;
+                self.world.destroy_joint(id);
+            }
+            return;
+        }
+        if self.fixed_joints[f].spring.is_some() || self.fixed_joints[f].friction.is_some() || self.fixed_joints[f].distance.is_some() || self.fixed_joints[f].relative.is_some() {
+            // SpringJoint2D, FrictionJoint2D, DistanceJoint2D and RelativeJoint2D: Joint2D::Cleanup alone; the next Create redoes the auto-configuration.
+            if let Some(id) = self.fixed_joints[f].joint.take() {
+                self.fixed_joints[f].state.anchor_configured = false;
+                self.world.destroy_joint(id);
+            }
+            return;
+        }
+        let live = self.fixed_joints[f].joint.map(|id| self.world.joints[id].as_ref().unwrap().reference_angle());
+        self.fixed_joints[f].state.cleanup(destroyed, live);
+        if let Some(id) = self.fixed_joints[f].joint.take() {
+            self.world.destroy_joint(id);
+        }
+    }
+
+    /// Joint2D::ReCreate (180c05570): Cleanup, then Create when the GameObject is active and the component enabled.
+    /// The break-limit entry stays; Create's AddBreakLimitsUpdate moves it to the back.
+    pub(super) fn fixed_joint_recreate(&mut self, f: usize) {
+        self.fixed_joint_cleanup(f, false);
+        self.fixed_joint_create_if_active(f);
+    }
+
+    /// AnchoredJoint2D::SetAnchor (180bf85b0): recreated only while a b2 joint exists.
+    pub fn fixed_joint_set_anchor(&mut self, f: usize, anchor: [f32; 2]) {
+        self.fixed_joints[f].state.anchor = Vec2::new(anchor[0], anchor[1]);
+        if self.fixed_joints[f].joint.is_some() {
+            self.fixed_joint_recreate(f);
+        }
+    }
+
+    /// AnchoredJoint2D::SetConnectedAnchor (180bf8630)
+    pub fn fixed_joint_set_connected_anchor(&mut self, f: usize, anchor: [f32; 2]) {
+        self.fixed_joints[f].state.connected_anchor = Vec2::new(anchor[0], anchor[1]);
+        if self.fixed_joints[f].joint.is_some() {
+            self.fixed_joint_recreate(f);
+        }
+    }
+
+    /// HingeJoint2D::SetUseMotor on a script-added hinge: stored, EnableMotor on the live joint.
+    pub fn fixed_joint_hinge_set_use_motor(&mut self, f: usize, v: bool) {
+        self.fixed_joints[f].hinge.as_mut().expect("a HingeJoint2D").use_motor = v;
+        super::revolute_enable_motor(&mut self.world, self.fixed_joints[f].joint, v);
+    }
+
+    /// HingeJoint2D.motor = motor on a script-added hinge: clamped, stored (which turns the motor on), written to the live joint.
+    pub fn fixed_joint_hinge_set_motor(&mut self, f: usize, speed: f32, torque: f32) {
+        let (s, t) = super::clamp_motor(speed, torque);
+        let h = self.fixed_joints[f].hinge.as_mut().expect("a HingeJoint2D");
+        h.motor = [s, t];
+        h.use_motor = true;
+        super::revolute_write_motor(&mut self.world, self.fixed_joints[f].joint, s, t);
+    }
+
+    /// AnchoredJoint2D::SetAutoConfigureConnectedAnchor (180bf85d0)
+    pub fn fixed_joint_set_auto_configure(&mut self, f: usize, v: bool) {
+        self.fixed_joints[f].state.auto_configure_connected_anchor = v;
+        if self.fixed_joints[f].joint.is_some() {
+            self.fixed_joint_recreate(f);
+        }
+    }
+
+    /// Joint2D::SetConnectedBody (180c05a20): the new body is stored, then Cleanup(destroyed = true) forgets the
+    /// stored reference angle and Create runs again whether or not a b2 joint existed. (A body of another scene
+    /// is refused with a log; the rewrite has one scene. PhysicsManager2D::AutoSyncTransforms runs in between.)
+    pub fn fixed_joint_set_connected_body(&mut self, f: usize, connected: Option<BodyOwner>) {
+        self.fixed_joints[f].connected = connected;
+        self.sync_pending();
+        self.fixed_joint_cleanup(f, true);
+        self.fixed_joint_create_if_active(f);
+    }
+
+    /// Joint2D::SetEnableCollision (180c05d80): stored, then Cleanup(false) and Create.
+    pub fn fixed_joint_set_enable_collision(&mut self, f: usize, v: bool) {
+        self.fixed_joints[f].state.enable_collision = v;
+        self.fixed_joint_recreate(f);
+    }
+
+    /// FixedJoint2D::SetFrequency / SetDampingRatio: clamped and written into the live b2 joint without recreating it.
+    pub fn fixed_joint_set_frequency(&mut self, f: usize, v: f32) {
+        // SpringJoint2D::SetFrequency (180bfdb80): clamped to [0, 1e6], written through to the live b2 joint.
+        if let Some(sp) = self.fixed_joints[f].spring.as_mut() {
+            sp.frequency = if 0.0 > v { 0.0 } else { f32::min(1_000_000.0, v) };
+            let frequency = sp.frequency;
+            if let Some(id) = self.fixed_joints[f].joint {
+                self.world.joints[id].as_mut().unwrap().distance_mut().def.frequency_hz = frequency;
+            }
+            return;
+        }
+        assert!(self.fixed_joints[f].slider.is_none(), "frequency of a SliderJoint2D");
+        let live = self.fixed_joints[f].joint.map(|id| self.world.joints[id].as_mut().unwrap().weld_mut());
+        self.fixed_joints[f].state.set_frequency(v, live);
+    }
+
+    pub fn fixed_joint_set_damping_ratio(&mut self, f: usize, v: f32) {
+        // SpringJoint2D::SetDampingRatio (180bfda50): clamped to [0, 1], written through to the live b2 joint.
+        if let Some(sp) = self.fixed_joints[f].spring.as_mut() {
+            sp.damping_ratio = if 0.0 > v { 0.0 } else { f32::min(1.0, v) };
+            let ratio = sp.damping_ratio;
+            if let Some(id) = self.fixed_joints[f].joint {
+                self.world.joints[id].as_mut().unwrap().distance_mut().def.damping_ratio = ratio;
+            }
+            return;
+        }
+        assert!(self.fixed_joints[f].slider.is_none(), "damping ratio of a SliderJoint2D");
+        let live = self.fixed_joints[f].joint.map(|id| self.world.joints[id].as_mut().unwrap().weld_mut());
+        self.fixed_joints[f].state.set_damping_ratio(v, live);
+    }
+
+    /// DistanceJoint2D.distance (the stored value: Create rewrites it while autoConfigureDistance holds).
+    /// Joint2D.reactionForce of a DistanceJoint2D, at the fixed time step.
+    pub fn fixed_joint_reaction_force(&self, f: usize) -> [f32; 2] {
+        let dt = self.time.fixedDeltaTime;
+        match self.fixed_joints[f].joint.filter(|_| 0.0001 <= dt).map(|id| &self.world.joints[id].as_ref().unwrap().kind) {
+            Some(JointKind::Distance(d)) => {
+                let v = d.reaction_force(1.0 / dt);
+                [v.x, v.y]
+            }
+            Some(JointKind::Rope(r)) => {
+                let v = r.reaction_force(1.0 / dt);
+                [v.x, v.y]
+            }
+            _ => [0.0, 0.0],
+        }
+    }
+
+    pub fn distance_joint_distance(&self, f: usize) -> f32 {
+        self.fixed_joints[f].distance.as_ref().expect("a DistanceJoint2D").distance
+    }
+
+    /// DistanceJoint2D::SetDistance (180bf8650): clamped to [0.005, 1e6], written through to the live joint (the rope's
+    /// maximum length with maxDistanceOnly, else the distance joint's length).
+    pub fn distance_joint_set_distance(&mut self, f: usize, v: f32) {
+        let dj = self.fixed_joints[f].distance.as_mut().expect("a DistanceJoint2D");
+        dj.distance = if 0.005 > v { 0.005 } else if 1_000_000.0 < v { 1_000_000.0 } else { v };
+        let (distance, rope) = (dj.distance, dj.max_distance_only);
+        if let Some(id) = self.fixed_joints[f].joint {
+            match &mut self.world.joints[id].as_mut().unwrap().kind {
+                JointKind::Rope(r) if rope => r.def.max_length = distance,
+                JointKind::Distance(d) if !rope => d.def.length = distance,
+                _ => unreachable!("DistanceJoint2D: the b2 joint does not match maxDistanceOnly"),
+            }
+        }
+    }
+
+    /// DistanceJoint2D::SetMaxDistanceOnly (180bf86e0): a changed value is stored and a live joint is recreated.
+    pub fn distance_joint_set_max_distance_only(&mut self, f: usize, v: bool) {
+        let dj = self.fixed_joints[f].distance.as_mut().expect("a DistanceJoint2D");
+        if dj.max_distance_only == v {
+            return;
+        }
+        dj.max_distance_only = v;
+        if self.fixed_joints[f].joint.is_some() {
+            self.fixed_joint_recreate(f);
+        }
+    }
+
+    /// DistanceJoint2D::SetAutoConfigureDistance (180bf85f0): only stored.
+    pub fn distance_joint_set_auto_configure_distance(&mut self, f: usize, v: bool) {
+        self.fixed_joints[f].distance.as_mut().expect("a DistanceJoint2D").auto_configure_distance = v;
+    }
+
+    /// SpringJoint2D.distance (the stored value).
+    pub fn spring_joint_distance(&self, f: usize) -> f32 {
+        self.fixed_joints[f].spring.as_ref().expect("a SpringJoint2D").distance
+    }
+
+    /// SpringJoint2D::SetDistance (180bfdab0): clamped to [0.005, 1e6], written through to the live b2 joint's length.
+    pub fn spring_joint_set_distance(&mut self, f: usize, v: f32) {
+        let sp = self.fixed_joints[f].spring.as_mut().expect("a SpringJoint2D");
+        sp.distance = if 0.005 > v { 0.005 } else { f32::min(1_000_000.0, v) };
+        let distance = sp.distance;
+        if let Some(id) = self.fixed_joints[f].joint {
+            self.world.joints[id].as_mut().unwrap().distance_mut().def.length = distance;
+        }
+    }
+
+    /// Joint2D::SetBreakForce (180c05980) / SetBreakTorque (180c059d0): the clamped value is stored, then
+    /// AddBreakLimitsUpdate (180c02540) moves the joint to the back of the list, or off it when both limits are
+    /// infinite.
+    pub fn fixed_joint_set_break_force(&mut self, f: usize, v: f32) {
+        self.fixed_joints[f].state.break_force = clamp_break(v);
+        self.fixed_joint_update_break_limits(f);
+    }
+
+    pub fn fixed_joint_set_break_torque(&mut self, f: usize, v: f32) {
+        self.fixed_joints[f].state.break_torque = clamp_break(v);
+        self.fixed_joint_update_break_limits(f);
+    }
+
+    fn fixed_joint_update_break_limits(&mut self, f: usize) {
+        let (force, torque) = (self.fixed_joints[f].state.break_force, self.fixed_joints[f].state.break_torque);
+        self.add_break_limits_update(BreakJoint::Fixed(f), force, torque);
+    }
+
+    /// SliderJoint2D::SetAutoConfigureAngle (180c05950): only stored.
+    pub fn slider_joint_set_auto_configure_angle(&mut self, f: usize, v: bool) {
+        self.fixed_joints[f].slider.as_mut().unwrap().auto_configure_angle = v;
+    }
+
+    /// SliderJoint2D::SetAngle (180c05890): the clamped value is stored; a live joint is destroyed (Cleanup(true))
+    /// and created again.
+    pub fn slider_joint_set_angle(&mut self, f: usize, v: f32) {
+        self.fixed_joints[f].slider.as_mut().unwrap().set_angle(v);
+        if self.fixed_joints[f].joint.is_some() {
+            self.fixed_joint_cleanup(f, true);
+            self.fixed_joint_create_if_active(f);
+        }
+    }
+
+    /// SliderJoint2D::SetUseMotor (180c062f0) / SetUseLimits (180c062d0): stored, then written to the live joint.
+    pub fn slider_joint_set_use_motor(&mut self, f: usize, v: bool) {
+        self.fixed_joints[f].slider.as_mut().unwrap().use_motor = v;
+        if let Some(id) = self.fixed_joints[f].joint {
+            prismatic::enable_motor(&mut self.world, id, v);
+        }
+    }
+
+    pub fn slider_joint_set_use_limits(&mut self, f: usize, v: bool) {
+        self.fixed_joints[f].slider.as_mut().unwrap().use_limits = v;
+        if let Some(id) = self.fixed_joints[f].joint {
+            prismatic::enable_limit(&mut self.world, id, v);
+        }
+    }
+
+    /// SliderJoint2D::SetMotor (180c06190): clamped and stored with useMotor on; a live joint gets EnableMotor(true),
+    /// the speed and the maximum force.
+    pub fn slider_joint_set_motor(&mut self, f: usize, speed: f32, max_torque: f32) {
+        let s = self.fixed_joints[f].slider.as_mut().unwrap();
+        s.set_motor(speed, max_torque);
+        let (speed, torque) = (s.motor_speed, s.max_motor_torque);
+        if let Some(id) = self.fixed_joints[f].joint {
+            prismatic::enable_motor(&mut self.world, id, true);
+            prismatic::set_motor_speed(&mut self.world, id, speed);
+            prismatic::set_max_motor_force(&mut self.world, id, torque);
+        }
+    }
+
+    /// SliderJoint2D::SetLimits (180c06000): clamped and stored with useLimits on; a live joint gets EnableLimit(true)
+    /// and the limits.
+    pub fn slider_joint_set_limits(&mut self, f: usize, lower: f32, upper: f32) {
+        let s = self.fixed_joints[f].slider.as_mut().unwrap();
+        s.set_limits(lower, upper);
+        let (lower, upper) = (s.lower, s.upper);
+        if let Some(id) = self.fixed_joints[f].joint {
+            prismatic::enable_limit(&mut self.world, id, true);
+            prismatic::set_limits(&mut self.world, id, lower, upper);
+        }
+    }
+
+    /// The component's destruction (Joint2D::Deactivate with a destroy operation): Cleanup(true), and the
+    /// break-limit entry leaves the scene's list (Joint2D::ThreadedCleanup).
+    pub fn fixed_joint_destroy(&mut self, f: usize) {
+        self.fixed_joint_cleanup(f, true);
+        self.joint_break_limits.retain(|&k| k != BreakJoint::Fixed(f));
+        self.fixed_joints[f].destroyed = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slerp_ends_and_middle() {
+        let (a, b) = ([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.5f32.sin(), 0.5f32.cos()]);
+        // Narrow angle: the normalized-lerp branch, exact at the ends.
+        let n = [0.0, 0.0, 0.1f32.sin(), 0.1f32.cos()];
+        assert_eq!(super::slerp(a, n, 0.0), a);
+        let mid = super::slerp(a, b, 0.5);
+        assert!((mid[2] - 0.25f32.sin()).abs() < 1e-6 && (mid[3] - 0.25f32.cos()).abs() < 1e-6);
+        // Wide angle: the acos branch.
+        let c = [0.0, 0.0, 1.0f32.sin(), 1.0f32.cos()];
+        let mid = super::slerp(a, c, 0.5);
+        assert!((mid[2] - 0.5f32.sin()).abs() < 1e-6 && (mid[3] - 0.5f32.cos()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn qmul_identity() {
+        let q = [0.1, -0.2, 0.3, 0.9];
+        assert_eq!(super::qmul([0.0, 0.0, 0.0, 1.0], q), q);
+    }
+
+    fn fixture() -> Game {
+        use crate::b2::world::{BodyDef, BodyType};
+        let mut g = Game::default();
+        for (x, angle) in [(0.0, 0.0), (2.0, 0.5)] {
+            let body = g.world.create_body(&BodyDef { kind: BodyType::Dynamic, position: Vec2::new(x, 1.0), angle, ..Default::default() });
+            let mut p = Physical::default();
+            p.rigidbody.body = body;
+            p.transform.localScale = [1.0, 1.0, 1.0];
+            p.transform.rotation = [0.0, 0.0, 0.0, 1.0];
+            g.physicals.push(p);
+        }
+        g
+    }
+
+    #[test]
+    fn move_position_and_rotation_reach_target_in_one_step() {
+        let mut g = fixture();
+        g.physicals[0].rigidbody.simulated = true;
+        let body = g.physicals[0].rigidbody.body;
+        g.world.body_mut(body).linear_velocity = Vec2::new(3.0, 0.0);
+        g.world.body_mut(body).linear_damping = 0.25;
+        g.rigidbody_move_position(BodyOwner::Physical(0), [1.0, 2.0]);
+        g.rigidbody_move_rotation(BodyOwner::Physical(0), 90.0);
+        super::setup_movement_state(&mut g.world, &mut g.physicals[0].rigidbody, 50.0);
+        let b = g.world.body(body);
+        assert!((b.linear_velocity.x - 50.0).abs() < 1e-3 && (b.linear_velocity.y - 50.0).abs() < 1e-3);
+        assert!((b.angular_velocity - std::f32::consts::FRAC_PI_2 * 50.0).abs() < 1e-2);
+        assert_eq!(b.linear_damping, 0.0);
+        super::reset_move_states(&mut g.world, &mut g.physicals[0].rigidbody);
+        let b = g.world.body(body);
+        // The old velocity and the drag come back; nothing stays pending.
+        assert_eq!((b.linear_velocity.x, b.linear_velocity.y, b.angular_velocity, b.linear_damping), (3.0, 0.0, 0.0, 0.25));
+        let m = g.physicals[0].rigidbody.movement;
+        assert!(!m.linear_pending && !m.angular_pending);
+        // A static body only warns.
+        g.physicals[1].rigidbody.bodyType = 2;
+        g.rigidbody_move_position(BodyOwner::Physical(1), [0.0, 0.0]);
+        assert!(!g.physicals[1].rigidbody.movement.linear_pending);
+    }
+
+    fn weld(g: &Game, f: usize) -> (crate::b2::weld::WeldDef, usize, usize) {
+        let j = g.world.joints[g.fixed_joints[f].joint.unwrap()].as_ref().unwrap();
+        (j.weld().def, j.body_a, j.body_b)
+    }
+
+    #[test]
+    fn add_component_welds_to_ground_then_connected_body_recreates() {
+        let mut g = fixture();
+        let f = g.add_fixed_joint_component(0);
+        let (def, a, b) = weld(&g, f);
+        assert_eq!((a, b), (g.physicals[0].rigidbody.body, g.world.ground_body()));
+        assert_eq!(def.reference_angle, 0.0 - 0.0);
+        g.fixed_joint_set_connected_body(f, Some(BodyOwner::Physical(1)));
+        let (def, _, b) = weld(&g, f);
+        assert_eq!(b, g.physicals[1].rigidbody.body);
+        // The reference angle is connected minus attached; the forgotten one is derived again.
+        assert_eq!(def.reference_angle, 0.5);
+        assert_eq!(g.world.joints.iter().flatten().count(), 1);
+        assert!(g.fixed_joints[f].state.anchor_configured);
+    }
+
+    #[test]
+    fn recreate_keeps_live_reference_angle_and_reconfigures_anchor() {
+        let mut g = fixture();
+        let f = g.add_fixed_joint_component(0);
+        g.fixed_joint_set_connected_body(f, Some(BodyOwner::Physical(1)));
+        g.world.body_mut(g.physicals[1].rigidbody.body).sweep.a = 2.0;
+        g.fixed_joint_set_anchor(f, [0.5, 0.0]);
+        let (def, _, _) = weld(&g, f);
+        assert_eq!(def.reference_angle, 0.5, "the live joint's reference angle survives ReCreate");
+        assert_eq!(def.local_anchor_a, Vec2::new(0.5, 0.0));
+        // Auto-configure ran again: the connected anchor is the world point in body B's frame.
+        assert_eq!(g.fixed_joints[f].state.connected_anchor, def.local_anchor_b);
+        // Re-selecting the connected body forgets it.
+        g.fixed_joint_set_connected_body(f, Some(BodyOwner::Physical(1)));
+        assert_eq!(weld(&g, f).0.reference_angle, 2.0 - 0.0);
+    }
+
+    #[test]
+    fn same_body_is_refused_without_a_joint() {
+        let mut g = fixture();
+        let f = g.add_fixed_joint_component(0);
+        g.fixed_joint_set_connected_body(f, Some(BodyOwner::Physical(0)));
+        assert!(g.fixed_joints[f].joint.is_none());
+        assert_eq!(g.world.joints.iter().flatten().count(), 0);
+        assert!(!g.fixed_joints[f].state.anchor_configured);
+        // Anchor setters leave it alone while there is no b2 joint.
+        g.fixed_joint_set_anchor(f, [1.0, 0.0]);
+        assert!(g.fixed_joints[f].joint.is_none());
+        // An inactive object creates nothing either.
+        g.fixed_joints[f].active = false;
+        g.fixed_joint_set_connected_body(f, Some(BodyOwner::Physical(1)));
+        assert!(g.fixed_joints[f].joint.is_none());
+    }
+
+    #[test]
+    fn break_limit_list_and_break() {
+        let mut g = fixture();
+        let a = g.add_fixed_joint_component(0);
+        let b = g.add_fixed_joint_component(1);
+        assert!(g.joint_break_limits.is_empty(), "both limits infinite");
+        g.fixed_joint_set_break_force(a, 10.0);
+        g.fixed_joint_set_break_force(b, 10.0);
+        assert_eq!(g.joint_break_limits, vec![BreakJoint::Fixed(a), BreakJoint::Fixed(b)]);
+        // ReCreate moves the entry to the back.
+        g.fixed_joint_set_auto_configure(a, true);
+        assert_eq!(g.joint_break_limits, vec![BreakJoint::Fixed(b), BreakJoint::Fixed(a)]);
+        // Infinite again: off the list.
+        g.fixed_joint_set_break_force(b, f32::INFINITY);
+        assert_eq!(g.joint_break_limits, vec![BreakJoint::Fixed(a)]);
+        // A reaction over the limit breaks it: b2 joint and list entry go.
+        let id = g.fixed_joints[a].joint.unwrap();
+        g.world.joints[id].as_mut().unwrap().weld_mut().impulse = [1.0, 0.0, 0.0];
+        g.update_joints(1.0 / 50.0);
+        assert!(g.fixed_joints[a].joint.is_none() && g.fixed_joints[a].destroyed);
+        assert!(g.joint_break_limits.is_empty());
+        assert!(g.fixed_joints[b].joint.is_some());
+        // Under the limit it stays.
+        g.fixed_joint_set_break_torque(b, 5.0);
+        let id = g.fixed_joints[b].joint.unwrap();
+        g.world.joints[id].as_mut().unwrap().weld_mut().impulse = [0.0, 0.0, 0.05];
+        g.update_joints(1.0 / 50.0);
+        assert!(g.fixed_joints[b].joint.is_some());
+    }
+
+    #[test]
+    fn frequency_writes_through_and_cleanup_wakes() {
+        let mut g = fixture();
+        let f = g.add_fixed_joint_component(0);
+        g.fixed_joint_set_frequency(f, 8.0);
+        g.fixed_joint_set_damping_ratio(f, 3.0);
+        let (def, _, _) = weld(&g, f);
+        assert_eq!((def.frequency_hz, def.damping_ratio), (8.0, 1.0));
+        // The recreated joint is built from the component's values.
+        g.fixed_joint_set_enable_collision(f, true);
+        assert_eq!(weld(&g, f).0.frequency_hz, 8.0);
+        assert!(g.world.joints[g.fixed_joints[f].joint.unwrap()].as_ref().unwrap().collide_connected);
+    }
+}
