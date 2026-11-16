@@ -258,8 +258,9 @@ impl Game {
         let at = self.physicals[p].transform.position;
         let mut lo = [f32::INFINITY; 2];
         let mut hi = [f32::NEG_INFINITY; 2];
-        for &f in &self.waters[w].trigger_fixtures {
-            let fx = self.world.fixture(f);
+        let mut shapes = 0;
+        for fx in self.waters[w].trigger_fixtures.iter().filter_map(|&f| self.world.fixtures[f].as_ref()) {
+            shapes += 1;
             for child in 0..fx.shape.child_count() {
                 let a = fx.shape.compute_aabb_no_radius(&self.world.body(fx.body).xf, child);
                 lo = [lo[0].min(a.lower.x), lo[1].min(a.lower.y)];
@@ -272,7 +273,7 @@ impl Game {
         for node in &self.waters[w].trigger_chain {
             trigger_at = global_position(node, trigger_at);
         }
-        let (center, extents) = if self.waters[w].trigger_fixtures.is_empty() {
+        let (center, extents) = if shapes == 0 {
             ([trigger_at[0], trigger_at[1], trigger_at[2]], [0.0; 3])
         } else {
             ([(hi[0] + lo[0]) * 0.5, (hi[1] + lo[1]) * 0.5, trigger_at[2]], [(hi[0] - lo[0]) * 0.5, (hi[1] - lo[1]) * 0.5, 0.0])
@@ -351,7 +352,9 @@ impl Game {
     pub(crate) fn water_is_point_inside(&mut self, w: usize, point: [f32; 2]) -> bool {
         self.sync_pending();
         let p = V::new(point[0], point[1]);
-        self.waters[w].trigger_fixtures.iter().map(|&f| self.world.fixture(f)).any(|fx| super::tool::test_point(&fx.shape, &self.world.body(fx.body).xf, p))
+        // A disabled trigger (its map deactivated by Clear everything, destroyed at the frame's end) has no shapes: Unity's
+        // OverlapPoint is false there.
+        self.waters[w].trigger_fixtures.iter().filter_map(|&f| self.world.fixtures[f].as_ref()).any(|fx| super::tool::test_point(&fx.shape, &self.world.body(fx.body).xf, p))
     }
 
     /// WaterBehaviour.GetWaterAtPoint

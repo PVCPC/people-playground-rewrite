@@ -104,7 +104,9 @@ impl Game {
     pub(super) fn lava_is_point_inside(&mut self, lv: usize, point: [f32; 2]) -> bool {
         self.sync_pending();
         let p = V::new(point[0], point[1]);
-        self.lavas[lv].trigger_fixtures.iter().map(|&f| self.world.fixture(f)).any(|fx| super::tool::test_point(&fx.shape, &self.world.body(fx.body).xf, p))
+        // A disabled trigger (its map deactivated by Clear everything, destroyed at the frame's end) has no shapes: Unity's
+        // OverlapPoint is false there.
+        self.lavas[lv].trigger_fixtures.iter().filter_map(|&f| self.world.fixtures[f].as_ref()).any(|fx| super::tool::test_point(&fx.shape, &self.world.body(fx.body).xf, p))
     }
 
     /// LavaBehaviour.DoSplash: the gate and its Random.value, then Instantiate(ImpactPrefab, Trigger.ClosestPoint(point)).

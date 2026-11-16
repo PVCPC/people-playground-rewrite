@@ -2854,6 +2854,21 @@ mod tests {
         frames(&mut g, 30);
     }
 
+    // Clear everything on a map with water (Hybrid): the old map's water stays listed until its destroy at the frame's
+    // end with its trigger disabled; bleeding's IsPointUnderWater must read it as not inside (it crashed).
+    #[test]
+    fn clear_everything_on_a_water_map() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let mut g = new_game(&game, "Hybrid", Some("Human"), None, 0).unwrap();
+        frames(&mut g, 5);
+        assert!(!g.water_list.is_empty(), "Hybrid has water");
+        g.clear_everything();
+        let _ = g.is_point_under_water([0.0, 0.0]);
+        frames(&mut g, 30);
+        g.clear_everything();
+        frames(&mut g, 30);
+    }
+
     /// DistanceJointWireBehaviour.OnPreFlip / OnFlip: a flipped wire keeps its length. The distance is remembered and
     /// autoConfigureDistance stays off through the flip, and the next fixed update turns it on again.
     #[test]
