@@ -5,10 +5,13 @@
 //! its joints are always solved on one side.
 
 use super::Game;
-use crate::b2::math::{Rot, Vec2};
+use crate::b2::math::{dot, Rot, Vec2};
 use crate::b2::world::{BodyDef, BodyId, BodyType, FixtureDef, PortalHole, Shape};
 use ppg_extras::portal::{fit_shifts, point_velocity, Frame, Pair, DEPTH, HALF_LEN};
 use std::collections::HashMap;
+
+/// How far in front of a portal (m) bodies are looked at: 12 m covers 720 m/s at 60 steps a second.
+const REACH: f32 = 12.0;
 
 fn arr(a: Vec2) -> [f32; 2] {
     [a.x, a.y]
@@ -429,7 +432,8 @@ impl Game {
             let pt = self.extras.portals[i].unwrap();
             let f = pt.frame;
             let t = f.tangent();
-            let corners = [(-1.0, 1.0), (1.0, 1.0), (-1.0, -DEPTH), (1.0, -DEPTH)].map(|(a, o)| [f.centre[0] + t[0] * a * (pt.half + 0.5) + f.normal[0] * o, f.centre[1] + t[1] * a * (pt.half + 0.5) + f.normal[1] * o]);
+            // Out to REACH in front: a fast body can reach the doorway within a step from far off (filtered below).
+            let corners = [(-1.0, REACH), (1.0, REACH), (-1.0, -DEPTH), (1.0, -DEPTH)].map(|(a, o)| [f.centre[0] + t[0] * a * (pt.half + 0.5) + f.normal[0] * o, f.centre[1] + t[1] * a * (pt.half + 0.5) + f.normal[1] * o]);
             let lower = Vec2::new(corners.iter().map(|c| c[0]).fold(f32::MAX, f32::min), corners.iter().map(|c| c[1]).fold(f32::MAX, f32::min));
             let upper = Vec2::new(corners.iter().map(|c| c[0]).fold(f32::MIN, f32::max), corners.iter().map(|c| c[1]).fold(f32::MIN, f32::max));
             let mut bodies: Vec<BodyId> = self.world.query_aabb(&crate::b2::broadphase::Aabb { lower, upper }).into_iter().map(|(fx, _)| self.world.fixture(fx).body).collect();
@@ -440,10 +444,28 @@ impl Game {
                 if body.kind != BodyType::Dynamic || body.user.is_none() || b == pt.body {
                     continue;
                 }
-                let centre_out = f.local(arr(body.sweep.c))[1];
+                let (bc, bv) = (body.sweep.c, body.linear_velocity);
+                let centre_out = f.local(arr(bc))[1];
                 let crossing = self.extras.crossers.get(&b).map(|c| c.portal);
                 if crossing == Some(1 - i) {
                     continue;
+                }
+                // Further than 1 out: only a body that reaches the doorway within two steps counts (so its contacts with
+                // the surface lose the opening in time instead of it bouncing off), aimed at the opening.
+                if crossing.is_none() {
+                    let points = self.extras_body_points(b);
+                    let nearest = points.iter().map(|&(p, r)| f.local(arr(p))[1] - r).fold(f32::MAX, f32::min);
+                    if nearest > 1.0 {
+                        let vn = dot(bv, vec(f.normal));
+                        if vn >= 0.0 || nearest > 1.0 - vn * dt * 2.0 {
+                            continue;
+                        }
+                        let along = f.local(arr(bc + bv * (centre_out / -vn).max(0.0)))[0];
+                        let size = points.iter().map(|&(p, r)| (p - bc).length() + r).fold(0.0, f32::max);
+                        if along.abs() > pt.half + size {
+                            continue;
+                        }
+                    }
                 }
                 if centre_out > 0.0 || crossing == Some(i) {
                     near[i].push(b);
@@ -466,6 +488,52 @@ impl Game {
         let gone: Vec<BodyId> = self.extras.crossers.iter().filter(|(b, c)| !near[c.portal].contains(b)).map(|(&b, _)| b).collect();
         for b in gone {
             self.extras_drop_crosser(b);
+        }
+        // A group whose centre of mass reaches the doorway within this step goes through now: at speed it could pass
+        // the doorway (and the wall's DEPTH) inside one step and never be seen behind it.
+        for i in 0..2 {
+            let pt = self.extras.portals[i].unwrap();
+            let (f, n) = (pt.frame, vec(pt.frame.normal));
+            let mut seen: Vec<BodyId> = Vec::new();
+            for b in near[i].clone() {
+                if seen.contains(&b) {
+                    continue;
+                }
+                let group = self.extras_group(b);
+                seen.extend(&group);
+                if self.extras_tethered(&group) || group.iter().any(|g| self.extras.crossers.get(g).is_some_and(|c| c.portal != i)) {
+                    continue;
+                }
+                let (mut m, mut c, mut v) = (0.0, Vec2::ZERO, Vec2::ZERO);
+                for &g in &group {
+                    let body = self.world.body(g);
+                    m += body.mass;
+                    c = c + body.sweep.c * body.mass;
+                    v = v + body.linear_velocity * body.mass;
+                }
+                if m <= 0.0 {
+                    continue;
+                }
+                let (c, v) = (c * (1.0 / m), v * (1.0 / m));
+                let (out, vn) = (f.local(arr(c))[1], dot(v, n));
+                if out <= 0.0 || vn >= 0.0 || out > -vn * dt || f.local(arr(c + v * (out / -vn)))[0].abs() > pt.half {
+                    continue;
+                }
+                // Moved along its path to just past the doorway; the crossing below takes it through.
+                let shift = v * ((out + 0.02) / -vn);
+                for &g in &group {
+                    let body = self.world.body(g);
+                    let (p, a) = (body.xf.p + shift, body.sweep.a);
+                    self.world.set_transform(g, p, a);
+                    if !self.extras.crossers.contains_key(&g) {
+                        let ghost = self.extras_make_ghost(g);
+                        self.extras.crossers.insert(g, Crosser { portal: i, ghost, v0: Vec2::ZERO, w0: 0.0, c0: Vec2::ZERO, a0: 0.0, k: 1.0 });
+                    }
+                    if !near[i].contains(&g) {
+                        near[i].push(g);
+                    }
+                }
+            }
         }
         // Groups whose centre of mass is through cross over whole.
         let mut done: Vec<BodyId> = Vec::new();
