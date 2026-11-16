@@ -2187,7 +2187,10 @@ impl Game {
         if !self.physicals[p].dirtySmoke {
             self.physical_setup_smoke_prefab(p);
         }
-        // SmokeParticleSystem.Emit(5): particles only.
+        // SmokeParticleSystem.Emit(5)
+        if !self.effects_off {
+            self.smoke_emits.push((p, 5));
+        }
         if with_sound {
             if let Some(n) = self.properties[self.physicals[p].Properties].SizzleSounds {
                 if n != 0 && self.physicals[p].sizzleAudioHeat <= mathf::EPSILON {

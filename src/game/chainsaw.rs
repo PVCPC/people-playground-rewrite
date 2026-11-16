@@ -114,6 +114,14 @@ impl Game {
         self.chainsaw_process(i, flag, if flag { 2.0 } else { 500.0 });
         let (id, key) = (self.chainsaws[i].id, self.chainsaws[i].SawCollider);
         self.with_component_instance(id, |g, inst, _| g.collider_set_is_trigger(inst, key, false));
+        // OverchargeSystem plays while sawing above 1 of charge and stops when not sawing or at 5 or less (by isPlaying).
+        let charge = self.physicals[self.chainsaws[i].physical].Charge();
+        let playing = self.field_ps(id, "OverchargeSystem").is_some_and(|k| crate::particles::playing(self, k));
+        if flag && charge > 1.0 && !playing {
+            self.ps_field_play_stop(id, "OverchargeSystem", true);
+        } else if (!flag || charge <= 5.0) && playing {
+            self.ps_field_play_stop(id, "OverchargeSystem", false);
+        }
         let force = self.chainsaw_force_vector(i);
         let rb = self.physicals[self.chainsaws[i].physical].rigidbody.clone();
         rb.add_relative_force(&mut self.world, force);

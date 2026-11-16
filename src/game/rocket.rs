@@ -1,6 +1,6 @@
 //! LaunchedRocketBehaviour (the Bazooka's and the Rocket Launcher's rocket): a Transform the script moves along its
 //! wobbling right vector until a ray finds something, then the explosion and the Shot, ExitShot and Break messages.
-//! The rocket has no physics of its own; its trail's Stop and the audio are presentation.
+//! The rocket has no physics of its own; the audio is presentation.
 #![allow(non_snake_case)]
 
 use super::explosion::ExplosionParameters;
@@ -74,7 +74,8 @@ impl Game {
             Some(hit) => {
                 let (point, normal) = ([hit.point.x, hit.point.y], [hit.normal.x, hit.normal.y]);
                 let vector = [point[0] + normal[0] * 0.05, point[1] + normal[1] * 0.05];
-                // relevantSystem.transform.SetParent(null); Stop is presentation; AddComponent<DeleteAfterTime>().Life = 5f.
+                // relevantSystem.transform.SetParent(null); Stop(withChildren, StopEmitting); AddComponent<DeleteAfterTime>().Life = 5f.
+                self.ps_field_play_stop(id, "relevantSystem", false);
                 let trail = self.rockets[r].relevantSystem;
                 self.set_parent_null_of(trail, |_, _, _| {});
                 let key = self.with_component_instance(trail, |_, inst, o| inst.objects[o].components[0]);

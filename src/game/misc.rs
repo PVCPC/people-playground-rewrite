@@ -1562,7 +1562,7 @@ impl Game {
                     true => super::stats::increment_float(&stat, 1.0),
                     false => super::stats::increment_integer(&stat, 1),
                 },
-                // PlayAtRandom.Start: `if (!(Random.value > Chance))` plays its particle systems (presentation) and AudioSources.
+                // PlayAtRandom.Start: `if (!(Random.value > Chance))` plays its ParticleSystems and AudioSources.
                 PendingStart::PlayAtRandom(id, chance) => self.play_at_random_start(id, chance),
                 PendingStart::AudioTimeScale(t, ambience) => self.audio_time_scale_below(t, ambience),
                 // ResetTransformBehaviour.Start
@@ -2410,9 +2410,12 @@ impl Game {
 }
 
 impl Game {
-    /// PlayAtRandom.Start: `if (!(Random.value > Chance))` plays its particle systems (presentation) and AudioSources.
+    /// PlayAtRandom.Start: `if (!(Random.value > Chance))` plays its ParticleSystems and AudioSources.
     pub(crate) fn play_at_random_start(&mut self, id: i32, chance: f32) {
         if !(self.random.value() > chance) {
+            for k in 0..self.field_len(id, "ParticleSystems") {
+                self.ps_field_play_stop(id, &format!("ParticleSystems[{k}]"), true);
+            }
             for s in self.audio.source_fields(id, "AudioSources").to_vec() {
                 let s = s.unwrap_or_else(|| super::menu::throw("NullReferenceException: PlayAtRandom.AudioSources has a null entry"));
                 self.audio.play(s);

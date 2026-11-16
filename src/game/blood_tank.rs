@@ -1,8 +1,8 @@
 //! BloodTankBehaviour (a BloodContainer): a Use steps Mode (Push, Pull, Idle, Drain; channel 1 steps back). Its container
 //! follows the mode's pressure. In Drain it drains at DrainRate and feeds its FancyBloodSplatController (PhysicalParticles),
 //! whose particles copy blood into the containers they hit (OnParticleCollide). The splat's spawning, ejection and decal
-//! colour are simulated, and the liquid bar (its LiquidContainerController); the particle systems and the context menu are
-//! presentation; the mode display is a world text.
+//! colour are simulated, and the liquid bar (its LiquidContainerController); the particle systems follow the mode
+//! (liquid_spray_particles); the context menu is presentation; the mode display is a world text.
 #![allow(non_snake_case)]
 
 use super::container::{BloodContainer, Owner};
@@ -51,10 +51,16 @@ impl Game {
         self.blood_tank_update_activation(t);
     }
 
-    /// BloodTankBehaviour.UpdateActivation: outside Drain the splat's spawning chance is 0 (the particles are presentation),
-    /// and ModeDisplay shows Mode.ToString().ToUpper().
+    /// BloodTankBehaviour.UpdateActivation: in Drain WaterPuffParticles (under water) or BloodDrainParticles plays; outside
+    /// it both stop and the splat's spawning chance is 0. ModeDisplay shows Mode.ToString().ToUpper().
     pub(crate) fn blood_tank_update_activation(&mut self, t: usize) {
-        if self.blood_tanks[t].Mode != DRAIN {
+        let id = self.blood_tanks[t].id;
+        if self.blood_tanks[t].Mode == DRAIN {
+            let submerged = self.water_puff_submerged(self.blood_tanks[t].water_puff);
+            self.ps_field_play_stop(id, if submerged { "WaterPuffParticles" } else { "BloodDrainParticles" }, true);
+        } else {
+            self.ps_field_play_stop(id, "BloodDrainParticles", false);
+            self.ps_field_play_stop(id, "WaterPuffParticles", false);
             let s = self.blood_tanks[t].splat;
             self.splats[s].SpawningChance = 0.0;
         }
@@ -102,13 +108,22 @@ impl Game {
         self.liquid_container_color_from(c, o);
         let s = self.blood_tanks[t].splat;
         match self.blood_tanks[t].Mode {
-            // Push and Pull: no spawning.
-            0 | 1 => self.splats[s].SpawningChance = 0.0,
+            // Push and Pull: no spawning, both particle systems stopped.
+            0 | 1 => {
+                self.splats[s].SpawningChance = 0.0;
+                let id = self.blood_tanks[t].id;
+                self.ps_field_play_stop(id, "BloodDrainParticles", false);
+                self.ps_field_play_stop(id, "WaterPuffParticles", false);
+            }
             DRAIN => {
                 let amount = self.time.deltaTime * self.blood_tanks[t].DrainRate;
                 self.drain(o, amount);
                 let puff = self.blood_tanks[t].water_puff;
                 let submerged = self.water_puff_submerged(puff);
+                let fallback = self.bc(o).cachedComputedColour;
+                let colour = self.get_computed_color(o, fallback);
+                let (id, full, speed) = (self.blood_tanks[t].id, self.bc(o).TotalLiquidAmount > 0.001, self.scaled_liquid_amount(o) * 5.0);
+                self.liquid_spray_particles(id, "BloodDrainParticles", submerged, full, colour, speed, 120.0);
                 if submerged {
                     self.splats[s].SpawningChance = 0.0;
                 } else {

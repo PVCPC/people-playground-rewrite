@@ -1,12 +1,12 @@
 //! LightningTool and its LightningToolEntityBehaviour. The tool's Awake instantiates the entity (inactive); choosing
 //! the tool activates it. While "drag" is held the entity charges what is under the mouse, and a fast mouse flick
-//! casts a bolt along the flick: an explosion at the hit, 150 charge to the object hit, then 2 to 4 flashes. The
-//! particles, line points (Perlin) and flash sprite are presentation; their Random draws stay.
+//! casts a bolt along the flick: an explosion at the hit, 150 charge to the object hit, then 2 to 4 flashes, each
+//! showing the SingleBolt line (its Perlin points from the draws FireBolt makes) and the LargeFlashLight sprite.
 #![allow(non_snake_case)]
 
 use super::destroyable::Step;
 use super::explosion::{EffectSize, ExplosionParameters, DEFAULT_RAYCAST_LAYERS};
-use super::{d, script, Game};
+use super::{d, mathf, script, Game};
 use crate::b2::math::Vec2 as V;
 
 /// LayerMask.GetMask("Objects", "Bounds")
@@ -29,7 +29,30 @@ script! {
         oldPos: [f32; 3] = [0.0; 3],
         cooldown: f32 = 0.0,
         isHeld: bool = false,
+        /// SingleBolt: its index in `Game::lines`.
+        bolt: Option<usize> = None,
+        /// LargeFlashLight
+        flash: Option<super::visual::SpriteAt> = None,
     }
+}
+
+/// FireBolt's line (LightningToolEntityBehaviour and WeatherLightningBehaviour): vertex i of n, at t = i / n, is
+/// Lerp(from, to, t) + num * (GetPerlin2Mapped(x, t / num * 19) + insideUnitCircle * 0.2) * (1 - |2t - 1|), one
+/// circle per vertex (`circles`, the draws FireBolt made).
+pub(crate) fn lightning_bolt_points(from: [f32; 3], to: [f32; 2], num: f32, x: f32, circles: &[[f32; 2]]) -> Vec<[f32; 3]> {
+    let n = circles.len();
+    let to = [to[0], to[1], 0.0];
+    circles
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let t = i as f32 / n as f32;
+            let num4 = 1.0 - (2.0 * t - 1.0).abs();
+            let p = mathf::perlin2_mapped(x, t / num * 19.0);
+            let v = [(p[0] + c[0] * 0.2) * num4, (p[1] + c[1] * 0.2) * num4, 0.0];
+            std::array::from_fn(|k| mathf::lerp(from[k], to[k], t) + num * v[k])
+        })
+        .collect()
 }
 
 // LightningTool.OnSelect: empty.
@@ -45,6 +68,16 @@ pub struct LightningTool {
 }
 
 impl Game {
+    /// SingleBolt.enabled and LargeFlashLight.enabled.
+    pub(crate) fn lightning_entity_show(&mut self, e: usize, on: bool) {
+        if let Some(l) = self.lightning_entities[e].bolt {
+            self.lines[l].enabled = on;
+        }
+        if let Some(s) = self.lightning_entities[e].flash {
+            self.set_sprite_enabled(s, on);
+        }
+    }
+
     /// The entity's root object id (its first component's instance id).
     fn lightning_root(&self, e: usize) -> i32 {
         self.lightning_entities[e].id
@@ -143,11 +176,13 @@ impl Game {
     pub(crate) fn lightning_start_hold(&mut self, e: usize) {
         let m = self.screen_mouse();
         let id = self.lightning_entities[e].id;
-        // AudioSource.PlayOneShot(Ignite); LoopingAudio.Play()
+        self.lightning_entity_show(e, false);
+        // AudioSource.PlayOneShot(Ignite); LoopingAudio.Play(); ParticleSystem.Play()
         let (src, lp) = (self.lightning_source(id, "AudioSource"), self.lightning_source(id, "LoopingAudio"));
         let ignite = self.audio.clip(id, "Ignite");
         self.audio.play_one_shot(src, ignite.as_ref(), 1.0);
         self.audio.play(lp);
+        self.ps_field_play_stop(id, "ParticleSystem", true);
         let x = &mut self.lightning_entities[e];
         x.isHeld = true;
         x.oldPos = m;
@@ -162,11 +197,13 @@ impl Game {
     pub(crate) fn lightning_stop_hold(&mut self, e: usize) {
         let id = self.lightning_entities[e].id;
         let (src, lp) = (self.lightning_source(id, "AudioSource"), self.lightning_source(id, "LoopingAudio"));
+        self.lightning_entity_show(e, false);
         self.audio.stop(lp);
         if self.lightning_entities[e].isHeld {
             let release = self.audio.clip(id, "Release");
             self.audio.play_one_shot(src, release.as_ref(), 1.0);
         }
+        self.ps_field_play_stop(id, "ParticleSystem", false);
         self.lightning_entities[e].isHeld = false;
     }
 
@@ -205,8 +242,9 @@ impl Game {
         let position = self.with_component_instance(id, |_, inst, o| inst.position(o));
         let delta = self.lightning_entities[e].delta;
         let Some(hit) = self.raycast(V::new(position[0], position[1]), [delta[0], delta[1]], 5000.0, MASK, f32::NEG_INFINITY, f32::INFINITY) else { return };
-        // x = Random.value * 10000f: the Perlin seed of the line.
-        self.random.value();
+        // x = Random.value * 10000f: the Perlin seed of the line; num = distance * 0.2f.
+        let seed = self.random.value() * 10000.0;
+        let num = hit.distance * 0.2;
         let x = &mut self.lightning_entities[e];
         x.cooldown = x.CooldownTime;
         let (thunder, vertices) = (x.thunder, x.vertices);
@@ -215,9 +253,10 @@ impl Game {
         let clip = self.pick_clip(id, "Thunder", thunder);
         let src = self.lightning_source(id, "AudioSource");
         self.audio.play_one_shot(src, clip.as_ref(), 1.0);
-        // Each vertex: GetPerlin2Mapped (no Random) + Random.insideUnitCircle * 0.2f.
-        for _ in 0..vertices {
-            self.random.inside_unit_circle();
+        // Each vertex: GetPerlin2Mapped (no Random) + Random.insideUnitCircle * 0.2f; then SingleBolt.SetPositions.
+        let circles: Vec<[f32; 2]> = (0..vertices).map(|_| self.random.inside_unit_circle()).collect();
+        if let Some(l) = self.lightning_entities[e].bolt {
+            self.lines[l].positions = lightning_bolt_points(position, [hit.point.x, hit.point.y], num, seed, &circles);
         }
         let point = [hit.point.x, hit.point.y, 0.0];
         let water = self.is_point_under_water([point[0], point[1]]);
@@ -240,6 +279,7 @@ impl Game {
     /// FireBolt's `for (j = 0; j < Random.Range(2, 5); j++)` check, then the flash's WaitForSeconds(0.032f).
     fn lightning_flash_loop(&mut self, e: usize, j: i32) {
         if j < self.random.range_int(2, 5) {
+            self.lightning_entity_show(e, true);
             let id = self.lightning_entities[e].id;
             self.start_wait(id, 0.032, Step::LightningFlash(e, j));
         }
@@ -247,6 +287,7 @@ impl Game {
 
     /// FireBolt after a flash: WaitForSeconds(Random.Range(0.032f, 0.3f)).
     pub(super) fn lightning_flash_end(&mut self, e: usize, j: i32) {
+        self.lightning_entity_show(e, false);
         let wait = self.random.range(0.032, 0.3);
         let id = self.lightning_entities[e].id;
         self.start_wait(id, wait, Step::LightningGap(e, j));

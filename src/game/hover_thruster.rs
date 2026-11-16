@@ -1,6 +1,6 @@
 //! HoverThrusterBehaviour: while Activated and dynamic, each hover point casts down along -transform.up and pushes the
 //! body up by how far inside its calibrated height the ground is, damping the velocity and pushing the hit body back.
-//! Channels 1 and 2 raise and lower the height. The light, glow and particles are presentation.
+//! Channels 1 and 2 raise and lower the height. The light, glow and particles' emission follow Activated.
 #![allow(non_snake_case)]
 
 use super::physical::dot2;
@@ -57,8 +57,8 @@ impl Game {
         self.audio.source_field(self.hover_thrusters[h].id, "IdleLoop").unwrap_or_else(|| super::menu::throw("NullReferenceException: Object reference not set to an instance of an object"))
     }
 
-    /// HoverThrusterBehaviour.UpdateActivation: IdleLoop plays while Activated (the emission, Light and GlowSprite are
-    /// presentation). Start and OnEnable run it too.
+    /// HoverThrusterBehaviour.UpdateActivation: IdleLoop plays, and the Effects emission, Light and GlowSprite are on,
+    /// while Activated. Start and OnEnable run it too.
     pub fn hover_thruster_update_activation(&mut self, h: usize) {
         // gapC r11: Effects.emission.enabled, Light.enabled (a LightSprite) and GlowSprite.enabled = Activated.
         let (id, on) = (self.hover_thrusters[h].id, self.hover_thrusters[h].Activated);
@@ -317,7 +317,7 @@ impl Game {
     }
 
     // HoverThrusterBehaviour.Start: the "setHoverThrusterRange" button is menu.rs (Entry::HoverHeight, Clamp(v * 1.2136364, 0.6068182, 12136.364)); Start's UpdateActivation is hover_thruster_update_activation.
-    // HoverThrusterBehaviour.UpdateActivation: hover_thruster_update_activation (emission, Light and GlowSprite are presentation).
+    // HoverThrusterBehaviour.UpdateActivation: hover_thruster_update_activation (emission, Light and GlowSprite too).
     // HoverThrusterBehaviour.Awake: calibratedHoverHeights is only a scratch array; Hover computes each height itself.
     // HoverThrusterBehaviour.OnEnable: hover_thruster_update_activation.
     // HovercarBehaviour.Start: the "reverseCar" button is menu.rs (Menu::Hovercar, HovercarReverse); its IdleLoop.Play and AccLoop.Play are hovercar_play_loops.

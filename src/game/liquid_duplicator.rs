@@ -1,5 +1,5 @@
 //! LiquidDuplicatorBehaviour: while on it grows each liquid it holds toward Capacity (PeriodicNoise on fixedInterval), and it
-//! can flush (FlushSound). Its context button is UI; EnabledLight is presentation.
+//! can flush (FlushSound); EnabledLight shows while it is on. Its context button is UI.
 #![allow(non_snake_case)]
 
 use super::container::{BloodContainer, Owner};
@@ -106,6 +106,13 @@ impl Game {
             for liquid in self.bc(o).LiquidDistribution.keys() {
                 let raw = self.bc(o).LiquidDistribution.get(liquid).unwrap().raw;
                 self.add_liquid(o, liquid, (d(raw) / capacity * num).f());
+            }
+        }
+        // if (EnabledLight.enabled != Activated) EnabledLight.enabled = Activated
+        let (id, on) = (self.liquid_duplicators[l].id, self.liquid_duplicators[l].Activated);
+        if let Some(at) = self.field_component(id, "EnabledLight").and_then(|s| self.item_sprite(s)) {
+            if self.sprite_enabled(at) != on {
+                self.set_sprite_enabled(at, on);
             }
         }
         if let Some(c) = self.liquid_duplicators[l].LiquidContainer {

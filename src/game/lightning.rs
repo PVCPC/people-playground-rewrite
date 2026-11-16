@@ -1,12 +1,13 @@
 //! SimpleLightningEmitterBehaviour.Emit: a random walk from the origin that bends toward nearby physical objects, and
 //! stops at the first one under it. Its onHit is AcceleratorBoltBehaviour.OnLightningHit, the only one the rewritten
-//! classes pass. Start only sets the static Instance. The LineRenderer vertices and the pooled line are presentation.
+//! classes pass. Start only sets the static Instance. The walk's vertices go to the pooled clone's LineRenderer
+//! (`lightning_line_place`).
 #![allow(non_snake_case)]
 
 use super::{mathf, Game};
 use crate::b2::math::Vec2 as V;
 
-/// SimpleLightningEmitterBehaviour.vertices' length (its static setup: new Vector2[64]); only the line's positions (presentation) use it.
+/// SimpleLightningEmitterBehaviour.vertices' length (its static setup: new Vector3[64]); only the line's positions use it.
 pub(crate) const LIGHTNING_VERTICES: usize = 64;
 
 /// The onHit delegate of a SimpleLightningEmitterBehaviour.Emit call.
@@ -29,7 +30,10 @@ impl Game {
         let mut vector = origin;
         let n = mathf::normalized2(direction);
         let mut vector2 = [n[0] * max_step, n[1] * max_step];
-        for _ in 0..max_iterations {
+        // vertices (rendering only): vertices[0] = origin, then the walk spread over the 64 entries.
+        let mut vertices = [origin; LIGHTNING_VERTICES];
+        let mut i = 0usize;
+        for j in 0..max_iterations {
             if let Some((Some(p), _)) = self.overlap_point_first(vector, layers) {
                 if self.physicals[p].in_world {
                     match hit {
@@ -57,11 +61,62 @@ impl Game {
             }
             vector2 = super::destroyable::clamp_magnitude(vector2, max_step);
             vector = [vector[0] + vector2[0], vector[1] + vector2[1]];
+            let num2 = ((j as f32 / (max_iterations as f32 / LIGHTNING_VERTICES as f32)).floor() as usize).min(LIGHTNING_VERTICES - 1);
+            vertices[num2] = vector;
+            let num3 = num2 as i64 - i as i64;
+            if num3 > 1 {
+                let from = vertices[i];
+                for k in i..num2 {
+                    vertices[k] = mathf::v2_lerp(from, vector, (k - i) as f32 / (num3 - 1) as f32);
+                }
+            }
+            i = num2;
         }
-        // PoolGenerator.Instance.RequestPrefab(PoolableLightningPrefab, origin); the line's positions, width and colours
-        // are presentation.
+        for v in &mut vertices[i..] {
+            *v = vector;
+        }
+        // PoolGenerator.Instance.RequestPrefab(PoolableLightningPrefab, origin), then the clone's LineRenderer.
         let prefab = self.simple_lightning_prefab();
-        self.pool_request_prefab(prefab, origin);
+        if let Some((s, k)) = self.pool_request_prefab(prefab, origin) {
+            let (width, color) = match hit {
+                // AcceleratorBoltBehaviour.Update: width 0.04, Color.yellow.
+                LightningHit::Accelerator => (0.04, [1.0, 0.921_568_63, 0.015_686_275, 1.0]),
+                // ReactorA5ArcBehaviour.GenerateSmallArc: width 0.5, its Color.
+                LightningHit::ReactorArc(a) => (0.5, self.reactor_a5_arcs[a].Color),
+                LightningHit::None | LightningHit::Probe => (1.0, [1.0; 4]),
+            };
+            self.lightning_line_place(s, k, &vertices, width, color);
+        }
+    }
+
+    /// Rendering: Emit's `gameObject.TryGetComponent<LineRenderer>`: SetPositions(vertices), widthMultiplier = width,
+    /// startColor and endColor = color (its colorGradient.colorKeys assignment goes to a copy). The clone's line joins
+    /// `Game::lines` the first time; ObjectPoolBehaviour.Return's SetActive(false) hides it (refresh_renderers).
+    fn lightning_line_place(&mut self, s: usize, k: usize, vertices: &[[f32; 2]], width: f32, color: [f32; 4]) {
+        use crate::assets::db::Component;
+        let root = self.generic_pools[s].items[k].root;
+        let found = self.with_component_instance(root, |_, inst, _| {
+            let c = inst.prefab.objects[0].components.iter().position(|(_, x)| matches!(x, Component::Other(120)))?;
+            Some((inst.objects[0].components[c], inst.prefab.objects[0].components[c].0, inst.prefab.objects[0].layer as i32))
+        });
+        let Some((id, data_ref, layer)) = found else { return };
+        let l = match self.lines.iter().position(|x| x.id == id) {
+            Some(l) => l,
+            None => {
+                let db = self.assets.take().expect("the game's data");
+                let data = crate::assets::components::LineRendererData::read(db.data(data_ref)).expect("the lightning prefab's LineRenderer");
+                let line = Self::line_visual(&db, data_ref.file, data, id, super::BareAnchor::Root, Vec::new(), layer, true);
+                self.assets = Some(db);
+                self.lines.push(line);
+                self.lines.len() - 1
+            }
+        };
+        let line = &mut self.lines[l];
+        line.visible = true;
+        line.positions = vertices.iter().map(|v| [v[0], v[1], 0.0]).collect();
+        line.width = width;
+        line.gradient.set_end_color(color);
+        line.gradient.set_start_color(color);
     }
 
     /// AcceleratorBoltBehaviour.OnLightningHit: a finite point gains 20 charge and 100 temperature and explodes with force 2.

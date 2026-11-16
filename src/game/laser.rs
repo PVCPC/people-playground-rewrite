@@ -2,7 +2,8 @@
 //! the beam from the barrel through Utils.GetLaserEndPoint, which is detector.rs's get_laser_end_point. LateUpdate fires
 //! while Activated: a hit physical gets heat, ignition, Slice and Break above charge thresholds, burn progress and, above
 //! 700, an explosion every 0.12 s. OnLasered reaches only LaserReceiverBehaviour (below).
-//! The beam colours, line, particles and the context menu are presentation. The hoverbox egg branch needs ConnectedEggs,
+//! The line, its colours and the particles (played and moved to the hit) are drawn; the particles' rate, start speed
+//! and start colour writes and the context menu are presentation. The hoverbox egg branch needs ConnectedEggs,
 //! which only EnergyWireBehaviour raises (not rewritten, link refuses it), so it is refused in laser_late_update.
 #![allow(non_snake_case)]
 
@@ -292,7 +293,7 @@ impl Game {
     }
 
     /// LaserBehaviour.UpdateLaser: the beam's hits from the barrel. Its result is the last hit's physical when there is
-    /// one (`finalHit`, as the caller's Some), and the colours, line and particles it sets are presentation.
+    /// one (`finalHit`, as the caller's Some); the line's colours and points are drawn (lines.rs).
     pub(crate) fn laser_update(&mut self, l: usize) -> Option<(usize, LaserHit)> {
         let origin = self.laser_barrel_position(l);
         let direction = self.laser_barrel_direction(l);
@@ -373,6 +374,26 @@ impl Game {
     /// pseudoCharge 0 (only the refused egg branch sets it). Last, SendMessage("OnLasered") to the hit physical's object.
     /// Transform.position = `at` on a plain Transform below the laser's body: its local position under the live parent
     /// pose (the one ObjectState reads back), its local rotation kept.
+    /// `<field>.transform.position = p` as drawn: the embedded systems at and below script `sid`'s ParticleSystem field
+    /// move by the field object's step to `p` (their chains' own local positions; the clone's Transform is the caller's).
+    pub(crate) fn ps_field_moved(&mut self, sid: i32, field: &str, p: [f32; 3]) {
+        let tree = self.field_ps_tree(sid, field, true);
+        let Some(&first) = tree.first() else { return };
+        let old = self.embedded_pose(first).0;
+        let step = [p[0] - old[0], p[1] - old[1], p[2] - old[2]];
+        for i in tree {
+            let e = &self.embedded_ps[i];
+            if e.chain.is_empty() || matches!(e.drive, super::EmbeddedDrive::Pyro { .. } | super::EmbeddedDrive::Muzzle(_)) {
+                continue;
+            }
+            let (w, q, _) = self.anchored_world(e.anchor, &e.chain);
+            let parents = self.anchored_nodes(e.anchor, &e.chain[1..]);
+            let ((t, _), _) = crate::unity::transform::set_world(&parents, [w[0] + step[0], w[1] + step[1], w[2] + step[2]], q);
+            let c = &mut self.embedded_ps[i].chain[0].t;
+            *c = [t[0], t[1], t[2], c[3]];
+        }
+    }
+
     pub(crate) fn laser_particles_to(&mut self, tid: i32, at: [f32; 2]) {
         self.with_component_instance(tid, |g, inst, o| {
             let parent = inst.objects[o].parent.expect("a laser's particle system below the laser");
@@ -395,6 +416,10 @@ impl Game {
             // ImpactParticles.transform.position = SmokeParticles.transform.position = finalHit.point (z 0).
             for t in self.lasers[l].particles.into_iter().flatten() {
                 self.laser_particles_to(t, hit.point);
+            }
+            let id = self.lasers[l].id;
+            for field in ["ImpactParticles", "SmokeParticles"] {
+                self.ps_field_moved(id, field, [hit.point[0], hit.point[1], 0.0]);
             }
             if num > 50.0 {
                 self.send_slice(p);

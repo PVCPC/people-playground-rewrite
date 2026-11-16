@@ -47,6 +47,8 @@ script! {
         /// transform.position (the clone never moves).
         position: [f32; 3] = [0.0; 3],
         t: f32 = 0.0,
+        /// Rendering: LineRenderer's index in `Game::lines`.
+        line: Option<usize> = None,
     }
 }
 
@@ -614,7 +616,7 @@ impl Game {
         self.map_lightning = self.lightnings.iter().position(|x| x.id == id);
     }
 
-    /// WeatherLightningBehaviour.Awake (the mask, the vertex buffer and LightSprite are rendering) with Width and Chance set by
+    /// WeatherLightningBehaviour.Awake (the mask and the vertex buffer; LightSprite is not drawn) with Width and Chance set by
     /// MapConfig.PrepareLightningPrefab; the behaviour joins the Update list in its execution order.
     fn weather_lightning_add(&mut self, w: &Prefab, inst: &super::spawn::Instance, o: usize, c: usize, width: f32, chance: f32) {
         let Component::Script { execution_order, fields, .. } = &w.objects[o].components[c].1 else { unreachable!() };
@@ -630,6 +632,11 @@ impl Game {
         let (lo, lc) = *w.index.get(&ObjRef { file, path_id: line.path_id }).expect("WeatherLightningBehaviour.LineRenderer: dangling reference");
         let db = self.assets.as_ref().expect("WeatherLightningBehaviour without the game's data");
         x.vertices = crate::assets::components::line_position_count(db.data(w.objects[lo].components[lc].0)).expect("LineRenderer") as usize;
+        // Rendering: the LineRenderer joins `Game::lines` (the clone never moves: its chain is the spawn pose).
+        let data = crate::assets::components::LineRendererData::read(db.data(w.objects[lo].components[lc].0)).expect("LineRenderer");
+        let line = Self::line_visual(db, file, data, inst.objects[lo].components[lc], super::BareAnchor::Root, inst.chain(lo), w.objects[lo].layer as i32, inst.objects[lo].active);
+        self.lines.push(line);
+        x.line = Some(self.lines.len() - 1);
         self.lightnings.push(x);
         let (id, b) = (self.lightnings[self.lightnings.len() - 1].id, Behaviour::WeatherLightning(self.lightnings.len() - 1));
         self.behaviour_of.insert(id, (*execution_order, b));
@@ -653,8 +660,8 @@ impl Game {
     }
 
     /// WeatherLightningBehaviour.FireBolt: a bolt from a random point along the top down to the first collider, an
-    /// explosion and 1500 charge there, then 2 to 4 flashes. The audio, the line points (Perlin) and the flash sprite
-    /// are presentation; their Random draws stay.
+    /// explosion and 1500 charge there, then 2 to 4 flashes of the LineRenderer (its Perlin points from the draws made
+    /// here). The audio and the flash sprite are presentation; their Random draws stay.
     pub(crate) fn weather_lightning_routine(l: usize) -> Routine {
         #[derive(Clone, Copy)]
         enum Stage {
@@ -672,10 +679,11 @@ impl Game {
                     let vector = [s.position[0] + k, s.position[1]];
                     let Some(hit) = game.raycast(V::new(vector[0], vector[1]), [0.0, -1.0], 10000.0, LIGHTNING_MASK, f32::NEG_INFINITY, f32::INFINITY) else { return Yield::Done };
                     // x = Random.value * 10000f: the Perlin seed.
-                    game.random.value();
+                    let seed = game.random.value() * 10000.0;
                     game.pick_random(s.thunder);
-                    for _ in 0..s.vertices {
-                        game.random.inside_unit_circle();
+                    let circles: Vec<[f32; 2]> = (0..s.vertices).map(|_| game.random.inside_unit_circle()).collect();
+                    if let Some(l) = s.line {
+                        game.lines[l].positions = super::lightning_tool::lightning_bolt_points([vector[0], vector[1], s.position[2]], [hit.point.x, hit.point.y], hit.distance * 0.2, seed, &circles);
                     }
                     let point = [hit.point.x, hit.point.y];
                     let under_water = game.is_point_under_water(point);
@@ -698,6 +706,9 @@ impl Game {
                 Stage::Check(_) => {}
                 Stage::Gap(j) => {
                     // The flash off, then WaitForSeconds(Random.Range(0.032f, 0.3f)); j++.
+                    if let Some(l) = game.lightnings[l].line {
+                        game.lines[l].enabled = false;
+                    }
                     let wait = game.random.range(0.032, 0.3);
                     stage = Stage::Check(j + 1);
                     return Yield::WaitForSeconds(wait);
@@ -707,6 +718,9 @@ impl Game {
             if j < game.random.range_int(2, 5) {
                 stage = Stage::Gap(j);
                 // The flash on, then WaitForSeconds(0.032f).
+                if let Some(l) = game.lightnings[l].line {
+                    game.lines[l].enabled = true;
+                }
                 return Yield::WaitForSeconds(0.032);
             }
             Yield::Done

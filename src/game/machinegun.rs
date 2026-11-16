@@ -123,16 +123,21 @@ impl Game {
     }
 
     /// MachineGunBehaviour.OnEntry
-    /// OnEntry: Instantiate(ImpactEffect, info.Position, identity); its transform.right is presentation.
-    pub(crate) fn machine_gun_on_entry(&mut self, m: usize, position: [f32; 2], _direction: [f32; 2]) {
+    /// OnEntry: Instantiate(ImpactEffect, info.Position, identity).transform.right = info.Direction.
+    pub(crate) fn machine_gun_on_entry(&mut self, m: usize, position: [f32; 2], direction: [f32; 2]) -> i32 {
         let effect = self.machine_guns[m].ImpactEffect.unwrap_or_else(|| crate::game::menu::throw("ArgumentException: The Object you want to instantiate is null."));
-        self.spawn_prefab(effect, [position[0], position[1], 0.0]);
+        let id = self.spawn_prefab(effect, [position[0], position[1], 0.0]);
+        self.tr_set_right(super::translated::rt::Xf::Object(id), [direction[0], direction[1], 0.0]);
+        id
     }
 
     /// MachineGunBehaviour.OnExit
-    /// OnExit: Instantiate(ImpactEffect, info.Position, identity); its localScale and transform.right are presentation.
+    /// OnExit: OnEntry's, with localScale (3, 3, 0) between: drawn at 3 (the clone's own scale is not read).
     pub(crate) fn machine_gun_on_exit(&mut self, m: usize, position: [f32; 2], direction: [f32; 2]) {
-        self.machine_gun_on_entry(m, position, direction);
+        let id = self.machine_gun_on_entry(m, position, direction);
+        if let Some(e) = self.effect_log.iter_mut().rev().find(|e| e.root == Some(id)) {
+            e.scale = 3.0;
+        }
     }
 
     /// MachineGunBehaviour.OnRicochet

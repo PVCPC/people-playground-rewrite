@@ -1692,7 +1692,7 @@ const CALLS: &[(&str, Call)] = &[
     // batch4 r4: Blink's first MoveNext: light.color = ArmedLightColour, light toggled, WaitForSeconds(0.474).
     ("StickyGrenadeBehaviour.Blink", |g, c| { c.with(1)?; let s = g.sticky_grenades.iter().position(|x| x.id == c.sid).ok_or("no StickyGrenadeBehaviour")?; let mut k = 0u32; let mut r: crate::game::coroutine::Routine = Box::new(move |g: &mut Game| g.sticky_blink_step(s, &mut k)); Ok(routine_step(g, &mut r)) }),
     // batch4 r4: UpdateParticleSystem(progress): one Random.Range(5f, 12f); the rest is the ParticleSystem (presentation).
-    ("ThrusterbedBehaviour.UpdateParticleSystem", |g, c| { c.with(2)?; g.thrusterbeds.iter().position(|x| x.id == c.sid).ok_or("no thrusterbeds entry")?; g.thrusterbed_update_particle_system(); VOID }),
+    ("ThrusterbedBehaviour.UpdateParticleSystem", |g, c| { let c = c.with(2)?; let a0 = c.p_usize(g, 0)?; let a1 = c.p_f32(1)?; g.thrusterbed_update_particle_system(a0, a1); VOID }),
     ("VibrationBehaviour.Awake", |g, c| { let c = c.with(1)?; c.p_usize(g, 0)?; VOID }),
     // batch4 r3: the gen twin returned eyedrop_asset(). Main is the ToolController's SelectionController (the rewrite's Tool):
     // its fields as the recorder formats a plain object. SelectionChanged has no subscriber in 1.28 (always null).

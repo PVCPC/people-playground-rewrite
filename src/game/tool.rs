@@ -2869,6 +2869,220 @@ mod tests {
         frames(&mut g, 30);
     }
 
+    // A fired Blaster / Archelix Caster starts its muzzle flash particles (they were never played).
+    #[test]
+    fn weapons_play_their_muzzle_flash() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        for item in ["Blaster", "Archelix Caster"] {
+            let mut g = new_game(&game, "Default", None, None, 0).unwrap();
+            let mut db = g.assets.take().expect("the game's data");
+            let (inst, _) = g.catalog_spawn(&mut db, item, [0.0, 2.0, 0.0], false).expect(item);
+            g.assets = Some(db);
+            g.unsynced.push(inst);
+            frames(&mut g, 5);
+            g.ps_calls.clear();
+            match item {
+                "Blaster" => g.blaster_shoot(0),
+                // The burst's first step runs in StartCoroutine; a frame would hand the calls to the particles.
+                _ => g.archelix_caster_use(0),
+            }
+            assert!(g.ps_calls.iter().any(|c| matches!(c.1, super::super::PsCall::Play)), "{item}: no muzzle flash Play");
+        }
+    }
+
+    // A Blaster bolt's TrailRenderer draws as a line behind it; a held Heatray shows its beam.
+    #[test]
+    fn blaster_bolt_trail_and_heatray_beam_draw() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        for item in ["Blaster", "Heatray"] {
+            let mut g = new_game(&game, "Default", None, None, 0).unwrap();
+            let mut db = g.assets.take().expect("the game's data");
+            let first = g.physicals.len();
+            let (inst, _) = g.catalog_spawn(&mut db, item, [0.0, 2.0, 0.0], false).expect(item);
+            g.assets = Some(db);
+            g.unsynced.push(inst);
+            frames(&mut g, 5);
+            let mut seen = 0;
+            for _ in 0..10 {
+                if item == "Blaster" { g.blaster_shoot(0) } else { let a = g.signal_direct(true, 0); g.broadcast_use_continuous(first, &a); }
+                frames(&mut g, 1);
+                seen = seen.max(g.lines.iter().filter(|l| l.visible && l.enabled && l.positions.len() >= 2).count());
+            }
+            assert!(seen > 0, "{item}: no line drawn");
+            if item == "Blaster" {
+                assert!(!g.trails.is_empty() && g.trails.iter().all(|t| t.owner.is_some() || !g.lines[t.line].visible));
+            }
+        }
+    }
+
+    // Survey: each energy weapon clicked and then held for a second; what effects it starts (cargo test -- --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn energy_weapon_effects_survey() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        for item in ["Beam Repeater", "Beam Rifle", "Blaster", "Blaster Rifle", "Machine Blaster", "Detached Beam Cannon", "Detached Laser Cannon", "Detached Ray Cannon", "Disassembler", "Ion Cannon", "Accelerator", "Archelix Caster", "Pulse Drum", "Railgun", "Spike Rifle", "Stormbaan", "Stunner", "Heatray", "Freezeray", "Reconstructor", "Rigidifier", "Excalibur", "Energy Sword", "Worm Staff"] {
+            let mut g = new_game(&game, "Default", None, None, 0).unwrap();
+            let mut db = g.assets.take().expect("the game's data");
+            let first = g.physicals.len();
+            let Ok((inst, _)) = g.catalog_spawn(&mut db, item, [0.0, 2.0, 0.0], false) else { println!("FX {item}: no such item"); g.assets = Some(db); continue };
+            g.assets = Some(db);
+            let mut classes: Vec<String> = inst.prefab.objects.iter().flat_map(|o| o.components.iter().filter_map(|(_, c)| match c { crate::assets::db::Component::Script { class, .. } => Some(class.clone()), _ => None })).collect();
+            classes.sort(); classes.dedup();
+            println!("CLS {item}: {}", classes.join(" "));
+            g.unsynced.push(inst);
+            frames(&mut g, 5);
+            let (lines0, fx0) = (g.lines.len(), g.effect_log.len());
+            g.ps_calls.clear();
+            let (mut seen_lines, base, mut peak) = (0, crate::particles::live_particles(&g), 0);
+            g.activate_for_test(first);
+            for k in 0..60 {
+                for p in first..g.physicals.len() {
+                    g.physicals[p].ContinuousActivationTracker[0].Value = if k < 50 { 1 } else { 0 };
+                }
+                // Held: the LateUpdate's BroadcastMessage("UseContinuous") on the item.
+                if k < 50 {
+                    let a = g.signal_direct(true, 0);
+                    g.broadcast_use_continuous(first, &a);
+                }
+                frames(&mut g, 1);
+                peak = peak.max(crate::particles::live_particles(&g));
+                seen_lines = seen_lines.max(g.lines.iter().filter(|l| l.visible && l.enabled && l.positions.len() >= 2).count());
+            }
+            let _ = fx0;
+            println!("FX {item}: particles before {base}, peak {peak}; lines {} (new {}, trails {}), visible lines max {seen_lines}", g.lines.len(), g.lines.len() - lines0, g.trails.len());
+        }
+    }
+
+    /// The particles the machines' and bodies' scripts start: a head shot kill's KillShotParticles, the Thruster's effect
+    /// once on, the Blood Tank's drain, the Energy Sword's boiling blade and Sizzle's smoke puff. Skipped without the game.
+    #[test]
+    fn machine_and_body_particles_play() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let spawn = |item: &str| {
+            let mut g = new_game(&game, "Default", None, None, 0).unwrap();
+            let mut db = g.assets.take().unwrap();
+            let first = g.physicals.len();
+            let (inst, _) = g.catalog_spawn(&mut db, item, [0.0, 2.0, 0.0], false).unwrap_or_else(|e| panic!("{item}: {e}"));
+            g.assets = Some(db);
+            g.unsynced.push(inst);
+            frames(&mut g, 5);
+            (g, first)
+        };
+        // The kill shot: a dead limb's exit shots until the 0.3 chance comes up.
+        let (mut g, _) = spawn("Human");
+        let l = g.limbs.iter().position(|l| l.KillShotParticles).expect("a limb with KillShotParticles");
+        let id = g.limbs[l].id;
+        let k = g.field_ps(id, "KillShotParticles").expect("the KillShotParticles system");
+        assert!(!crate::particles::playing(&g, k));
+        let at = g.physicals[g.limbs[l].PhysicalBehaviour].transform.position;
+        for _ in 0..100 {
+            if g.limbs[l].KillShotParticlesEmitted {
+                break;
+            }
+            g.limbs[l].Health = 0.0;
+            g.limb_exit_shot(l, [1.0, 0.0], [at[0], at[1]], 1.0);
+        }
+        assert!(g.limbs[l].KillShotParticlesEmitted);
+        frames(&mut g, 2);
+        assert!(crate::particles::playing(&g, k), "KillShotParticles plays");
+        // Machines switched on: more live particles than the same frames before.
+        for (item, on) in [("Thruster", 0), ("Blood Tank", 1), ("Energy Sword", 2)] {
+            let (mut g, first) = spawn(item);
+            frames(&mut g, 60);
+            let base = crate::particles::live_particles(&g);
+            match on {
+                0 => g.activate_for_test(first),
+                // Filled, then Idle to Drain.
+                1 => {
+                    g.add_liquid(crate::game::container::Owner::BloodTank(0), 0, 1.0);
+                    g.blood_tanks[0].Mode = 2;
+                    g.blood_tank_use(0, 0);
+                }
+                _ => g.energy_sword_use(0),
+            }
+            let mut peak = 0;
+            for _ in 0..60 {
+                frames(&mut g, 1);
+                peak = peak.max(crate::particles::live_particles(&g));
+            }
+            assert!(peak > base, "{item}: particles before {base}, peak {peak}");
+        }
+        // Sizzle: SmokeParticleSystem.Emit(5).
+        let (mut g, first) = spawn("Brick");
+        frames(&mut g, 60);
+        let base = crate::particles::live_particles(&g);
+        g.sizzle(first, false);
+        frames(&mut g, 1);
+        assert!(crate::particles::live_particles(&g) >= base + 5, "the sizzle's smoke");
+    }
+
+    /// `item` spawned at (0, 2) and used continuously for `n` frames.
+    fn used_for(item: &str, n: usize) -> Option<(Game, usize)> {
+        let game = crate::game_assets::find_game(None).ok()?;
+        let mut g = new_game(&game, "Default", None, None, 0).unwrap();
+        let mut db = g.assets.take().expect("the game's data");
+        let first = g.physicals.len();
+        let (inst, _) = g.catalog_spawn(&mut db, item, [0.0, 2.0, 0.0], false).unwrap();
+        g.assets = Some(db);
+        g.unsynced.push(inst);
+        frames(&mut g, 5);
+        g.activate_for_test(first);
+        for _ in 0..n {
+            for p in first..g.physicals.len() {
+                g.physicals[p].ContinuousActivationTracker[0].Value = 1;
+            }
+            frames(&mut g, 1);
+        }
+        Some((g, first))
+    }
+
+    /// LightningGunBehaviour.PerformLightning's TargetPosition is the ParticleSystemForceField the Stormbaan's bolt
+    /// particles head for: with nothing in range it sits Range along the gun's right from the particle system.
+    #[test]
+    fn stormbaan_force_field_sits_at_the_bolt_end() {
+        let Some((g, _)) = used_for("Stormbaan", 10) else { return };
+        let (origin, dir, range) = (g.lightning_gun_ray_origin(0), g.lightning_gun_direction(0), g.lightning_guns[0].Range);
+        let want = [origin[0] + dir[0] * range, origin[1] + dir[1] * range];
+        let &id = g.force_fields.last().expect("the Stormbaan's force field");
+        let (inst, o, _) = g.component_at(id).unwrap();
+        let (a, chain) = g.object_anchor(inst, o);
+        let m = crate::unity::transform::local_to_world(&g.anchored_nodes(a, &chain));
+        let at = [m[12], m[13]];
+        assert!((at[0] - want[0]).abs() < 1e-3 && (at[1] - want[1]).abs() < 1e-3, "{at:?} vs {want:?}");
+    }
+
+    /// WormStaffBehaviour: each worm's line has VertexCount points from the staff out to its end; SimpleLightningEmitter's
+    /// pooled line (the Accelerator's arcs) and the Archelix bolts' trails show while they fire.
+    #[test]
+    fn worm_lightning_and_trail_lines_draw() {
+        let shown = |g: &Game| g.lines.iter().filter(|l| l.visible && l.enabled && l.positions.len() >= 2).count();
+        let Some((g, _)) = used_for("Worm Staff", 20) else { return };
+        let worms = &g.worm_staffs[0];
+        assert_eq!(worms.lines.len(), 3);
+        for (w, &l) in worms.lines.iter().enumerate() {
+            let p = &g.lines[l].positions;
+            assert_eq!(p.len(), 16);
+            assert_eq!(p[0], [0.0; 3]);
+            let end = worms.worms[w].endPosition;
+            assert!((p[15][0] - end[0] * 15.0 / 16.0).abs() < 0.2 && (p[15][1] - end[1] * 15.0 / 16.0).abs() < 0.2, "{:?} {end:?}", p[15]);
+        }
+        let mut seen = 0;
+        let Some((mut g, first)) = used_for("Accelerator", 0) else { return };
+        for k in 0..120 {
+            for p in first..g.physicals.len() {
+                g.physicals[p].ContinuousActivationTracker[0].Value = if k < 100 { 1 } else { 0 };
+            }
+            frames(&mut g, 1);
+            if let Some(l) = g.lines.iter().find(|l| l.visible && l.enabled && l.positions.len() == crate::game::lightning::LIGHTNING_VERTICES) {
+                assert_eq!(l.width, 0.04);
+                seen += 1;
+            }
+        }
+        assert!(seen > 0, "no lightning line");
+        let Some((g, _)) = used_for("Archelix Caster", 15) else { return };
+        assert!(g.archelix_bolts.iter().any(|b| b.trail_line.is_some_and(|l| g.lines[l].visible && g.lines[l].positions.len() >= 2)) && shown(&g) > 0);
+    }
+
     /// DistanceJointWireBehaviour.OnPreFlip / OnFlip: a flipped wire keeps its length. The distance is remembered and
     /// autoConfigureDistance stays off through the flip, and the next fixed update turns it on again.
     #[test]

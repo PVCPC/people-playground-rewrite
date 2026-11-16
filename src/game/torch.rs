@@ -1,7 +1,7 @@
 //! TorchBehaviour: a flame that ignites the physical objects it touches and heats each one toward TouchTemperature every
 //! fixed step while it is touched. OnEnable registers the contacts its colliders already have; OnCollisionEnter2D and
-//! OnCollisionExit2D add and remove objects while enabled. The flame's intensity, sound and particles, and OnInsideVacuum's
-//! change to that intensity, are presentation: nothing in the simulation reads them.
+//! OnCollisionExit2D add and remove objects while enabled. The flame's intensity (OnInsideVacuum lowers it) sets its
+//! particles' rates; it and the sound are presentation: nothing in the simulation reads them.
 #![allow(non_snake_case)]
 
 use super::{mathf, script, Game};
@@ -28,6 +28,8 @@ script! {
         after_physical: bool = false,
         /// currentlyColliding: the physical objects touched, in the order they were added (a set in C#).
         currentlyColliding: Vec<usize> = Vec::new(),
+        /// torchIntensity: the flames' rate (presentation).
+        torchIntensity: f32 = 1.0,
     }
 }
 
@@ -122,18 +124,32 @@ impl Game {
         }
     }
 
-    /// TorchBehaviour.OnInsideVacuum: torchIntensity -= fixedDeltaTime * 2, which only drives the flame particles' rate and the fire sound (presentation); nothing to keep.
-    pub fn torch_on_inside_vacuum(&mut self, _t: usize) {}
+    /// TorchBehaviour.OnInsideVacuum: torchIntensity -= fixedDeltaTime * 2 above -1 (the flame particles' rate and the fire sound).
+    pub fn torch_on_inside_vacuum(&mut self, t: usize) {
+        let dt = self.time.fixedDeltaTime;
+        let s = &mut self.torches[t];
+        if s.torchIntensity > -1.0 {
+            s.torchIntensity -= dt * 2.0;
+        }
+    }
 
     /// TorchBehaviour.FixedUpdate: destroyed objects leave the set, and each remaining one's temperature moves toward
-    /// TouchTemperature by TransferSpeed (Mathf.Lerp). The intensity is presentation.
+    /// TouchTemperature by TransferSpeed (Mathf.Lerp). Then torchIntensity recovers toward 1 and each FlameParticles
+    /// system's rateOverTimeMultiplier is torchIntensity * its Multiplier (the fire sound's intensity is not kept).
     pub fn torch_fixed_update(&mut self, t: usize) {
-        // TorchBehaviour.OnInsideVacuum: only lowers torchIntensity, which drives the flame rate and sound (presentation).
         self.torches[t].currentlyColliding.retain(|&p| !self.physicals[p].destroyed);
         let (touch, speed) = (self.torches[t].TouchTemperature, self.torches[t].TransferSpeed);
         for i in 0..self.torches[t].currentlyColliding.len() {
             let p = self.torches[t].currentlyColliding[i];
             self.physicals[p].Temperature = mathf::lerp(self.physicals[p].Temperature, touch, speed);
+        }
+        let dt = self.time.fixedDeltaTime;
+        let s = &mut self.torches[t];
+        s.torchIntensity = if s.torchIntensity < 1.0 { s.torchIntensity + dt } else { 1.0 };
+        let (id, k) = (s.id, s.torchIntensity);
+        for n in 0..self.field_len(id, "FlameParticles") {
+            let m = self.field_f32(id, &format!("FlameParticles[{n}].Multiplier")).unwrap_or(0.0);
+            self.ps_field_writes(id, &format!("FlameParticles[{n}].System"), crate::particles::PsWrites { rate: Some(k * m), ..Default::default() });
         }
     }
 

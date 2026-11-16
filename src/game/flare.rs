@@ -1,5 +1,5 @@
 //! FlareBehaviour (the Signal Flare): once lit (Use, or Start while Activated) it enables its TorchBehaviour, hides
-//! FlareTopSprite and plays FlareAudioSource. The particles are presentation.
+//! FlareTopSprite and plays FlareAudioSource and its FlareSystem (and FlareTopSystem on Use).
 #![allow(non_snake_case)]
 
 use super::{script, Game};

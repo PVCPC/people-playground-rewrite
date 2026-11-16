@@ -61,6 +61,7 @@ pub mod television;
 pub mod wrench;
 pub mod valve;
 pub mod line;
+pub mod trail;
 pub mod liquid_canister;
 pub mod liquid_filter;
 pub mod pulse_drum;
@@ -169,6 +170,7 @@ pub mod machinegun;
 pub mod minigun;
 pub mod accelerator;
 pub mod archelix;
+pub mod archelix_trail;
 pub mod pool;
 pub mod value_types;
 pub mod mechanism;
@@ -2171,8 +2173,8 @@ pub enum PsCall {
     Emit(i32, [f32; 3], [f32; 4]),
     /// Emit(EmitParams, 1), with the same pose.
     EmitParams(crate::particles::EmitParams, [f32; 3], [f32; 4]),
-    /// emission.rateOverTimeMultiplier and main.startSpeedMultiplier.
-    Multipliers(f32, f32),
+    /// A script's module writes (rate and speed multipliers, startColor).
+    Writes(crate::particles::PsWrites),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2936,6 +2938,8 @@ pub struct Game {
     pub renderers: Vec<Renderer>,
     /// LineRenderers a script drives (line.rs).
     pub lines: Vec<line::LineVisual>,
+    /// TrailRenderers drawn as world-space lines of `lines` (trail.rs; rendering only).
+    pub trails: Vec<trail::Trail>,
     /// World-space TextMeshPro texts (world_text.rs) and the font assets they use, read once.
     pub world_texts: Vec<world_text::WorldText>,
     pub tmp_fonts: HashMap<crate::assets::db::ObjRef, std::sync::Arc<crate::tmp::FontAsset>>,
@@ -3077,6 +3081,8 @@ pub struct Game {
     pub holle_man_prefab: Option<crate::assets::db::ObjRef>,
     /// FireParticleSystem.Emit calls for the drawing: Physical, position, startSize, startColor.
     pub fire_emits: Vec<(usize, [f32; 3], f32, [f32; 4])>,
+    /// SmokeParticleSystem.Emit(n) calls (Sizzle) for the drawing: Physical, n.
+    pub smoke_emits: Vec<(usize, i32)>,
     /// The modelled managed heap's base for this session (PhysicalBehaviour hash codes); None: the fixed test base.
     pub heap_base: Option<u64>,
     /// A replay's recorded PhysicalBehaviour hash codes by instance id (dump.rs): they replace the modelled ones.

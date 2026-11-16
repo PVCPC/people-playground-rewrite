@@ -353,7 +353,8 @@ impl Game {
         if !self.is_point_under_water([position[0], position[1]]) {
             self.spawn_prefab(effect.expect("JavelinMissileBehaviour.ExplosionEffect: Instantiate(null)"), position);
         }
-        // TrailParticleEffect.transform.SetParent(null); Stop is presentation; AddComponent<DeleteAfterTime>().Life = 5f.
+        // TrailParticleEffect.transform.SetParent(null); Stop(withChildren, StopEmitting); AddComponent<DeleteAfterTime>().Life = 5f.
+        self.ps_field_play_stop(id, "TrailParticleEffect", false);
         self.set_parent_null_of(trail, |_, _, _| {});
         let (active, key) = self.with_component_instance(trail, |_, inst, o| (inst.objects[o].self_active, inst.objects[o].components[0]));
         if active {

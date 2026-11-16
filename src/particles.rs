@@ -286,8 +286,8 @@ pub struct Run {
     chain: Vec<usize>,
     /// The pooled clone it belongs to.
     pooled: Option<crate::game::Pooled>,
-    /// A script's rateOverTimeMultiplier and startSpeedMultiplier (the curves' scalars, their modes kept).
-    multipliers: Option<(f32, f32)>,
+    /// A script's module writes (PsWrites), the latest of each.
+    writes: PsWrites,
     /// Its prefab object's name, then its ancestors'.
     names: Vec<String>,
     /// The clone's root follows this parent; the system's offset and rotation under the root, and the clone's scale.
@@ -888,7 +888,7 @@ fn start_size(run: &Run, ps: &ParticleSystem) -> Option<MinMaxCurve> {
 
 /// startSpeed after the scripts' startSpeedMultiplier writes (BleedingParticleBehaviour, WaterImpactBehaviour).
 fn start_speed(run: &Run, ps: &ParticleSystem, drive: Option<&Drive>) -> MinMaxCurve {
-    let v = drive.map(|d| d.speed).or(run.water.as_ref().map(|w| w.1)).or(run.multipliers.map(|m| m.1));
+    let v = drive.map(|d| d.speed).or(run.water.as_ref().map(|w| w.1)).or(run.writes.speed);
     MinMaxCurve { scalar: v.unwrap_or(ps.start_speed.scalar), ..ps.start_speed.clone() }
 }
 
@@ -1447,12 +1447,16 @@ fn step_inner(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, f
         let rate = match (drive, run.emission.and_then(|e| e.rate)) {
             (Some(d), _) => MinMaxCurve { scalar: d.rate, ..ps.rate_over_time.clone() },
             (None, Some(v)) => constant(v),
-            _ => match run.multipliers {
-                Some((r, _)) => MinMaxCurve { scalar: r, ..ps.rate_over_time.clone() },
+            _ => match run.writes.rate {
+                Some(r) => MinMaxCurve { scalar: r, ..ps.rate_over_time.clone() },
                 None => ps.rate_over_time.clone(),
             },
         };
-        let distance = run.emission.and_then(|e| e.distance).map_or_else(|| ps.rate_over_distance.clone(), constant);
+        let distance = match (run.emission.and_then(|e| e.distance), run.writes.distance) {
+            (Some(v), _) => constant(v),
+            (None, Some(r)) => MinMaxCurve { scalar: r, ..ps.rate_over_distance.clone() },
+            (None, None) => ps.rate_over_distance.clone(),
+        };
         let length = ps.length;
         if !clock.stop_emitting && on && distance.scalar > 0.0 {
             let t = clock.t() + clock.accumulated();
@@ -1490,6 +1494,17 @@ fn step_inner(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, f
     for child in &mut run.children {
         step(child, systems, None, g, frame, rng);
     }
+}
+
+/// A script's module writes on a system (None: not written): emission.rateOverTimeMultiplier and
+/// rateOverDistanceMultiplier, main.startSpeedMultiplier (the curves' scalars, their modes kept) and main.startColor
+/// (a constant colour).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PsWrites {
+    pub rate: Option<f32>,
+    pub distance: Option<f32>,
+    pub speed: Option<f32>,
+    pub color: Option<[f32; 4]>,
 }
 
 /// The ParticleSystem.EmitParams fields the scripts set (FireParticleSystem, NukeShockwave, PyroPowerTool); None is
@@ -1976,15 +1991,48 @@ impl Game {
         self.field_ps_at(sid, field, children).unwrap_or_default()
     }
 
-    /// gapC r11: script `sid`'s serialized Component field `field` (a reference into its own clone) as (object index in the
-    /// clone, the component's instance id).
-    fn field_target(&self, sid: i32, field: &str) -> Option<(&crate::game::spawn::Instance, usize, i32)> {
-        use crate::assets::db::{Component, ObjRef};
+    /// Script `sid`'s serialized field `field` (with its clone and object): `field` may name an array element and a
+    /// struct member, as "ParticleSystems[1]" or "FlameParticles[0].System".
+    fn field_value(&self, sid: i32, field: &str) -> Option<(&crate::game::spawn::Instance, usize, &crate::assets::mono::Value)> {
+        use crate::assets::db::Component;
         let inst = self.unsynced.iter().chain(&self.retained).find(|i| i.objects.iter().any(|x| x.components.contains(&sid)))?;
         let o = inst.objects.iter().position(|x| x.components.contains(&sid))?;
         let c = inst.objects[o].components.iter().position(|&k| k == sid)?;
         let Component::Script { fields, .. } = &inst.prefab.objects[o].components[c].1 else { return None };
-        let p = fields.get(field)?.pptr().filter(|p| p.file == 0 && !p.is_null())?;
+        let mut v = None;
+        for part in field.split('.') {
+            let (name, k) = match part.split_once('[') {
+                Some((n, k)) => (n, Some(k.trim_end_matches(']').parse::<usize>().ok()?)),
+                None => (part, None),
+            };
+            let x = match v {
+                None => fields.get(name)?,
+                Some(v) => crate::assets::mono::Value::get(v, name)?,
+            };
+            v = Some(match k {
+                Some(k) => x.array()?.get(k)?,
+                None => x,
+            });
+        }
+        Some((inst, o, v?))
+    }
+
+    /// Script `sid`'s float field `field` (field_value's paths).
+    pub(crate) fn field_f32(&self, sid: i32, field: &str) -> Option<f32> {
+        self.field_value(sid, field).and_then(|x| x.2.f32())
+    }
+
+    /// The length of script `sid`'s array field `field` (0 when it has none).
+    pub(crate) fn field_len(&self, sid: i32, field: &str) -> usize {
+        self.field_value(sid, field).and_then(|x| x.2.array().map(|a| a.len())).unwrap_or(0)
+    }
+
+    /// gapC r11: script `sid`'s serialized Component field `field` (a reference into its own clone) as (object index in the
+    /// clone, the component's instance id).
+    fn field_target(&self, sid: i32, field: &str) -> Option<(&crate::game::spawn::Instance, usize, i32)> {
+        use crate::assets::db::ObjRef;
+        let (inst, o, v) = self.field_value(sid, field)?;
+        let p = v.pptr().filter(|p| p.file == 0 && !p.is_null())?;
         let &(t, k) = inst.prefab.index.get(&ObjRef { file: inst.prefab.objects[o].game_object.file, path_id: p.path_id })?;
         Some((inst, t, *inst.objects[t].components.get(k)?))
     }
@@ -2018,6 +2066,11 @@ impl Game {
         for i in self.field_ps_tree(sid, field, children) {
             self.ps_calls.push((i, call));
         }
+    }
+
+    /// A script's module writes on its ParticleSystem field (the system itself, not its children).
+    pub(crate) fn ps_field_writes(&mut self, sid: i32, field: &str, w: PsWrites) {
+        self.ps_field_call(sid, field, false, crate::game::PsCall::Writes(w));
     }
 
     /// gapC r11: `<field>.Play()` (on) / `<field>.Stop()` (off), unconditional.
@@ -2844,11 +2897,17 @@ fn attached_systems(
                         emit_external(run, &library.systems, g, &e, rng);
                     }
                 }
+                if k == 3 && ps.shape_type == 20 {
+                    for &(_, n) in g.smoke_emits.iter().filter(|e| e.0 == p) {
+                        emit_count(run, &library.systems, g, n, rng);
+                    }
+                }
                 step(run, &library.systems, None, g, dt, rng);
             }
         }
     }
     g.fire_emits.clear();
+    g.smoke_emits.clear();
 }
 
 /// The ParticleSystems scripts play inside their prefab (FireworksBehaviour, GorseDroolingBehaviour): the system follows
@@ -2887,14 +2946,19 @@ fn embedded_systems(
                     embedded.insert(i, (run, None, 0));
                 }
             },
-            PsCall::Multipliers(rate, speed) => {
+            PsCall::Writes(w) => {
                 if !embedded.contains_key(&i) {
-                    assert!(on_awake, "a module write on a system never played");
-                    let run = embedded_start(g, library, i, sys, manager);
+                    let mut run = embedded_start(g, library, i, sys, manager);
+                    // Never played (playOnAwake off): the writes wait for its Play.
+                    run.stopped = !on_awake;
                     embedded.insert(i, (run, None, 0));
                 }
                 let run = &mut embedded.get_mut(&i).unwrap().0;
-                run.multipliers = Some((rate, speed));
+                let o = &mut run.writes;
+                (o.rate, o.distance, o.speed) = (w.rate.or(o.rate), w.distance.or(o.distance), w.speed.or(o.speed));
+                if w.color.is_some() {
+                    run.color = w.color;
+                }
                 written(run);
             }
             // Stop (1801c4830): needRestart, stopEmitting, stopTime; Clear when there is no particle (only its
@@ -3172,6 +3236,15 @@ pub struct World {
 }
 
 /// gParticleSystemManager->rand as a recording holds it (the game's is seeded from system entropy).
+/// Particles alive now in played effects, bleeds, the physicals' attached systems and embedded systems (tests).
+#[cfg(test)]
+pub fn live_particles(g: &Game) -> usize {
+    g.particle_world.as_ref().map_or(0, |w| {
+        let attached = w.attached.values().flat_map(|a| a.runs.iter().map(|r| &r.0));
+        w.runs.iter().chain(w.bleeds.values()).chain(attached).chain(w.embedded.values().map(|e| &e.0)).map(|r| r.particles.len()).sum()
+    })
+}
+
 pub fn set_manager_rand(g: &mut Game, state: [u32; 4]) {
     g.particle_world.get_or_insert_with(Default::default).manager.rand.state = state;
 }

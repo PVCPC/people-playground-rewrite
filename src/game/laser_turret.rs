@@ -2,7 +2,7 @@
 //! joint motor to that speed times motorSpeed while it is not broken; the controller's OnShoot calls Shoot. Shoot (CanShoot)
 //! waits out the cooldown (less the body's charge), pushes the body back by the recoil at the barrel, and instantiates the
 //! bolt, turned to the barrel direction plus an inaccuracy draw. Use shoots. OnEMPHit breaks it (SetAsBroken): the motor
-//! stops. The muzzle flash, the glow and the break effect are presentation.
+//! stops, the break effect is instantiated and the glow goes inactive. The muzzle flash plays (particles.rs).
 #![allow(non_snake_case)]
 
 use super::automatic_sentry::{AutomaticSentry, SentryEvent};
@@ -134,7 +134,7 @@ Your script should either check if it is null or you should not destroy the obje
     }
 
     /// LaserTurretBehaviour.Shoot (the CanShoot override): the cooldown, the recoil on the body at the barrel, and the
-    /// bolt clone turned to the barrel direction plus an inaccuracy draw (the flash is presentation).
+    /// bolt clone turned to the barrel direction plus an inaccuracy draw, and the muzzle flash's Play.
     pub fn laser_turret_shoot(&mut self, l: usize) {
         let time = self.time.time;
         let p = self.laser_turrets[l].physical;

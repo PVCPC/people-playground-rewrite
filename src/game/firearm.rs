@@ -472,10 +472,12 @@ impl Game {
                 self.firearms[f].muzzle = Some(m);
             }
             Some(effect) => {
-                // Instantiate(MuzzleFlashEffectOverride, BarrelPosition, rotation); its pose is presentation (link checks
-                // it has no physics).
+                // Instantiate(MuzzleFlashEffectOverride, BarrelPosition, rotation).transform.right = BarrelDirection (link
+                // checks it has no physics); transform.position = BarrelPosition again.
                 let at = self.barrel_position(f);
-                self.spawn_prefab(effect, [at[0], at[1], 0.0]);
+                let id = self.spawn_prefab(effect, [at[0], at[1], 0.0]);
+                let dir = self.barrel_direction(f);
+                self.tr_set_right(super::translated::rt::Xf::Object(id), [dir[0], dir[1], 0.0]);
             }
         }
         // bulletCasing.transform.position = CasingPosition; .right = CasingDirection; Play(): the casing system is drawn by

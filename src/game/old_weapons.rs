@@ -1,7 +1,7 @@
 //! The [Obsolete] weapons and flying parts: ScherbewerferBehaviour (launches its Projectile), NeedlerBehaviour (fires
 //! NeedleBehaviour needles), NeedleBehaviour (a homing needle), MachineGunProjectileBehaviour (a bullet stepped by raycast),
 //! PlaneBehaviour and WingBehaviour (thrust, lift and the fuel tank rupture) and GlassShardBehaviour (a flying shard that
-//! cuts what it passes through). Muzzle flashes, gizmos and the wing's fire particle are presentation.
+//! cuts what it passes through). Muzzle flashes and gizmos are presentation.
 #![allow(non_snake_case)]
 
 use super::coroutine::{Routine, Yield};
@@ -495,13 +495,14 @@ impl Game {
     }
 
     /// WingBehaviour.FuelTankRupture: once, the plane switches off, ignites and a 128 ray explosion goes off at the wing
-    /// (the fire particle is presentation).
+    /// after fireParticle.Play().
     pub fn wing_fuel_tank_rupture(&mut self, w: usize) {
         if self.wings[w].ruptured {
             return;
         }
         self.wings[w].ruptured = true;
         let (plane, id) = (self.wings[w].plane, self.wings[w].id);
+        self.ps_field_play_stop(id, "fireParticle", true);
         self.planes[plane].enabled = false;
         if let Some(p) = self.planes[plane].physical {
             self.ignite(p, false);

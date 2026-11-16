@@ -1,6 +1,6 @@
 //! BlasterBehaviour (the Blaster, Blaster Rifle and Machine Blaster) and BlasterboltBehaviour (their bolts): a bare
 //! Transform the script steps along its right vector with Utils.MaterialAwareRaycast until a ray finds something.
-//! The muzzle flash, the trail and the particle children are presentation. The bolt's TrailRenderer has
+//! The muzzle flash plays (particles.rs) and the bolt's TrailRenderer is drawn by trail.rs. The TrailRenderer has
 //! autodestruct set once it closed: the native renderer destroys the GameObject when its trail (`m_Time`) has faded.
 #![allow(non_snake_case)]
 
@@ -65,7 +65,7 @@ script! {
         HitDecal: Option<ObjRef> = None,
         /// ImpactDecal: an arena index of `Game::decal_descriptors`; None for a null asset.
         ImpactDecal: Option<usize> = None,
-        /// The Trail's m_Time: 0.025 in all three bolt prefabs (TrailRenderer data is not read).
+        /// The Trail's m_Time: 0.025 in all three bolt prefabs (the simulation's copy; trail.rs draws the trail).
         trail_time: f32 = 0.025,
         /// The private `closing`, and the time it was set.
         closing: bool = false,
@@ -926,13 +926,13 @@ impl Game {
         (d(energy) / self.railguns[i].StartingEnergy * 500.0f32).f()
     }
 
-    /// RailgunBehaviour.FireCoroutine after the charge: the recoil, the trace and the trail (the muzzle flash is a
-    /// PARTICLE call site).
+    /// RailgunBehaviour.FireCoroutine after the charge: the muzzle flash, the recoil, the trace and the trail.
     fn railgun_fire(&mut self, i: usize) {
         let s = self.railguns[i].clone();
         let p = s.physical;
         let at = self.xf_position(&s.own);
         self.camera_shake(s.ScreenShake * 2.0, [at[0], at[1]]);
+        self.ps_field_play_stop(s.id, "Muzzleflash", true);
         let (bd, bp) = (self.railgun_barrel_direction(i), self.railgun_barrel_position(i));
         let rb = self.physicals[p].rigidbody.clone();
         rb.add_impulse_at_position(&mut self.world, [bd[0] * -30.0, bd[1] * -30.0], bp);
@@ -1099,6 +1099,10 @@ script! {
         /// ShootSounds.Length (the clips are presentation).
         ShootSounds: usize = 0,
         ImpactPoolable: Option<ObjRef> = None,
+        /// LaserRenderer: its index in `Game::lines` (None: null), and when FireCoroutine's WaitForSeconds(0.02f)
+        /// turns it off (rendering only).
+        line: Option<usize> = None,
+        line_off_at: Option<f64> = None,
         // BeamRepeaterBehaviour.Awake: dist = new FixedIntervalDistributor { RateHz = ShootRate }
         /// The private dist (Awake: RateHz = ShootRate).
         dist: super::misc::FixedIntervalDistributor = super::misc::FixedIntervalDistributor::with_rate(25.0),
@@ -1163,23 +1167,36 @@ impl Game {
         self.beam_repeaters[i].enabled && !self.disabled_ids.contains(&self.beam_repeaters[i].id)
     }
 
-    /// BeamRepeaterBehaviour.FireCoroutine: it runs to the WaitForSeconds(0.02f) at once (the muzzle flash
-    /// and the line are presentation).
+    /// BeamRepeaterBehaviour.FireCoroutine: it runs to the WaitForSeconds(0.02f) at once; after it the line goes off
+    /// (beam_repeater_update, rendering only).
     pub(crate) fn beam_repeater_fire(&mut self, i: usize) {
         let (clips, shake, aim, mask) = {
             let s = &self.beam_repeaters[i];
             (s.ShootSounds, s.ScreenShake, s.AimRandomness, s.mask)
         };
         let id = self.beam_repeaters[i].id;
+        self.ps_field_play_stop(id, "Muzzleflash", true);
         self.audio_one_shot_pick(id, "AudioSource", "ShootSounds", clips);
         let at = self.xf_position(&self.beam_repeaters[i].own);
         self.camera_shake(shake * 2.0, [at[0], at[1]]);
         let (pos, dir) = (self.beam_repeater_barrel_position(i), self.beam_repeater_barrel_direction(i));
         let r = self.random.inside_unit_circle();
         let normalized = mathf::normalized2([dir[0] + r[0] * aim, dir[1] + r[1] * aim]);
-        if let Some(hit) = self.raycast(V::new(pos[0], pos[1]), normalized, 100000.0, mask, f32::NEG_INFINITY, f32::INFINITY) {
+        // LaserRenderer.SetPosition(0, BarrelPosition), SetPosition(1, the hit or BarrelPosition + BarrelDirection * 1000f).
+        let hit = self.raycast(V::new(pos[0], pos[1]), normalized, 100000.0, mask, f32::NEG_INFINITY, f32::INFINITY);
+        if let Some(l) = self.beam_repeaters[i].line {
+            let end = hit.as_ref().map_or([pos[0] + dir[0] * 1000.0, pos[1] + dir[1] * 1000.0], |h| [h.point.x, h.point.y]);
+            self.line_set_position_count(l, self.lines[l].positions.len().max(2));
+            self.line_set_position(l, 0, [pos[0], pos[1], 0.0]);
+            self.line_set_position(l, 1, [end[0], end[1], 0.0]);
+        }
+        if let Some(hit) = hit {
             let (world, own) = (self.hit_world_physical(&hit), self.hit_transform_physical(&hit));
             self.beam_repeater_on_hit(i, world, own, [hit.point.x, hit.point.y]);
+        }
+        if let Some(l) = self.beam_repeaters[i].line {
+            self.lines[l].enabled = true;
+            self.beam_repeaters[i].line_off_at = Some(self.time.timeAsDouble + 0.02);
         }
     }
 
@@ -1225,8 +1242,14 @@ impl Game {
         self.limb_damage(l, damage);
     }
 
-    /// BeamRepeaterBehaviour.Update
+    /// BeamRepeaterBehaviour.Update (first FireCoroutine's LaserRenderer.enabled = false after its wait, rendering only)
     pub fn beam_repeater_update(&mut self, i: usize) {
+        if let (Some(l), Some(at)) = (self.beam_repeaters[i].line, self.beam_repeaters[i].line_off_at)
+            && self.time.timeAsDouble >= at
+        {
+            self.lines[l].enabled = false;
+            self.beam_repeaters[i].line_off_at = None;
+        }
         if !self.beam_repeater_enabled(i) {
             return;
         }

@@ -1,5 +1,6 @@
-//! JackOLaternBehaviour and TargetLineRenderer: their sprites and line renderer are presentation; a missing reference
-//! still throws where the game would touch it.
+//! JackOLaternBehaviour and TargetLineRenderer: the lantern's sprites are presentation; TargetLineRenderer's line is
+//! drawn from `Game::lines` (Awake adds it there when no other script has). A missing reference still throws where the
+//! game would touch it.
 #![allow(non_snake_case)]
 
 use super::translated::rt::{self, Xf};
@@ -51,7 +52,10 @@ impl Game {
         }
         let (id, present, target) = (t.this_id, t.LineRenderer, t.Target);
         // LineRenderer (the one the field names, on whichever object): Awake's useWorldSpace, positionCount and point 0.
-        let l = self.present_ids.get(&(id, "LineRenderer")).and_then(|lid| self.lines.iter().position(|x| x.id == *lid));
+        let mut l = self.present_ids.get(&(id, "LineRenderer")).and_then(|lid| self.lines.iter().position(|x| x.id == *lid));
+        if awake && l.is_none() {
+            l = self.present_ids.get(&(id, "LineRenderer")).copied().and_then(|lid| self.target_line_add(lid));
+        }
         if awake {
             rt::pres(present);
             if let Some(l) = l {
@@ -80,6 +84,22 @@ impl Game {
         if let Some(p) = l.and_then(|l| self.lines[l].positions.get_mut(1)) {
             *p = [v[0], v[1], v[2]];
         }
+    }
+
+    /// Rendering: the LineRenderer `lid` of a clone, added to `Game::lines` (None: not a LineRenderer in a clone).
+    fn target_line_add(&mut self, lid: i32) -> Option<usize> {
+        use crate::assets::db::Component;
+        let (inst, o, k) = self.component_at(lid)?;
+        if !matches!(inst.prefab.objects[o].components[k].1, Component::Other(120)) {
+            return None;
+        }
+        let (r, layer, active) = (inst.prefab.objects[o].components[k].0, inst.prefab.objects[o].layer as i32, inst.objects[o].active);
+        let (anchor, chain) = self.object_anchor(inst, o);
+        let db = self.assets.take()?;
+        let data = crate::assets::components::LineRendererData::read(db.data(r));
+        let l = data.ok().map(|data| self.add_line(&db, r.file, data, lid, anchor, chain, layer, active));
+        self.assets = Some(db);
+        l
     }
 
     /// JackOLaternBehaviour.Start

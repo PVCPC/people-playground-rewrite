@@ -1212,8 +1212,41 @@ pub struct LineRendererData {
 impl LineRendererData {
     pub fn read(data: &[u8]) -> Result<Self, String> {
         let r = &mut Reader::new(data);
-        let (enabled, materials, layer, order) = renderer_head(r)?;
+        let head = renderer_head(r)?;
         let positions = vec(r, |r| floats::<3>(r))?;
+        let mut x = line_parameters(r, head, positions)?;
+        x.use_world_space = r.bool()?;
+        x.looped = r.bool()?;
+        done(r, "LineRenderer", x)
+    }
+}
+
+/// A TrailRenderer (class 96) as the LineRenderer it draws like (world space, no positions of its own): the Renderer
+/// head, m_Time, m_Parameters (a LineRenderer's), m_MinVertexDistance, m_Autodestruct and m_Emitting.
+pub struct TrailRendererData {
+    pub line: LineRendererData,
+    pub time: f32,
+    pub min_vertex_distance: f32,
+    pub emitting: bool,
+}
+
+impl TrailRendererData {
+    pub fn read(data: &[u8]) -> Result<Self, String> {
+        let r = &mut Reader::new(data);
+        let head = renderer_head(r)?;
+        let time = r.f32()?;
+        let line = line_parameters(r, head, Vec::new())?;
+        let min_vertex_distance = r.f32()?;
+        r.bool()?; // m_Autodestruct
+        let emitting = r.bool()?;
+        done(r, "TrailRenderer", Self { line, time, min_vertex_distance, emitting })
+    }
+}
+
+/// m_Parameters (LineParameters) after a line's positions: widthMultiplier, widthCurve, colorGradient, the vertex
+/// counts, alignment, textureMode, shadowBias and generateLightingData.
+fn line_parameters(r: &mut Reader, (enabled, materials, layer, order): (bool, Vec<PPtr>, i32, i16), positions: Vec<[f32; 3]>) -> Result<LineRendererData, String> {
+    {
         let width_multiplier = r.f32()?;
         // widthCurve: the keyframes (time, value, inSlope, outSlope, weightedMode, inWeight, outWeight), the two infinities and the rotation order.
         let keys = r.i32()?;
@@ -1250,9 +1283,7 @@ impl LineRendererData {
         r.bytes(4)?;
         r.bool()?;
         r.align();
-        let use_world_space = r.bool()?;
-        let looped = r.bool()?;
-        done(r, "LineRenderer", Self { enabled, materials, layer, order, positions, width_multiplier, width_keys, width_weighted, width_infinity, gradient: (colors, ctime, atime, mode, nc, na), corner_vertices, cap_vertices, alignment, texture_mode, use_world_space, looped })
+        Ok(LineRendererData { enabled, materials, layer, order, positions, width_multiplier, width_keys, width_weighted, width_infinity, gradient: (colors, ctime, atime, mode, nc, na), corner_vertices, cap_vertices, alignment, texture_mode, use_world_space: true, looped: false })
     }
 }
 

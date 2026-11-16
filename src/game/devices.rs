@@ -189,7 +189,7 @@ impl Game {
         self.generator_update_activation(i);
     }
 
-    /// GeneratorBehaviour.UpdateActivation (the particles are presentation): generatorAudioSource.Play or Stop.
+    /// GeneratorBehaviour.UpdateActivation: generatorAudioSource and particles Play or Stop.
     pub(crate) fn generator_update_activation(&mut self, i: usize) {
         let s = &self.generators[i];
         if let Some(src) = self.audio.source_field(s.id, "generatorAudioSource") {
@@ -200,7 +200,7 @@ impl Game {
         self.ps_field_play_stop(id, "particles", on);
     }
 
-    /// GeneratorBehaviour.Use (the particles are presentation)
+    /// GeneratorBehaviour.Use
     pub fn generator_use(&mut self, i: usize) {
         let s = &mut self.generators[i];
         if s.enabled {
@@ -226,12 +226,14 @@ impl Game {
         }
     }
 
-    /// GeneratorBehaviour.OnDisable (the particles are presentation)
+    /// GeneratorBehaviour.OnDisable
     pub fn generator_on_disable(&mut self, i: usize) {
         self.generators[i].Activated = false;
-        if let Some(src) = self.audio.source_field(self.generators[i].id, "generatorAudioSource") {
+        let id = self.generators[i].id;
+        if let Some(src) = self.audio.source_field(id, "generatorAudioSource") {
             self.audio.stop(src);
         }
+        self.ps_field_play_stop(id, "particles", false);
     }
 
     /// GeneratorBehaviour.Update
@@ -596,8 +598,8 @@ impl Game {
     }
 
     /// TemperatureRayGunBehaviour.FixedUpdate: the ray from the LineRenderer's object heats what it hits; SetPosition(1) at the
-    /// hit (or 100000 along) and LineRenderer.enabled = useHeat > 0 Impact/Muzzle Play while heating, Stop
-    /// otherwise, by isEmitting (Impact's position is a PARTICLE call site).
+    /// hit (or 100000 along), Impact moved there, and LineRenderer.enabled = useHeat > 0; Impact/Muzzle Play while
+    /// heating, Stop otherwise, by isEmitting.
     pub fn ray_gun_fixed_update(&mut self, i: usize) {
         let s = &self.ray_guns[i];
         let p = s.Phys;
@@ -632,6 +634,12 @@ impl Game {
             };
             let line = self.ray_guns[i].line;
             self.line_set_position(line, 1, vector);
+            // Impact.transform.position = vector
+            let id = self.ray_guns[i].id;
+            if let Some(t) = self.field_component(id, "Impact") {
+                self.with_component_instance(t, |_, inst, o| inst.set_world_position(o, vector));
+                self.ps_field_moved(id, "Impact", vector);
+            }
         }
         let (id, on) = (self.ray_guns[i].id, self.ray_guns[i].useHeat > 0.0);
         if !on {

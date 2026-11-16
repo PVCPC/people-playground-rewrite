@@ -1,6 +1,6 @@
 //! LiquidContainerLeakingBehaviour and LiquidContainerHoleBehaviour. Shots and wounding unstabs make a Hole clone under the
 //! object; each hole sprays FancyBloodSplat particles and drains its Source. Repair destroys them. The "Repair holes" context
-//! button is UI, and the holes' LiquidParticles and WaterPuffParticles are presentation.
+//! button is UI; the holes' LiquidParticles and WaterPuffParticles follow the liquid (liquid_spray_particles).
 #![allow(non_snake_case)]
 
 use super::container::Owner;
@@ -158,7 +158,12 @@ impl Game {
         let s = self.liquid_holes[h].splat;
         self.splats[s].SpawningChance = 0.0;
         // LiquidContainerHoleBehaviour.IsParticleSubmerged: water_puff_submerged.
-        if !self.water_puff_submerged(self.liquid_holes[h].water_puff) {
+        let submerged = self.water_puff_submerged(self.liquid_holes[h].water_puff);
+        let fallback = self.bc(o).cachedComputedColour;
+        let colour = self.get_computed_color(o, fallback);
+        let (id, full) = (self.liquid_holes[h].id, self.bc(o).TotalLiquidAmount > self.liquid_holes[h].DrainRate);
+        self.liquid_spray_particles(id, "LiquidParticles", submerged, full, colour, num, 16.0);
+        if !submerged {
             let fallback = self.bc(o).cachedComputedColour;
             let colour = self.get_computed_color(o, fallback);
             let splat = &mut self.splats[s];

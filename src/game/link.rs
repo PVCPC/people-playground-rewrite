@@ -1191,7 +1191,7 @@ pub(super) fn check_rewritten(class: &str) {
         "GorseDroolingBehaviour" | "GorseProjectileBehaviour" => {}
         // Awake and Update are rewritten (gorse.rs); the renderer toggle is rendering.
         "GorseEyeBehaviour" => {}
-        // Awake (its buffer) and OnCollisionEnter2D are rewritten (excalibur.rs); the emission rates are presentation.
+        // Awake (its buffer) and OnCollisionEnter2D are rewritten (excalibur.rs), the emission rates too.
         "FireballBehaviour" => {}
         // Start and FixedUpdate are rewritten (misc.rs); OnCollide has no subscriber outside the rewrite's checks.
         "FancyBloodSplatController" => {}
@@ -2312,6 +2312,9 @@ impl Game {
             x.trail_time = head.time;
             x.trail_min_distance = head.min_vertex_distance;
             x.trail_width_multiplier = head.width_multiplier;
+            // Rendering: the trail as a world-space line (archelix_trail.rs), hidden until it has points.
+            let data = super::archelix_trail::trail_line_data(db.data(*tref))?;
+            x.trail_line = Some(self.add_line(db, file, data, inst.objects[to].components[tc], BareAnchor::Root, Vec::new(), prefab.objects[to].layer as i32, false));
             archelix_bolts.insert(o, self.archelix_bolts.len());
             self.archelix_bolts.push(x);
         }
@@ -3448,6 +3451,9 @@ impl Game {
                 }
                 // Awake: dist.RateHz = ShootRate (IntervalSeconds = 1f / value).
                 x.dist.set_RateHz(x.ShootRate as f32);
+                if l.object(field(v, "LaserRenderer")?)?.is_some() {
+                    x.line = Some(l.add_line(self, db, field(v, "LaserRenderer")?, "BeamRepeaterBehaviour")?);
+                }
                 beam_repeaters.insert(o, self.beam_repeaters.len());
                 self.beam_repeaters.push(x);
             }
@@ -3532,6 +3538,16 @@ impl Game {
                 }
                 if prefab.objects.iter().any(|x| x.components.iter().any(|(_, c)| matches!(c, Component::Collider2D(_) | Component::Rigidbody2D(_)))) {
                     unimplemented!("mod-only: BlasterboltBehaviour on a prefab with physics (its pose)");
+                }
+                // Trail: drawn by trail.rs (rendering only; its autodestruct is the script's trail_autodestruct).
+                let tp = field(v, "Trail")?.pptr().ok_or("BlasterboltBehaviour.Trail")?;
+                if !tp.is_null() && tp.file == 0 {
+                    let (to, tc) = *prefab.index.get(&ObjRef { file, path_id: tp.path_id }).ok_or("BlasterboltBehaviour.Trail: dangling reference")?;
+                    let (tref, tcomp) = &prefab.objects[to].components[tc];
+                    if matches!(tcomp, Component::Other(96)) {
+                        let data = crate::assets::components::TrailRendererData::read(db.data(*tref))?;
+                        self.trail_add(db, file, data, inst.objects[to].components[tc], prefab.objects[to].layer as i32, inst.objects[to].active);
+                    }
                 }
                 blasterbolts.insert(o, self.blasterbolts.len());
                 self.blasterbolts.push(x);
@@ -4699,8 +4715,14 @@ impl Game {
                     return Err("LightningToolEntityBehaviour.SingleBolt is not a LineRenderer".into());
                 }
                 x.vertices = crate::assets::components::line_position_count(db.data(prefab.objects[lo].components[lc].0))? as usize;
+                x.bolt = Some(l.add_line_on(self, db, lo, "LightningToolEntityBehaviour.SingleBolt")?);
+                x.flash = self.sprite_field(&l, v, "LargeFlashLight")?;
                 lightning_entities.insert(o, self.lightning_entities.len());
                 self.lightning_entities.push(x);
+                // Awake: LargeFlashLight.enabled = false.
+                if let Some(s) = self.lightning_entities.last().unwrap().flash {
+                    self.set_sprite_enabled(s, false);
+                }
             }
             if let Some((c, enabled, v)) = script(prefab, o, "PyroPowerToolEntity") {
                 let mut x = super::pyro_tool::PyroEntity::default();
@@ -6390,7 +6412,9 @@ impl Game {
                         at = inst.objects[at].parent.ok_or("WormStaffBehaviour: a LineRenderer outside the staff")?;
                     }
                     x.LineRenderers.push(chain);
+                    x.lines.push(l.add_line(self, db, &r, "WormStaffBehaviour")?);
                 }
+                x.VertexCount = field(v, "VertexCount")?.i64().ok_or("WormStaffBehaviour.VertexCount")? as i32;
                 worm_staffs.insert(o, self.worm_staffs.len());
                 self.worm_staffs.push(x);
             }

@@ -1415,7 +1415,14 @@ impl Game {
             self.people[person].OverridePoseIndex = -1;
         }
         if !self.prefs.GorelessMode && !self.limbs[l].KillShotParticlesEmitted && self.limbs[l].Health <= mathf::EPSILON && self.limbs[l].KillShotParticles && self.random.value() > 0.7 {
-            // KillShotParticles.Play() is presentation; PhysicalBehaviour.PlayClipOnce(Person.DismembermentClips.PickRandom()).
+            // KillShotParticles.transform.right = shot.normal; KillShotParticles.Play();
+            let id = self.limbs[l].id;
+            if let Some(t) = self.field_component(id, "KillShotParticles") {
+                let q = crate::unity::transform::from_to_rotation([1.0, 0.0, 0.0], [normal[0], normal[1], 0.0]);
+                self.with_component_instance(t, |_, inst, o| inst.set_world_rotation(o, q));
+            }
+            self.ps_field_play_stop(id, "KillShotParticles", true);
+            // PhysicalBehaviour.PlayClipOnce(Person.DismembermentClips.PickRandom()).
             let clip = self.pick_clip(self.people[person].id, "DismembermentClips", self.people[person].DismembermentClips);
             self.play_clip_once(self.limbs[l].PhysicalBehaviour, clip, 1.0);
             self.limbs[l].KillShotParticlesEmitted = true;

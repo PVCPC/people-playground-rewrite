@@ -1,7 +1,7 @@
 //! EnergySwordBehaviour. Use switches the blade (BladeObject and MotionBlur) on and off; FixedUpdate cuts what the
 //! BladeCollider overlaps through soft connections (soft_connect.rs), heating, burning and damaging what stays
-//! connected and slicing it at random; Update cools the impact sound's cooldown. The loop, impact and rain audio, the
-//! particles and the hit particle's position are presentation; the impact loop's isPlaying is kept (its Play draws).
+//! connected and slicing it at random; Update cools the impact sound's cooldown and keeps the rain particles on while the
+//! map rains. The loop, impact and rain audio are presentation; the impact loop's isPlaying is kept (its Play draws).
 #![allow(non_snake_case)]
 
 use super::soft_connect::SoftConnections;
@@ -146,6 +146,15 @@ impl Game {
     fn energy_sword_set_activation(&mut self, i: usize, play_activation_sounds: bool) {
         let id = self.energy_swords[i].id;
         self.with_component_instance(id, |g, inst, _| g.energy_sword_set_activation_in(i, inst, play_activation_sounds));
+        // BoilingVFX.Play(withChildren: true); off: HitParticle, BoilingVFX and RainParticles Stop. (OnDisable's
+        // SetActivation runs with the clone taken out, where the fields are not found: the object goes away then.)
+        if self.energy_swords[i].Activated {
+            self.ps_field_play_stop(id, "BoilingVFX", true);
+        } else {
+            for f in ["HitParticle", "BoilingVFX", "RainParticles"] {
+                self.ps_field_play_stop(id, f, false);
+            }
+        }
     }
 
     /// EnergySwordBehaviour.SetActivation: MotionBlur and BladeObject follow Activated; switching off stops the impact
@@ -189,15 +198,18 @@ impl Game {
         }
     }
 
-    /// EnergySwordBehaviour.Update: the impact sound's cooldown (the rain particles are presentation).
+    /// EnergySwordBehaviour.Update: RainParticles plays while the map rains (Settings.Rain and a RainPrefab), by
+    /// isEmitting; then the impact sound's cooldown.
     pub fn energy_sword_update(&mut self, i: usize) {
-        let s = &mut self.energy_swords[i];
-        if !s.Activated {
+        if !self.energy_swords[i].Activated {
             return;
         }
-        if !s.map_config {
+        if !self.energy_swords[i].map_config {
             crate::game::menu::throw("NullReferenceException: Object reference not set to an instance of an object");
         }
+        let rain = self.map_settings.is_some_and(|m| m.Rain) && self.map_config.as_ref().is_some_and(|m| m.weather[1].is_some());
+        self.ps_field_emit(self.energy_swords[i].id, "RainParticles", rain);
+        let s = &mut self.energy_swords[i];
         s.impactSoundHeat -= self.time.deltaTime;
         if s.impactSoundHeat < f32::from_bits(1) {
             s.impactSoundHeat = 0.0;
@@ -266,6 +278,10 @@ impl Game {
                 self.physicals[c.phys].BurnProgress += num3;
                 let damage = self.energy_swords[i].Damage * self.time.fixedDeltaTime;
                 self.send_damage(c.phys, damage);
+                // HitParticle.transform.position = position
+                if let Some(t) = self.field_component(id, "HitParticle") {
+                    self.with_component_instance(t, |_, inst, o| inst.set_world_position(o, [hit[0], hit[1], 0.0]));
+                }
                 if should_cut && d(self.random.value()) > d(0.995) - num2 {
                     self.broadcast_slice(v);
                 }

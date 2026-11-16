@@ -522,7 +522,11 @@ impl crate::game::Game {
             .map(|&id| {
                 let (inst, o, c) = at(id);
                 let Component::ForceField(f) = &inst.prefab.objects[o].components[c].1 else { unreachable!("a ParticleSystemForceField id") };
-                Field { id, l2w: l2w(inst, o), layer: layer(inst, o), field: f.clone() }
+                // The field's Transform as it is now: a clone's physical object (the Stormbaan's `target` child, which
+                // LightningGunBehaviour moves) poses it, not the clone's spawn pose.
+                let (a, chain) = self.object_anchor(inst, o);
+                let l2w = crate::unity::transform::local_to_world(&self.anchored_nodes(a, &chain));
+                Field { id, l2w, layer: layer(inst, o), field: f.clone() }
             })
             .collect();
         let list: Vec<Option<i32>> = if x.influence_filter == 0 || x.influence.is_empty() {

@@ -1,5 +1,5 @@
-//! ThrusterbedBehaviour. The particle system's module settings and the context menu are presentation; the
-//! activation, thrust, burn rays, temperature and Random draws stay.
+//! ThrusterbedBehaviour. The effect plays while on, with its start speed and colour; its noise strength and the context
+//! menu are presentation; the activation, thrust, burn rays, temperature and Random draws stay.
 #![allow(non_snake_case)]
 
 use super::{d, mathf, script, Game};
@@ -79,9 +79,9 @@ impl Game {
         self.audio.get_mut(low).volume = progress;
     }
 
-    /// ThrusterbedBehaviour.UpdateActivated (the effect's Play and Stop are presentation)
+    /// ThrusterbedBehaviour.UpdateActivated
     pub(crate) fn thrusterbed_update_activated(&mut self, i: usize) {
-        self.thrusterbed_update_particle_system();
+        self.thrusterbed_update_particle_system(i, 0.0);
         self.thrusterbed_update_audio(i, 0.0);
         let (low, high) = self.thrusterbed_sources(i);
         let id = self.thrusterbeds[i].id;
@@ -89,9 +89,11 @@ impl Game {
             if let Some(clip) = self.audio.clip(id, "IgnitionSound") {
                 self.audio.play_one_shot(low, Some(&clip), 1.0);
             }
+            self.ps_field_call(id, "effect", false, super::PsCall::Play);
             self.audio.play(low);
             self.audio.play(high);
         } else {
+            self.ps_field_call(id, "effect", false, super::PsCall::Stop(self.time.timeAsDouble));
             self.audio.stop(low);
             self.audio.stop(high);
             if let Some(clip) = self.audio.clip(id, "ExtinguishSound") {
@@ -101,14 +103,24 @@ impl Game {
         self.thrusterbeds[i].time = 0.0;
     }
 
-    /// ThrusterbedBehaviour.UpdateParticleSystem: startSpeedMultiplier = progress * Random.Range(5f, 12f) + ...
-    pub(crate) fn thrusterbed_update_particle_system(&mut self) {
-        self.random.range(5.0, 12.0);
+    /// ThrusterbedBehaviour.UpdateParticleSystem: startSpeedMultiplier = progress * Random.Range(5f, 12f) + Charge * 0.5,
+    /// startColor 4 * (num, num - Charge * 0.2, num + Charge * 0.6) * Max(1, Charge * 5) with num = Max(0.1, Charge / 8).
+    /// (noise.strengthMultiplier = progress * 2 is not drawn.)
+    pub(crate) fn thrusterbed_update_particle_system(&mut self, i: usize, progress: f32) {
+        let r = self.random.range(5.0, 12.0);
+        let (id, charge) = (self.thrusterbeds[i].id, self.physicals[self.thrusterbeds[i].Phys].Charge());
+        let num = mathf::max(0.1, charge / 8.0);
+        let k = mathf::max(1.0, charge * 5.0);
+        let color = [4.0 * num * k, 4.0 * (num - charge * 0.2) * k, 4.0 * (num + charge * 0.6) * k, 4.0 * k];
+        let w = crate::particles::PsWrites { speed: Some(progress * r + charge * 0.5), color: Some(color), ..Default::default() };
+        self.ps_field_writes(id, "effect", w);
     }
 
-    /// ThrusterbedBehaviour.OnDisable (the effect stops)
+    /// ThrusterbedBehaviour.OnDisable
     pub fn thrusterbed_on_disable(&mut self, i: usize) {
         self.thrusterbeds[i].Activated = false;
+        let id = self.thrusterbeds[i].id;
+        self.ps_field_call(id, "effect", false, super::PsCall::Stop(self.time.timeAsDouble));
         let (low, high) = self.thrusterbed_sources(i);
         self.audio.stop(low);
         self.audio.stop(high);
@@ -126,7 +138,7 @@ impl Game {
         let curve = s.StartupStrengthCurve.as_ref().expect("ThrusterbedBehaviour.StartupStrengthCurve");
         let num = curve.evaluate(&mut s.cache, t);
         let (p, target, burn) = (s.Phys, s.TemperatureTarget, s.DoBurnOthers);
-        self.thrusterbed_update_particle_system();
+        self.thrusterbed_update_particle_system(i, num);
         if burn {
             self.thrusterbed_burn_others(i, num);
         }

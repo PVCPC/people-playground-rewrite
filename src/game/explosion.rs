@@ -684,7 +684,9 @@ Parameter name: index"));
         // PostLateUpdate's renderer update, after ScriptRunDelayedDynamicFrameRate: the bolts' trails (a bolt a
         // coroutine Requested in this pass gets its point in this frame).
         self.archelix_trails_update();
+        self.archelix_trail_lines();
         self.blasterbolt_trails_update();
+        self.trails_update();
     }
 
     /// TriggerEndOfFrameCallbacks: the WaitForEndOfFrame coroutines.
@@ -845,7 +847,7 @@ Parameter name: index"));
     }
 
     /// ExplosionCreator.Explode(center, force): DismemberChance 0.025, Range force * 2.5, 24 fragment rays
-    /// (LargeExplosionParticles is presentation).
+    /// (LargeExplosionParticles = force > 30: EffectSize Large).
     pub fn explosion_creator_explode_at(&mut self, center: [f32; 3], force: f32) {
         self.explosion_creator_explode(ExplosionParameters {
             FragmentationRayCount: 24,

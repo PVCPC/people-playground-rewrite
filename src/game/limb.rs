@@ -85,7 +85,7 @@ script! {
         Joint: Option<usize> = None,
         GripBehaviour: Option<usize> = None,
         ConnectedLimbs: Vec<usize> = Vec::new(),
-        /// KillShotParticles is set (its Play is presentation).
+        /// KillShotParticles is set (limb_shot turns and plays it).
         KillShotParticles: bool = false,
         NearestLimbToBrain: Option<usize> = None,
         StrengthMultipliers: Vec<f32> = Vec::new(),

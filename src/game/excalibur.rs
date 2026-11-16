@@ -169,7 +169,7 @@ impl Game {
         }
     }
 
-    /// FireballBehaviour.OnCollisionEnter2D (the particle emission rates are presentation).
+    /// FireballBehaviour.OnCollisionEnter2D
     pub(crate) fn fireball_on_collision_enter(&mut self, x: usize) {
         if self.fireballs[x].hitOnce {
             return;
@@ -203,6 +203,9 @@ impl Game {
         }
         let effect = s.ExplosionEffect.unwrap_or_else(|| crate::game::menu::throw("ArgumentException: The Object you want to instantiate is null."));
         self.spawn_prefab(effect, position);
+        // The emission rateOverTime and rateOverDistance of its children's ParticleSystems and of ParticleSystem: 0.
+        let zero = crate::particles::PsWrites { rate: Some(0.0), distance: Some(0.0), ..Default::default() };
+        self.ps_field_call(s.id, "ParticleSystem", true, super::PsCall::Writes(zero));
         // Rigidbody.isKinematic = true (bodyType Kinematic), then constraints = FreezeAll.
         let component = self.node_rigidbodies[s.node_body].rigidbody.component;
         self.with_component_instance(component, |g, inst, o| g.rigidbody2d_set_body_type(inst, BodyOwner::Node(s.node_body), o, 1));

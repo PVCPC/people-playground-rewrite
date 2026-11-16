@@ -1,6 +1,7 @@
 //! LiquidOutletBehaviour (a BloodContainer, Pull): while its container holds more than 0.1 it sprays a FancyBloodSplatController
 //! (PhysicalParticles) and drains 0.1 a second. Its particles copy 0.1 into the containers they hit (OnCollide). Its Update is
-//! BloodContainer's. The particle systems and the awake/destroy subscriptions are presentation or the link.
+//! BloodContainer's. The particle systems follow the liquid (liquid_spray_particles); the awake/destroy subscriptions
+//! are the link.
 #![allow(non_snake_case)]
 
 use super::container::{BloodContainer, Owner};
@@ -49,7 +50,7 @@ impl Game {
     }
 
     /// LiquidOutletBehaviour.FixedUpdate. Out of the water the splat's ejection force and decal colour follow the charge;
-    /// with more than 0.1 of liquid it sprays one particle and drains 0.1 (the particle systems are presentation).
+    /// with more than 0.1 of liquid it sprays one particle and drains 0.1.
     pub fn liquid_outlet_fixed_update(&mut self, l: usize) {
         let o = Owner::LiquidOutlet(l);
         let num = (super::d(self.physicals[self.liquid_outlets[l].physical].Charge()) * 0.4f32 + 2.0f32).f();
@@ -66,14 +67,30 @@ impl Game {
             splat.DecalColourMultiplier = colour;
             splat.EjectionForce = [0.25f32 * num, 0.3f32 * num];
         }
-        // gapC r11: submerged: LiquidParticles stopped and WaterPuffParticles played (each by isPlaying); else the other way.
+        let fallback = self.bc(o).cachedComputedColour;
+        let colour = self.get_computed_color(o, fallback);
         let id = self.liquid_outlets[l].id;
-        self.ps_field_playing(id, "LiquidParticles", !submerged);
-        self.ps_field_playing(id, "WaterPuffParticles", submerged);
+        self.liquid_spray_particles(id, "LiquidParticles", submerged, flag, colour, num, 120.0);
         if flag {
             self.create_splat_particle(s, 0);
             self.drain(o, DRAIN_RATE);
         }
+    }
+
+    /// The particle systems of an outlet, a leak's hole or a draining blood tank. Under water WaterPuffParticles takes the
+    /// container's colour and rates 1 over time and 3 over distance (0 when `full` is false); out of it the `liquid` system
+    /// takes the colour, startSpeedMultiplier `speed` and rate `rate` over time (0 when not `full`). Then under water the
+    /// liquid system stops and the puff plays, else the other way (each by isPlaying).
+    pub(crate) fn liquid_spray_particles(&mut self, id: i32, liquid: &str, submerged: bool, full: bool, colour: [f32; 4], speed: f32, rate: f32) {
+        use crate::particles::PsWrites;
+        let on = |x: f32| if full { x } else { 0.0 };
+        if submerged {
+            self.ps_field_writes(id, "WaterPuffParticles", PsWrites { color: Some(colour), rate: Some(on(1.0)), distance: Some(on(3.0)), speed: None });
+        } else {
+            self.ps_field_writes(id, liquid, PsWrites { color: Some(colour), rate: Some(on(rate)), distance: None, speed: Some(speed) });
+        }
+        self.ps_field_playing(id, liquid, !submerged);
+        self.ps_field_playing(id, "WaterPuffParticles", submerged);
     }
 
     /// BloodContainer.Update, which LiquidOutletBehaviour does not override.

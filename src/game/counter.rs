@@ -4,7 +4,7 @@
 //! clears; each change shows on the NixieTubeBehaviour's digits (`_DigitIndex` of Unlit/nixie_digit_shader, custom_material.rs).
 //! The dialog box is presentation.
 //! Pointer: Use toggles Activated; FixedUpdate turns the hinge motor towards the mouse (or the kept Delta). OnEnable and
-//! OnDisable switch the motor (their arms are at the CeilingTurret sites). The light is presentation.
+//! OnDisable switch the motor (their arms are at the CeilingTurret sites). ActiveLight follows Activated (pointer_light).
 #![allow(non_snake_case)]
 
 use super::{mathf, script, BareAnchor, Game};

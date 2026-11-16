@@ -178,8 +178,8 @@ impl Game {
         let at = self.physicals[p].transform.position;
         let shake = self.launchers[l].ScreenShake;
         self.camera_shake(shake, [at[0], at[1]]);
-        // The muzzle flash: its pose is presentation (link checks it has no physics).
-        // Either way the clone's transform.right = GetBarrelDirection().
+        // The muzzle flash (link checks it has no physics), drawn at the barrel turned to GetBarrelDirection()
+        // (transform.right = it, either way).
         let dir = self.launcher_barrel_direction(l);
         let z = mathf::atan2_f64(dir[1] as f64, dir[0] as f64).to_degrees() as f32;
         match self.launchers[l].muzzle_flash {

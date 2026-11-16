@@ -1,15 +1,15 @@
 //! WormStaffBehaviour (the Worm Staff). Start lays each worm out on a circle of Range around its LineRenderer; Update
 //! drags the worm ends with the staff's point velocity, sends each worm at a random collider in Range (a limb is
-//! pulled, sometimes damaged, stabbed and cut; another Rigidbody2D is only pulled) or back to its rest position. The
-//! line vertices are rendering.
+//! pulled, sometimes damaged, stabbed and cut; another Rigidbody2D is only pulled) or back to its rest position. Each
+//! worm's LineRenderer gets VertexCount vertices from the staff to the worm's end, wriggled by Perlin noise.
 #![allow(non_snake_case)]
 
 use super::{mathf, script, Game};
 use crate::b2::math::Vec2 as V;
 use crate::unity::transform::Trs;
 
-/// Worm: velocity, endPosition, originalEndpos and seed (the LineRenderer and vertices are rendering), and the
-/// LineRenderer's local TRS steps below the staff (leaf first) for lineRenderer.transform.TransformPoint.
+/// Worm: velocity, endPosition, originalEndpos and seed, and the LineRenderer's local TRS steps below the staff (leaf
+/// first) for lineRenderer.transform.TransformPoint (the line itself is `WormStaff::lines`).
 #[derive(Clone, Debug, Default)]
 pub struct Worm {
     pub velocity: [f32; 2],
@@ -44,11 +44,14 @@ script! {
         /// Each LineRenderer's local TRS steps below the staff, leaf first.
         LineRenderers: Vec<Vec<Trs>> = Vec::new(),
         worms: Vec<Worm> = Vec::new(),
+        /// Rendering: VertexCount and each LineRenderer's index in `Game::lines`.
+        VertexCount: i32 = 4,
+        lines: Vec<usize> = Vec::new(),
     }
 }
 
 impl Game {
-    /// WormStaffBehaviour.Start (positionCount and SetPosition are rendering).
+    /// WormStaffBehaviour.Start
     pub fn worm_staff_start(&mut self, i: usize) {
         let chains = self.worm_staffs[i].LineRenderers.clone();
         let mut worms: Vec<Worm> = chains.into_iter().map(|chain| Worm::new(chain, self.random.value() * 1000.0)).collect();
@@ -61,6 +64,30 @@ impl Game {
             num += std::f32::consts::PI * 2.0 / n as f32;
         }
         self.worm_staffs[i].worms = worms;
+        // positionCount = VertexCount; SetPosition(k, Vector3.Lerp(zero, vector, k / VertexCount)).
+        let count = self.worm_staffs[i].VertexCount.max(0) as usize;
+        for w in 0..n {
+            let end = self.worm_staffs[i].worms[w].endPosition;
+            let l = self.worm_staffs[i].lines[w];
+            self.lines[l].positions = (0..count).map(|k| {
+                let t = k as f32 / count as f32;
+                [mathf::lerp(0.0, end[0], t), mathf::lerp(0.0, end[1], t), 0.0]
+            }).collect();
+        }
+    }
+
+    /// The end of WormStaffBehaviour.Update's worm loop: vertices[j] = Lerp(zero, endPosition, j / VertexCount)
+    /// + 0.2 * j / VertexCount * GetPerlin2Mapped(Time.time * 1.2 - j * 0.1, seed), then SetPositions.
+    fn worm_staff_set_vertices(&mut self, i: usize, w: usize) {
+        let num = self.time.time * 1.2;
+        let count = self.worm_staffs[i].VertexCount.max(0) as usize;
+        let (end, seed) = (self.worm_staffs[i].worms[w].endPosition, self.worm_staffs[i].worms[w].seed);
+        let l = self.worm_staffs[i].lines[w];
+        self.lines[l].positions = (0..count).map(|j| {
+            let t = j as f32 / count as f32;
+            let p = mathf::perlin2_mapped(num - j as f32 * 0.1, seed);
+            [mathf::lerp(0.0, end[0], t) + 0.2 * t * p[0], mathf::lerp(0.0, end[1], t) + 0.2 * t * p[1], 0.0]
+        }).collect();
     }
 
     /// WormStaffBehaviour.Update
@@ -91,6 +118,7 @@ impl Game {
             let worm = &mut self.worm_staffs[i].worms[w];
             worm.endPosition = [worm.endPosition[0] + local[0], worm.endPosition[1] + local[1]];
             worm.endPosition = super::destroyable::clamp_magnitude(worm.endPosition, range * 1.5);
+            self.worm_staff_set_vertices(i, w);
         }
     }
 

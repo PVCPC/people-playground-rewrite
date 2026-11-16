@@ -1,6 +1,6 @@
 //! DecimatorBehaviour. Use switches DecimateTrigger on and off; a non-trigger collider of a deletable physical object
 //! that enters it destroys that object's root (once per root in a row) and leaves a DeleteEffect; a charge over 50
-//! turns the Decimator into a BlackHole. The particles are presentation.
+//! turns the Decimator into a BlackHole. Its ParticleSystem plays while on.
 #![allow(non_snake_case)]
 
 use super::{script, Game};

@@ -1,6 +1,6 @@
 //! EffectGunBehaviour and its two subclasses, HealthGunBehaviour (the Reconstructor) and FreezeGunBehaviour (the
 //! Rigidifier): Use fires an OverlapCircleNonAlloc in front of the barrel and Affect runs on every collider found.
-//! The AudioSource's settings, the shot sound and the muzzle flash's effects are presentation.
+//! The AudioSource's settings and the shot sound are presentation; the muzzle flash is drawn turned to the barrel.
 #![allow(non_snake_case)]
 
 use super::container::Owner;

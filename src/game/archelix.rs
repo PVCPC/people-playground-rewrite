@@ -3,8 +3,8 @@
 //! A bolt wobbles along its Direction (a sine of Frequency/Amplitude), homes on warm objects every 4th FixedUpdate,
 //! and on a hit pulses, requests its Impact effect, slices what it hit and may cut a limb. It then despawns: its
 //! trail must have faded (TrailRenderer.positionCount == 0) before it is Returned to the pool, so the trail's points are
-//! modelled here (the native TrailRenderer: AddPoint on a moved transform, RemoveOldPoints against m_Time).
-//! Sounds, the muzzle flash and the particles are presentation.
+//! modelled here (the native TrailRenderer: AddPoint on a moved transform, RemoveOldPoints against m_Time), and drawn
+//! from them (archelix_trail.rs). The bolt's particles play from OnPoolableInitialised and stop at its despawn.
 #![allow(non_snake_case)]
 
 use super::coroutine::{Routine, Yield};
@@ -85,6 +85,8 @@ script! {
         trail_start: Option<[f32; 2]> = None,
         /// OnPoolableInitialised ran before (the pool reused the bolt).
         initialised: bool = false,
+        /// Rendering: the trail's line in `Game::lines` (archelix_trail.rs).
+        trail_line: Option<usize> = None,
     }
 }
 
@@ -218,6 +220,8 @@ impl Game {
         self.archelix_bolts[b].Direction = self.archelix_bolt_right(b);
         self.archelix_bolts[b].frame = self.random.range_int(0, 10000);
         self.archelix_bolts[b].isDespawning = false;
+        let id = self.archelix_bolts[b].id;
+        self.ps_field_play_stop(id, "ParticleSystem", true);
         self.archelix_bolts[b].trail_dirty = true;
         let position = self.with_component_instance(self.archelix_bolts[b].id, |_, inst, o| inst.position(o));
         let at = [position[0], position[1]];
@@ -261,14 +265,16 @@ impl Game {
         }
     }
 
-    /// ArchelixCasterBoltBehaviour.DespawnRoutine: isDespawning, ParticleSystem.Stop (presentation), wait until the
-    /// trail has no points, then pool.Return(gameObject).
+    /// ArchelixCasterBoltBehaviour.DespawnRoutine: isDespawning, ParticleSystem.Stop, wait until the trail has no
+    /// points, then pool.Return(gameObject).
     pub(crate) fn archelix_despawn_routine(b: usize) -> Routine {
         let mut waiting = false;
         Box::new(move |g| {
             if !waiting {
                 waiting = true;
                 g.archelix_bolts[b].isDespawning = true;
+                let id = g.archelix_bolts[b].id;
+                g.ps_field_play_stop(id, "ParticleSystem", false);
                 return Yield::WaitUntil(Box::new(move |g| g.archelix_bolts[b].trail.is_empty()));
             }
             let (pool, id) = (g.archelix_bolts[b].pool.expect("a bolt Requested from its pool"), g.archelix_bolts[b].id);

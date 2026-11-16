@@ -30,7 +30,7 @@ script! {
 }
 
 impl Game {
-    /// IonThrusterBehaviour.Awake: caches the particle modules (presentation).
+    /// IonThrusterBehaviour.Awake: caches the particle modules (nothing to keep: the calls go to FX).
     pub fn ion_thruster_behaviour_awake(&mut self, _t: usize) {}
 
     fn ion_thruster_xf(&self, t: usize) -> Xf {
@@ -109,7 +109,8 @@ impl Game {
             }
             let p = rt::nn(self.tr.ion_thruster_behaviour[t].PhysicalBehaviour);
             let num = (d(self.physicals[p].Charge()) * 0.1f32).f();
-            self.ps_call(fx, PsCall::Multipliers((d(15.0f32) + num).f(), (d(5.0f32) + num).f()));
+            let w = crate::particles::PsWrites { rate: Some((d(15.0f32) + num).f()), speed: Some((d(5.0f32) + num).f()), ..Default::default() };
+            self.ps_call(fx, PsCall::Writes(w));
         } else {
             if emitting {
                 self.ps_call(fx, PsCall::Stop(self.time.timeAsDouble));

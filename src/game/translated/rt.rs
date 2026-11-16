@@ -407,6 +407,10 @@ Your script should either check if it is null or you should not destroy the obje
     /// bodies at the next SyncTransforms.
     pub fn tr_set_rotation(&mut self, xf: Xf, q: [f32; 4]) {
         if let Xf::Object(id) = xf {
+            // A clone instantiated this frame is drawn (effect_log) with its root's new rotation.
+            if let Some(e) = self.effect_log.iter_mut().rev().find(|e| e.root == Some(id)) {
+                e.rotation = q;
+            }
             return self.with_component_instance(id, |_, inst, o| inst.set_world_rotation(o, q));
         }
         let Xf::Physical(p) = xf else { unimplemented!("mod-only: Transform.rotation = on a Transform without a PhysicalBehaviour ({xf:?})") };
