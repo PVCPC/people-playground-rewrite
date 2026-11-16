@@ -2423,7 +2423,11 @@ fn cut_portal_holes(holes: &[PortalHole], m: &mut Manifold, body_a: BodyId, xf_a
         for i in 0..m.point_count {
             let d = wm.points[i] - c;
             let (along, out) = (d.x * n.y - d.y * n.x, d.x * n.x + d.y * n.y);
-            if !(along.abs() <= h.half_len && -h.depth <= out && out <= 0.25) {
+            // Inside the doorway: no contact. Below the surface just past the doorway's ends (a body going through
+            // touching the jamb): only a push along the surface (off the jamb), never one out of the surface, which
+            // threw slow bodies back out of the doorway.
+            let jamb = -h.depth <= out && out < -0.02 && (wm.normal.x * n.x + wm.normal.y * n.y).abs() > 0.7;
+            if !(along.abs() <= h.half_len && -h.depth <= out && out <= 0.25) && !jamb {
                 m.points[kept] = m.points[i];
                 kept += 1;
             }

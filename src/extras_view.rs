@@ -366,7 +366,8 @@ pub fn doorway(
 /// PP_PORTAL=<scene> (with PPG_SHOT and --play-map Default, the portal check): a gun flipped on the floor fires an
 /// orange portal into the left wall, a blue one opens on the floor, then the scene: crate (one rests on the floor portal and
 /// sinks through), human (one stands on it), fast (a crate dropped from high), moving (the blue portal on a tumbling
-/// plank with a crate on it), fling / flinghuman (a crate / human thrown down into it at 120 m/s), probe / names (logs). PP_PORTAL_LOG=1 logs the bodies four times a second.
+/// plank with a crate on it), fling / flinghuman (a crate / human thrown down into it at 120 m/s), dangle (a human hung by the head with its body
+/// through it; PP_DANGLE = how far lowered, default 2.2 m), probe / names (logs). PP_PORTAL_LOG=1 logs the bodies four times a second.
 pub fn add_test(app: &mut App, scene: String) {
     use crate::game::Game;
     fn spawn(g: &mut Game, name: &str, at: [f32; 2], flipped: bool) -> usize {
@@ -502,6 +503,7 @@ pub fn add_test(app: &mut App, scene: String) {
                     "fast" => spawn(g, "Crate", [3.0, 14.0], false),
                     "fling" => spawn(g, "Crate", [3.0, 6.0], false),
                     "flinghuman" => spawn(g, "Human", [3.0, 6.0], false),
+                    "dangle" => spawn(g, "Human", [3.0, 2.6], false),
                     "moving" => spawn(g, "Plank", [3.0, 0.5], false),
                     "shot" => spawn(g, "Human", [-3.5, 2.6], false),
                     "resize" => spawn(g, "Brick", [0.0, 0.5], false),
@@ -528,6 +530,18 @@ pub fn add_test(app: &mut App, scene: String) {
                 }
                 if scene == "shot" {
                     *aux = spawn(g, "Pistol", [3.0, 2.2], false);
+                }
+                // dangle: the human lowered into the floor portal to the chest and hung by the head (held still, as by a hand).
+                if scene == "dangle" {
+                    let drop = std::env::var("PP_DANGLE").ok().and_then(|v| v.parse().ok()).unwrap_or(2.2);
+                    for p in *first..g.physicals.len() {
+                        let b = g.physicals[p].rigidbody.body;
+                        let (o, a) = (g.world.body(b).xf.p, g.world.body(b).sweep.a);
+                        g.world.set_transform(b, o - crate::b2::math::Vec2::new(0.0, drop), a);
+                        if g.physicals[p].name.contains("Head") {
+                            g.world.set_body_type(b, crate::b2::world::BodyType::Static);
+                        }
+                    }
                 }
                 // fling / flinghuman: thrown down into the floor portal at 120 m/s (2 m a step; PP_FLING_SPEED sets it).
                 if scene.starts_with("fling") {

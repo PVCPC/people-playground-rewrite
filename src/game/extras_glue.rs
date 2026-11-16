@@ -353,6 +353,63 @@ impl Game {
     }
 
     /// Every point a body's solid shapes reach, with the radius around it.
+    /// The share of `body`'s area behind portal frame `f` (through the doorway) and that part's centroid.
+    fn extras_through_share(&self, body: BodyId, f: Frame) -> Option<(f32, Vec2)> {
+        // Shoelace area and centroid of a polygon.
+        fn area(poly: &[Vec2]) -> (f32, Vec2) {
+            let (mut a, mut c) = (0.0, Vec2::ZERO);
+            for k in 0..poly.len() {
+                let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
+                let cross = p.x * q.y - q.x * p.y;
+                a += cross;
+                c = c + (p + q) * cross;
+            }
+            if a.abs() < 1e-9 { (0.0, Vec2::ZERO) } else { (a.abs() * 0.5, c * (1.0 / (3.0 * a))) }
+        }
+        let b = self.world.body(body);
+        let (mut all, mut cut, mut m) = (0.0, 0.0, Vec2::ZERO);
+        for &fx in &b.fixtures {
+            let fx = self.world.fixture(fx);
+            if fx.is_sensor {
+                continue;
+            }
+            let poly: Vec<Vec2> = match &fx.shape {
+                Shape::Polygon(p) => p.vertices[..p.count].iter().map(|&v| b.xf.apply(v)).collect(),
+                Shape::Circle(c) => (0..16).map(|k| {
+                    let t = k as f32 * std::f32::consts::TAU / 16.0;
+                    b.xf.apply(c.p + Vec2::new(t.cos(), t.sin()) * c.radius)
+                }).collect(),
+                Shape::Capsule(c) => {
+                    let (p, q) = (c.vertices[0], c.vertices[1]);
+                    let d = q - p;
+                    let len = (d.x * d.x + d.y * d.y).sqrt().max(1e-6);
+                    let n = Vec2::new(-d.y, d.x) * (c.radius / len);
+                    [p - n, q - n, q + n, p + n].iter().map(|&v| b.xf.apply(v)).collect()
+                }
+                _ => continue,
+            };
+            all += area(&poly).0;
+            // The polygon clipped to the far side of the portal line.
+            let mut piece = Vec::new();
+            for k in 0..poly.len() {
+                let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
+                let (dp, dq) = (f.local(arr(p))[1], f.local(arr(q))[1]);
+                if dp < 0.0 {
+                    piece.push(p);
+                }
+                if (dp < 0.0) != (dq < 0.0) {
+                    piece.push(p + (q - p) * (dp / (dp - dq)));
+                }
+            }
+            if piece.len() >= 3 {
+                let (a, c) = area(&piece);
+                cut += a;
+                m = m + c * a;
+            }
+        }
+        (cut > 0.0 && all > 0.0).then(|| ((cut / all).min(1.0), m * (1.0 / cut)))
+    }
+
     fn extras_body_points(&self, body: BodyId) -> Vec<(Vec2, f32)> {
         let b = self.world.body(body);
         let mut out = Vec::new();
@@ -598,9 +655,19 @@ impl Game {
             let c = self.extras.crossers.get_mut(&b).unwrap();
             (c.v0, c.w0, c.c0, c.a0, c.k) = (v, w, c0, a0, k);
         }
-        // No split gravity: a body falls the way its own side's gravity goes until its group's centre of mass is through
-        // (then the whole group crosses, above). Pulling the part in the doorway the far side's way made things rock and
-        // stick in sideways (floor to wall) doorways.
+        // Gravity at the far side: the part of a body through the doorway falls the way the exit side's gravity goes,
+        // seen from the entry side (a force at that part's centroid, on its share of the body's area; area, not corners,
+        // so the pull grows smoothly as the body goes in instead of jumping and rocking it).
+        let gravity = self.world.gravity;
+        for &(b, i, _) in &crossers {
+            let (pair, f) = (self.extras.pair(i).unwrap(), self.extras.portals[i].unwrap().frame);
+            let Some((share, at)) = self.extras_through_share(b, f) else { continue };
+            let body = self.world.body_mut(b);
+            let force = (rotate(gravity, -pair.rotation) - gravity) * (body.mass * body.gravity_scale * share);
+            let r = at - body.sweep.c;
+            body.linear_velocity = body.linear_velocity + force * (dt * body.inv_mass);
+            body.angular_velocity += (r.x * force.y - r.y * force.x) * dt * body.inv_i;
+        }
         self.world.portal_holes = (0..2)
             .map(|i| {
                 let pt = self.extras.portals[i].unwrap();
