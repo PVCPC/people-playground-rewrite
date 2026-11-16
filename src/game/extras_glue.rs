@@ -311,11 +311,13 @@ impl Game {
 
     /// The dynamic bodies joined to `body`, it first.
     fn extras_group(&self, body: BodyId) -> Vec<BodyId> {
+        let tool = self.tool.as_ref().map(|t| t.body);
         let mut group = vec![body];
         let mut i = 0;
         while i < group.len() {
             for &(other, _) in &self.world.body(group[i]).joints {
-                if self.world.body(other).kind == BodyType::Dynamic && !group.contains(&other) {
+                // The drag tool's body is never part of a group: it tethers what it holds (it must not be carried through).
+                if self.world.body(other).kind == BodyType::Dynamic && !group.contains(&other) && Some(other) != tool {
                     group.push(other);
                 }
             }
@@ -427,6 +429,7 @@ impl Game {
             return;
         }
         // Who is at each portal.
+        let tool = self.tool.as_ref().map(|t| t.body);
         let mut near: [Vec<BodyId>; 2] = Default::default();
         for i in 0..2 {
             let pt = self.extras.portals[i].unwrap();
@@ -441,7 +444,7 @@ impl Game {
             bodies.dedup();
             for b in bodies {
                 let body = self.world.body(b);
-                if body.kind != BodyType::Dynamic || body.user.is_none() || b == pt.body {
+                if body.kind != BodyType::Dynamic || body.user.is_none() || b == pt.body || Some(b) == tool {
                     continue;
                 }
                 let (bc, bv) = (body.sweep.c, body.linear_velocity);
