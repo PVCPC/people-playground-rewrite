@@ -2047,8 +2047,10 @@ fn catalog(root: &mut Kids, ui: &Ui, art: &UiArt, width: f32) {
                 });
             }
         });
-        // Tooltip, over the bottom of the catalog.
-        c.spawn((Node { position_type: PositionType::Absolute, left: px(0), right: px(0), bottom: px(0), height: px(scene::rect("Main", &format!("{CAT}/Tooltip")).size_delta[1]), padding: UiRect::all(px(16)), ..column(4.0) }, BackgroundColor(BLACK), Visibility::Hidden, TipBox(false), Pickable::IGNORE)).with_children(|t| {
+        // Tooltip: bottom-anchored with its top (pivot y 1) at anchoredPosition.y 300, so it sits just above the settings rows
+        // (151.8 tall) instead of over them.
+        let tip = scene::rect("Main", &format!("{CAT}/Tooltip"));
+        c.spawn((Node { position_type: PositionType::Absolute, left: px(0), right: px(0), bottom: px(tip.anchored_position[1] - tip.pivot[1] * tip.size_delta[1]), height: px(tip.size_delta[1]), padding: UiRect::all(px(16)), ..column(4.0) }, BackgroundColor(BLACK), Visibility::Hidden, TipBox(false), Pickable::IGNORE)).with_children(|t| {
             bound(t, Bound::Tip(false, true), 18.0, WHITE);
             bound(t, Bound::Tip(false, false), 18.0, WHITE);
         });

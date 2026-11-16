@@ -563,7 +563,7 @@ fn clicks(
         *down = over.clone();
     }
     // A click anywhere but on one of its buttons closes the context menu.
-    let on_menu = hovered().is_some_and(|(_, p, _)| matches!(p.0, Act::Menu(_)));
+    let on_menu = hovered().is_some_and(|(_, p, _)| matches!(p.0, Act::Menu(_) | Act::MenuStatic(_)));
     if ui.context.is_some() && ((mouse.just_pressed(MouseButton::Left) && !on_menu) || mouse.just_pressed(MouseButton::Right)) {
         queue.0.push(Act::Escape);
     }
@@ -2469,6 +2469,25 @@ mod tests {
         }
         assert!(t.iter().any(|x| x.starts_with("Modding your game may cause bugs")));
         std::fs::remove_dir_all(std::env::temp_dir().join(format!("ppr-ui-test-{}", std::process::id()))).ok();
+    }
+
+    /// A left click on a static context menu button (Delete) keeps the menu open until the release runs the button.
+    #[test]
+    fn static_context_button_click_runs_it() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins).init_resource::<ButtonInput<MouseButton>>();
+        let mut ui = new_ui(None, Mode::Game, None, None);
+        ui.context = Some([10.0, 10.0]);
+        app.insert_resource(ui).init_resource::<Queue>().init_resource::<Selection>().init_resource::<view::Flyouts>().add_systems(Update, clicks);
+        app.world_mut().spawn((Press(Act::MenuStatic(0)), Hovered(true)));
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Left);
+        app.update();
+        assert!(!app.world().resource::<Queue>().0.contains(&Act::Escape), "the press is on the menu");
+        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        mouse.clear();
+        mouse.release(MouseButton::Left);
+        app.update();
+        assert!(app.world().resource::<Queue>().0.contains(&Act::MenuStatic(0)));
     }
 
     /// Plays a real map under the UI: load, frames, reset and back to the menu (cargo test -- --ignored).
