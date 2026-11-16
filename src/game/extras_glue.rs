@@ -598,23 +598,9 @@ impl Game {
             let c = self.extras.crossers.get_mut(&b).unwrap();
             (c.v0, c.w0, c.c0, c.a0, c.k) = (v, w, c0, a0, k);
         }
-        // Gravity at the far side: the part of a body through the doorway falls the way the exit side's gravity goes,
-        // seen from the entry side (a force at that part's centre: the share of the body's points through).
-        let gravity = self.world.gravity;
-        for &(b, i, _) in &crossers {
-            let (pair, f) = (self.extras.pair(i).unwrap(), self.extras.portals[i].unwrap().frame);
-            let points = self.extras_body_points(b);
-            let through: Vec<Vec2> = points.iter().filter(|(p, _)| f.local(arr(*p))[1] < 0.0).map(|x| x.0).collect();
-            if through.is_empty() {
-                continue;
-            }
-            let at = through.iter().fold(Vec2::ZERO, |s, &p| s + p) * (1.0 / through.len() as f32);
-            let body = self.world.body_mut(b);
-            let force = (rotate(gravity, -pair.rotation) - gravity) * (body.mass * body.gravity_scale * through.len() as f32 / points.len() as f32);
-            let r = at - body.sweep.c;
-            body.linear_velocity = body.linear_velocity + force * (dt * body.inv_mass);
-            body.angular_velocity += (r.x * force.y - r.y * force.x) * dt * body.inv_i;
-        }
+        // No split gravity: a body falls the way its own side's gravity goes until its group's centre of mass is through
+        // (then the whole group crosses, above). Pulling the part in the doorway the far side's way made things rock and
+        // stick in sideways (floor to wall) doorways.
         self.world.portal_holes = (0..2)
             .map(|i| {
                 let pt = self.extras.portals[i].unwrap();
