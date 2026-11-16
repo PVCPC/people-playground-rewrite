@@ -20,7 +20,7 @@ small{opacity:.7}
 <label><input id="pm" type="checkbox"> Paint mode <input id="cp" type="color" value="#c2c2c2" style="vertical-align:middle"></label>
 <label>Tool: <label style="display:inline"><input type="radio" name="tool" value="paint" checked> Paint</label> <label style="display:inline"><input type="radio" name="tool" value="erase"> Erase</label> <label style="display:inline"><input type="radio" name="tool" value="pick"> Pick colour</label></label>
 <label><input id="mir" type="checkbox" checked> Mirror left/right</label>
-<small>Click a cube to use the tool on it (Erase puts back its original colour). Drag still rotates. Paint is saved in this browser.</small><br>
+<small>Click a cube to use the tool on it. Right-click a cube to erase it (back to its original colour); right-drag still pans. Drag still rotates. Paint is saved in this browser.</small><br>
 <button id="clr">Clear paint</button><br>
 <button id="pause">Pause</button><button id="side">Side (game view)</button><button id="front">Front</button><button id="spin">Spin camera</button>
 </div>
@@ -98,19 +98,20 @@ function build(){
 }
 build();for(const id of['t','l','pc','ef'])$(id).addEventListener('input',build);
 // Painting: click (no drag) paints a cube; Shift+click picks its colour; Ctrl+click erases back to default.
+r.domElement.addEventListener('contextmenu',e=>e.preventDefault());
 const ray=new THREE.Raycaster(),ptr=new THREE.Vector2();let down=null;
 r.domElement.addEventListener('pointerdown',e=>{down=[e.clientX,e.clientY,e.button]});
-r.domElement.addEventListener('pointerup',e=>{if(!down||down[2]!==0||!$('pm').checked)return;
+r.domElement.addEventListener('pointerup',e=>{if(!down||(down[2]!==0&&down[2]!==2)||!$('pm').checked)return;const rc=down[2]===2;
   if(Math.hypot(e.clientX-down[0],e.clientY-down[1])>4)return;down=null;
   ptr.set(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);ray.setFromCamera(ptr,cam);
   const hit=ray.intersectObjects(meshes,false)[0];if(!hit)return;
   const m=hit.object,i=hit.instanceId,vk=m.userData.keys[i];
   const tool=document.querySelector('input[name=tool]:checked').value;
-  if(tool==='pick'||e.shiftKey){$('cp').value='#'+(paint[vk]||m.userData.def[i]);return}
+  if(!rc&&(tool==='pick'||e.shiftKey)){$('cp').value='#'+(paint[vk]||m.userData.def[i]);return}
   const targets=[[m,i]];
   if($('mir').checked){const v=vk.split('|'),j=m.userData.keys.indexOf(v.slice(0,3).join('|')+'|'+(-v[3]));if(j>=0&&j!==i)targets.push([m,j])}
   for(const [mm,ii] of targets){const k=mm.userData.keys[ii];
-    if(tool==='erase'||e.ctrlKey)delete paint[k];else paint[k]=$('cp').value.slice(1);
+    if(rc||tool==='erase'||e.ctrlKey)delete paint[k];else paint[k]=$('cp').value.slice(1);
     col.set('#'+(paint[k]||mm.userData.def[ii]));mm.setColorAt(ii,col)}
   m.instanceColor.needsUpdate=true;savePaint()});
 // Two clicks to clear (no confirm(): Firefox can block page dialogs).
