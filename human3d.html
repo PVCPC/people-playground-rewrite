@@ -18,8 +18,9 @@ small{opacity:.7}
 <label><input id="ef" type="checkbox" checked> Eyes on front (off = game's side eye)</label>
 <hr style="border-color:#333">
 <label><input id="pm" type="checkbox"> Paint mode <input id="cp" type="color" value="#c2c2c2" style="vertical-align:middle"></label>
+<label>Tool: <label style="display:inline"><input type="radio" name="tool" value="paint" checked> Paint</label> <label style="display:inline"><input type="radio" name="tool" value="erase"> Erase</label> <label style="display:inline"><input type="radio" name="tool" value="pick"> Pick colour</label></label>
 <label><input id="mir" type="checkbox" checked> Mirror left/right</label>
-<small>Click a cube to paint it. Shift+click picks its colour. Ctrl+click erases. Drag still rotates. Paint is saved in this browser.</small><br>
+<small>Click a cube to use the tool on it (Erase puts back its original colour). Drag still rotates. Paint is saved in this browser.</small><br>
 <button id="clr">Clear paint</button><br>
 <button id="pause">Pause</button><button id="side">Side (game view)</button><button id="front">Front</button><button id="spin">Spin camera</button>
 </div>
@@ -104,14 +105,16 @@ r.domElement.addEventListener('pointerup',e=>{if(!down||down[2]!==0||!$('pm').ch
   ptr.set(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);ray.setFromCamera(ptr,cam);
   const hit=ray.intersectObjects(meshes,false)[0];if(!hit)return;
   const m=hit.object,i=hit.instanceId,vk=m.userData.keys[i];
-  if(e.shiftKey){m.getColorAt(i,col);$('cp').value='#'+(paint[vk]||m.userData.def[i]);return}
+  const tool=document.querySelector('input[name=tool]:checked').value;
+  if(tool==='pick'||e.shiftKey){$('cp').value='#'+(paint[vk]||m.userData.def[i]);return}
   const targets=[[m,i]];
   if($('mir').checked){const v=vk.split('|'),j=m.userData.keys.indexOf(v.slice(0,3).join('|')+'|'+(-v[3]));if(j>=0&&j!==i)targets.push([m,j])}
   for(const [mm,ii] of targets){const k=mm.userData.keys[ii];
-    if(e.ctrlKey)delete paint[k];else paint[k]=$('cp').value.slice(1);
+    if(tool==='erase'||e.ctrlKey)delete paint[k];else paint[k]=$('cp').value.slice(1);
     col.set('#'+(paint[k]||mm.userData.def[ii]));mm.setColorAt(ii,col)}
   m.instanceColor.needsUpdate=true;savePaint()});
-$('clr').onclick=()=>{if(confirm('Clear all paint?')){paint={};savePaint();build()}};
+// Two clicks to clear (no confirm(): Firefox can block page dialogs).
+let clrArm=0;$('clr').onclick=()=>{if(Date.now()-clrArm<3000){paint={};savePaint();build();$('clr').textContent='Clear paint';clrArm=0}else{clrArm=Date.now();$('clr').textContent='Click again to clear';setTimeout(()=>{if(clrArm&&Date.now()-clrArm>=3000){clrArm=0;$('clr').textContent='Clear paint'}},3100)}};
 $('pm').addEventListener('input',()=>{if($('pm').checked&&!paused)$('pause').click()});
 const deg=Math.PI/180;let phase=Math.PI/2,paused=false,last=performance.now();
 function pose(){const s=Math.sin(phase),c=Math.cos(phase);
