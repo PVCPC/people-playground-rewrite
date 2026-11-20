@@ -15,6 +15,10 @@ pub(super) enum Extra<'a> {
     Floats(&'a mut Vec<f32>),
     /// SentryTurretAIState (an int enum).
     Sentry(&'a mut SentryState),
+    /// A byte[] (None: null).
+    Bytes(&'a mut Option<Vec<u8>>),
+    /// BloodContainer.SerialisableDistribution[] (None: null).
+    Distributions(&'a mut Option<Vec<(String, f32)>>),
 }
 
 impl Extra<'_> {
@@ -30,6 +34,14 @@ impl Extra<'_> {
                 SentryState::Panicking => 3,
             }
             .to_string()),
+            Extra::Bytes(b) => match b {
+                Some(b) => SavedValue::Net("System.Byte[]".into(), super::ceras::Payload::RawArray(b.len() as u32, b.clone())),
+                None => SavedValue::Null,
+            },
+            Extra::Distributions(d) => match d {
+                Some(d) => SavedValue::Distributions(d.clone()),
+                None => SavedValue::Null,
+            },
         }
     }
 
@@ -45,6 +57,10 @@ impl Extra<'_> {
                 }
             }
             (Extra::Floats(f), SavedValue::Floats(v)) => **f = v.clone(),
+            (Extra::Bytes(b), SavedValue::Net(ty, super::ceras::Payload::RawArray(n, v))) if ty == "System.Byte[]" && v.len() == *n as usize => **b = Some(v.clone()),
+            (Extra::Bytes(b), SavedValue::Null) => **b = None,
+            (Extra::Distributions(d), SavedValue::Distributions(v)) => **d = Some(v.clone()),
+            (Extra::Distributions(d), SavedValue::Null) => **d = None,
             (Extra::Sentry(s), SavedValue::Field(t)) => {
                 if let Some(x) = str::parse::<i64>(t).ok().and_then(SentryState::from_int) {
                     **s = x;
@@ -91,6 +107,7 @@ impl Game {
                 let [smoke, fire, electricity] = e;
                 vec![("Activated", Extra::F(&mut self.particle_machines[j])), ("EmitSmoke", Extra::F(smoke)), ("EmitFire", Extra::F(fire)), ("EmitElectricity", Extra::F(electricity))]
             }
+            Slot::V45(v) => self.v45_extras(v),
             _ => Vec::new(),
         }
     }

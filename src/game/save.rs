@@ -466,6 +466,10 @@ impl Game {
         if let Some(o) = owner {
             self.blood_container_on_before_serialise(o);
         }
+        // 1.28.45: BuzzerBehaviour.OnBeforeSerialise (Messages.IOnBeforeSerialise, sent the same way).
+        if let Some(super::save_slots::Slot::V45(super::v45_new::V::Buzzer(b))) = slot {
+            self.buzzer_on_before_serialise(b);
+        }
         let extras: Vec<(&str, SavedValue)> = slot.map(|s| self.slot_extras(s, id).into_iter().map(|(n, e)| (n, e.get())).collect()).unwrap_or_default();
         // SerialisedLayerBehaviour's OptionalInts (Active as 4 bytes, Value; an inactive one's Value reads 0).
         let layer = self.layer_editor.serialised_ids.get(&id).filter(|_| class == "SerialisedLayerBehaviour").and_then(|p| self.layer_editor.serialised.get(p)).copied();
@@ -530,6 +534,15 @@ impl Game {
                 let t = self.physicals[q].transform_id;
                 let link = ComponentReferenceLink { UniqueIdentity: self.identity_of(t), ComponentType: Some("LimbBehaviour".into()) };
                 proto.storedReferenceFields.push(("ConnectedLimb".into(), link));
+            }
+        }
+        // 1.28.45: CrossbowBehaviour.AttachedSyringe (a SyringeBehaviour; null once its object is destroyed).
+        if class == "CrossbowBehaviour" && crate::assets::il::is_1_28_45() {
+            let s = self.v45.crossbows.iter().position(|c| c.id == id).and_then(|c| self.v45.crossbows[c].AttachedSyringe);
+            if let Some(q) = s.map(|s| self.syringes[s].Phys).filter(|&q| !self.physicals[q].destroyed && self.object_names.contains_key(&self.root_id(q))) {
+                let t = self.physicals[q].transform_id;
+                let link = ComponentReferenceLink { UniqueIdentity: self.identity_of(t), ComponentType: Some("SyringeBehaviour".into()) };
+                proto.storedReferenceFields.push(("AttachedSyringe".into(), link));
             }
         }
         for (_, field, rty) in REFERENCE_MEMBERS.iter().filter(|(c, ..)| *c == class) {
@@ -634,7 +647,8 @@ impl Game {
         ];
         const EXCLUDED: &[&str] =
             &["AudioSourceTimeScaleBehaviour", "DeregisterBehaviour", "FrozenInIceBehaviour", "ContextMenuOptionComponent", "DecalControllerBehaviour", "TexturePackApplier", "SerialiseInstructions"];
-        !SKIP_SERIALISATION.contains(&class) && !EXCLUDED.contains(&class)
+        // 1.28.45 adds the [SkipSerialisation] DrippingBloodParticleController.
+        !SKIP_SERIALISATION.contains(&class) && !EXCLUDED.contains(&class) && !(crate::assets::il::is_1_28_45() && class == "DrippingBloodParticleController")
     }
 
     /// Utils.GetHierarchyPath (and the obsolete Utils.GetHierachyPath that calls it) of clone object `x` (the root's own name is left out).
@@ -1856,6 +1870,24 @@ impl Game {
                     self.pending_starts.push(super::misc::PendingStart::Menu(super::misc::Menu::Invisible(self.invisibles.len() - 1)));
                 }
             }
+            // 1.28.45: Chemistry's AddComponent<DulcamarusBehaviour> on a person. Awake: Person = GetComponent<PersonBehaviour>().
+            "DulcamarusBehaviour" => {
+                let person = self.people.iter().position(|x| components.contains(&x.id)).unwrap_or_else(|| unimplemented!("mod-only: DulcamarusBehaviour on an object without a PersonBehaviour (Awake throws)"));
+                let d = self.dulcamarus_add(person);
+                let id = self.v45.dulcamarus[d].id;
+                self.inject_slot(Some(super::save_slots::Slot::V45(super::v45_new::V::Dulcamarus(d))), id, proto);
+                if !proto.Enabled {
+                    self.pending_enabled.push((class.into(), id, false));
+                }
+            }
+            // 1.28.45: CrossbowBehaviour.OnLaunch's AddComponent<InjectableBehaviour> on a bolt.
+            "InjectableBehaviour" => {
+                let id = self.allocate_instance_id();
+                self.v45.injectables.push(super::v45_new::Injectable { id, phys: p, LiquidDistributions: None, FxColor: [0.0; 4], destroyed: false });
+                let i = self.v45.injectables.len() - 1;
+                self.injectable_attach(i, proto.Enabled);
+                self.inject_slot(Some(super::save_slots::Slot::V45(super::v45_new::V::Injectable(i))), id, proto);
+            }
             _ => unreachable!("{class} is only on a state from a prefab that has it (nothing in the rewrite adds it at runtime)"),
         }
     }
@@ -2304,6 +2336,14 @@ impl Game {
                     }
                     continue;
                 }
+                // 1.28.45: CrossbowBehaviour.AttachedSyringe: the target's SyringeBehaviour (GetComponent finds a subclass too).
+                if (class.as_str(), name.as_str()) == ("CrossbowBehaviour", "AttachedSyringe") {
+                    let s = self.syringes.iter().position(|s| self.physicals[s.Phys].transform_id == target && !self.physicals[s.Phys].destroyed);
+                    if let (Some(s), Some(c)) = (s, self.v45.crossbows.iter().position(|c| comps.contains(&c.id))) {
+                        self.v45.crossbows[c].AttachedSyringe = Some(s);
+                    }
+                    continue;
+                }
                 // HeartMonitorBehaviour.ConnectedLimb: the target's LimbBehaviour.
                 if (class.as_str(), name.as_str()) == ("HeartMonitorBehaviour", "ConnectedLimb") {
                     let l = self.limbs.iter().position(|l| self.physicals[l.PhysicalBehaviour].transform_id == target && !self.physicals[l.PhysicalBehaviour].destroyed);
@@ -2398,6 +2438,12 @@ impl Game {
         for t in 0..self.tesla_coils.len() {
             if components.contains(&self.tesla_coils[t].id) {
                 self.tesla_coil_on_after_deserialise(t);
+            }
+        }
+        // 1.28.45: CrossbowBehaviour.OnAfterDeserialise
+        for c in 0..self.v45.crossbows.len() {
+            if components.contains(&self.v45.crossbows[c].id) && !self.destroyed_components.contains(&self.v45.crossbows[c].id) {
+                self.crossbow_on_after_deserialise(c);
             }
         }
     }

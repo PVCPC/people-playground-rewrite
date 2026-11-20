@@ -76,6 +76,7 @@ pub static CATEGORIES: LazyLock<&'static [&'static str]> = LazyLock::new(|| {
 pub static SETTINGS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
     let t = crate::assets::il::get();
     ROWS.iter()
+        .filter(|r| r.field != "SpeedUnit" || crate::assets::il::is_1_28_45())
         .map(|&r| {
             let mut s = r;
             if t.field_attr("Preferences", s.field, "SettingAttribute").is_some() {
@@ -128,6 +129,8 @@ const ROWS: &[Setting] = &[
     Setting { field: "AmbientTemperatureTransfer", category: 0, title: "", description: "", kind: Kind::Bool, default: 0.0, fmt: None, menu: true },
     Setting { field: "Brightness", category: 4, title: "", description: "", kind: Kind::Float { min: 10.0, max: 400.0, step: 5.0 }, default: 100.0, fmt: Some(Fmt::new("", 1.0, 0)), menu: true },
     Setting { field: "TemperatureUnit", category: 3, title: "", description: "", kind: Kind::Enum(&[]), default: 0.0, fmt: None, menu: true },
+    // 1.28.45 only (SETTINGS leaves it out on 1.28.41).
+    Setting { field: "SpeedUnit", category: 3, title: "", description: "", kind: Kind::Enum(&[]), default: 0.0, fmt: None, menu: true },
     Setting { field: "TonemappingMode", category: 4, title: "", description: "", kind: Kind::Enum(&[]), default: 0.0, fmt: None, menu: true },
     Setting { field: "BloomMode", category: 2, title: "", description: "", kind: Kind::Enum(&[]), default: 2.0, fmt: None, menu: true },
     Setting { field: "StopAnimationOnDamage", category: 0, title: "", description: "", kind: Kind::Bool, default: 0.0, fmt: None, menu: true },

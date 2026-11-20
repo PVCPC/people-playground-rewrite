@@ -23,7 +23,7 @@ pub const FILE_ORDER: &[&str] = &[
     "LimbOverflowExplosion", "GoreMode", "AutoHealWounds", "ChunkyShotParticles", "DismembermentLooseTissue", "CrushForceMultiplier",
     "BloomMode", "TracerBullets", "FancyEffects", "Decals", "Lighting", "MasterVolume", "SfxVolume", "UserInterfaceVolume",
     "AmbienceVolume", "AmbienceHighpassCutoff", "ClampVolume", "DistantSoundEffects", "BulletCrackWhiz", "LogDebugMessages",
-    "ShowFramerate", "ZoomSensitivity", "ThermalVisionUpdateRate", "DeleteWireByContextMenu", "TemperatureUnit", "VSync", "SMAA",
+    "ShowFramerate", "ZoomSensitivity", "ThermalVisionUpdateRate", "DeleteWireByContextMenu", "TemperatureUnit", "SpeedUnit", "VSync", "SMAA",
     "TonemappingMode", "Brightness", "RenderScale", "FramerateLimit", "SimplifiedBackground", "WindowMode", "Resolution", "ShowTutorial",
     "ToyboxSizeOffset",
 ];
@@ -123,6 +123,8 @@ impl Settings {
         let (s, v) = (&SETTINGS[i], self.values[i]);
         match s.kind {
             Kind::Bool => if v != 0.0 { "Enabled" } else { "Disabled" }.into(),
+            // [SpeedUnitDisplay]: SpeedUnitDisplayAttribute.GetDisplay's label.
+            Kind::Enum(_) if s.field == "SpeedUnit" => crate::game::v45_new::SpeedUnit::from_index(v as i32).display().into(),
             Kind::Enum(names) => names[v as usize].into(),
             Kind::Int { .. } | Kind::Float { .. } | Kind::Options(_) => {
                 let int = matches!(s.kind, Kind::Int { .. });
@@ -179,6 +181,10 @@ impl Settings {
                     Some((x, y)) => format!("  \"Resolution\": {{\r\n    \"x\": {x},\r\n    \"y\": {y}\r\n  }}"),
                     None => "  \"Resolution\": null".into(),
                 });
+                continue;
+            }
+            // 1.28.45's SpeedUnit: absent from 1.28.41's Preferences.
+            if *field == "SpeedUnit" && !crate::assets::il::is_1_28_45() {
                 continue;
             }
             let i = Self::index(field);
@@ -249,6 +255,9 @@ impl Settings {
         p.ChunkyShotParticles = b("ChunkyShotParticles");
         p.ShakeIntensity = f("ShakeIntensity");
         p.TemperatureUnit = f("TemperatureUnit") as i32;
+        if crate::assets::il::is_1_28_45() {
+            p.SpeedUnit = f("SpeedUnit") as i32;
+        }
         p.ThermalVisionUpdateRate = f("ThermalVisionUpdateRate") as i32;
         p
     }
@@ -1354,7 +1363,12 @@ mod save_tests {
             let mut s = Settings::default();
             s.load(&text);
             let screen = s.resolution.unwrap_or((1920, 1080));
-            assert_eq!(s.save_text(screen), text, "config.json");
+            let mut ours = s.save_text(screen);
+            // A config.json last written by 1.28.41 has no SpeedUnit; 1.28.45 writes it on its next save.
+            if crate::assets::il::is_1_28_45() && !text.contains("\"SpeedUnit\"") {
+                ours = ours.replace("  \"SpeedUnit\": \"MetersPerSecond\",\r\n", "");
+            }
+            assert_eq!(ours, text, "config.json");
         }
         if let Ok(text) = std::fs::read_to_string(game.join("ControlScheme.json")) {
             let mut c = Controls::default();

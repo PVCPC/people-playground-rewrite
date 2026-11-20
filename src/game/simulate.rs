@@ -762,6 +762,8 @@ impl Game {
                             self.physical_on_joint_break_slider(p, Some(f));
                         }
                         self.sticky_grenade_on_joint_break(f);
+                        // 1.28.45: CrossbowBehaviour.OnJointBreak2D (its syringe joint is on the crossbow's object).
+                        self.crossbow_on_joint_break(f);
                         self.blood_wire_on_joint_break(f);
                         self.root_wire_on_joint_break(f);
                         self.pin_on_joint_break(f);

@@ -148,7 +148,7 @@ impl Game {
         if self.physicals[self.limbs[l].PhysicalBehaviour].isDisintegrated {
             return;
         }
-        // Traverse(hashSet, limb.NodeBehaviour): a HashSet with no removals enumerates in insertion order.
+        // Dulcamarus.Traverse(hashSet, limb.NodeBehaviour): a HashSet with no removals enumerates in insertion order.
         let mut network = Vec::new();
         // Recursion depth first, in Connections order.
         fn traverse(g: &Game, network: &mut Vec<usize>, node: usize) {

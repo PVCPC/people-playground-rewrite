@@ -1541,7 +1541,7 @@ impl Game {
     }
 
     /// Transform.IsChildOf: `q`'s Transform is `p`'s or hangs below it.
-    fn physical_is_child_of(&self, q: usize, p: usize) -> bool {
+    pub(super) fn physical_is_child_of(&self, q: usize, p: usize) -> bool {
         if q == p {
             return true;
         }
@@ -1589,6 +1589,8 @@ impl Game {
                 }
             }
         }
+        // 1.28.45: CrossbowBehaviour.OnPlayerDragStart / OnPlayerDragEnd.
+        self.crossbow_on_drag(item, end);
     }
 
     /// DragTool.OnDeselect's and OnToolUnchosen's loop: OnPlayerDragEnd (`drag_broadcast_drag_message`) to each object moved in pause mode, then the set is cleared.
@@ -2181,6 +2183,12 @@ impl Game {
             if class == "#RootWire" {
                 if !self.destroyed_components.contains(&id) {
                     self.root_wire_flip(id, pre, center);
+                }
+                continue;
+            }
+            if pre && class == "CrossbowBehaviour" {
+                if let Some(c) = self.v45.crossbows.iter().position(|x| x.id == id) {
+                    self.crossbow_on_pre_flip(c);
                 }
                 continue;
             }

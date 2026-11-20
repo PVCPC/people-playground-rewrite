@@ -61,6 +61,7 @@ pub mod television;
 pub mod wrench;
 pub mod valve;
 pub mod v45_new;
+pub mod naudio;
 pub mod line;
 pub mod trail;
 pub mod liquid_canister;
@@ -865,6 +866,8 @@ pub struct Prefs {
     pub ShakeIntensity: f32,
     /// TemperatureUnit: Celsius 0, Fahrenheit 1, Kelvin 2.
     pub TemperatureUnit: i32,
+    /// SpeedUnit (1.28.45): MetersPerSecond 0, KilometersPerHour 1, FeetPerSecond 2, MilesPerHour 3.
+    pub SpeedUnit: i32,
     /// ThermalVisionUpdateRate, in Hz.
     pub ThermalVisionUpdateRate: i32,
     /// Rewrite extra: the portal gun's opening length, times the default (the Mods settings tab).
@@ -963,6 +966,7 @@ impl Default for Prefs {
             ChunkyShotParticles: true,
             ShakeIntensity: 1.0,
             TemperatureUnit: 0,
+            SpeedUnit: 0,
             ThermalVisionUpdateRate: 25,
             PortalSize: 1.0,
             PortalGlow: 1.5,
@@ -1035,6 +1039,8 @@ impl Prefs {
                 "ChunkyShotParticles" => p.ChunkyShotParticles = bool()?,
                 "ShakeIntensity" => p.ShakeIntensity = float()?,
                 "TemperatureUnit" => p.TemperatureUnit = enumeration(&TEMPERATURE_UNITS)?,
+                // 1.28.45's Preferences.SpeedUnit (1.28.41 has no such member: ignored).
+                "SpeedUnit" if crate::assets::il::is_1_28_45() => p.SpeedUnit = enumeration(&["MetersPerSecond", "KilometersPerHour", "FeetPerSecond", "MilesPerHour"])?,
                 _ => {}
             }
         }
@@ -2208,6 +2214,8 @@ pub enum EmbeddedDrive {
     Muzzle(usize),
     /// wh: the system plays from its Awake; only its renderer's visibility is read.
     Wh,
+    /// 1.28.45's DrippingBloodParticleController `d`: Emit(EmitParams) on its ParticleSystem (v45_new.rs).
+    Drip(usize),
     /// A system no script drives: it plays as its playOnAwake says (owner = its own component id).
     Free,
 }

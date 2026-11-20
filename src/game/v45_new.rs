@@ -10,7 +10,7 @@ use crate::assets::db::{Component, ObjRef, Prefab};
 use crate::assets::mono::Value;
 
 /// The new classes the link step builds from a prefab.
-pub const LINKED: &[&str] = &["SpeedometerBehaviour", "CrossbowBehaviour", "BuzzerBehaviour", "DrippingBloodParticleController"];
+pub const LINKED: &[&str] = &["SpeedometerBehaviour", "CrossbowBehaviour", "BuzzerBehaviour", "DrippingBloodParticleController", "MagneticBehaviour"];
 
 /// The Unity messages each new class declares (lifecycle.rs is generated from the 1.28.41 DLL, which lacks them).
 pub const LIFECYCLE: &[(&str, &[&str])] = &[
@@ -34,6 +34,9 @@ pub enum V {
     Buzzer(usize),
     Dulcamarus(usize),
     DrippingBlood(usize),
+    Magnetic(usize),
+    /// InjectableBehaviour: no manager callbacks (Start is rendering, Lodged a message); its save slot only.
+    Injectable(usize),
 }
 
 impl V {
@@ -44,6 +47,8 @@ impl V {
             V::Buzzer(_) => "BuzzerBehaviour",
             V::Dulcamarus(_) => "DulcamarusBehaviour",
             V::DrippingBlood(_) => "DrippingBloodParticleController",
+            V::Magnetic(_) => "MagneticBehaviour",
+            V::Injectable(_) => "InjectableBehaviour",
         }
     }
 }
@@ -59,6 +64,16 @@ pub enum SpeedUnit {
 }
 
 impl SpeedUnit {
+    /// The enum's value (Preferences.SpeedUnit as an int; another value matches no case and reads as m/s here).
+    pub fn from_index(i: i32) -> Self {
+        match i {
+            1 => SpeedUnit::KilometersPerHour,
+            2 => SpeedUnit::FeetPerSecond,
+            3 => SpeedUnit::MilesPerHour,
+            _ => SpeedUnit::MetersPerSecond,
+        }
+    }
+
     /// SpeedUnitDisplayAttribute.GetDisplay (EnumDisplayAttribute.GetDisplay's override): the settings radio label.
     pub fn display(self) -> &'static str {
         match self {
@@ -78,17 +93,17 @@ pub struct CircularBuffer<T: Copy + Default> {
 }
 
 impl<T: Copy + Default> CircularBuffer<T> {
-    /// CircularBuffer..ctor(size)
+    /// CircularBuffer`1..ctor(size)
     pub fn new(size: usize) -> Self {
         CircularBuffer { Data: vec![T::default(); size], WriteIndex: 0 }
     }
-    /// CircularBuffer.Add
+    /// CircularBuffer`1.Add
     pub fn add(&mut self, value: T) {
         let n = self.Data.len() as i32;
         self.Data[(self.WriteIndex % n) as usize] = value;
         self.WriteIndex += 1;
     }
-    /// CircularBuffer.PickRandom: Random.Range(0, WriteIndex - 1) % Length (default before the first Add).
+    /// CircularBuffer`1.PickRandom: Random.Range(0, WriteIndex - 1) % Length (default before the first Add).
     pub fn pick_random(&self, g: &mut Game) -> T {
         if self.WriteIndex == 0 {
             return T::default();
@@ -145,8 +160,8 @@ pub struct Injectable {
     pub id: i32,
     /// The bolt's root PhysicalBehaviour (Lodged arrives by SendMessage to its GameObject).
     pub phys: Option<usize>,
-    /// LiquidDistributions: (liquid, amount); None once spent (null).
-    pub LiquidDistributions: Option<Vec<(usize, f32)>>,
+    /// LiquidDistributions: (LiquidID, Amount); None once spent (null).
+    pub LiquidDistributions: Option<Vec<(String, f32)>>,
     pub FxColor: [f32; 4],
     pub destroyed: bool,
 }
@@ -166,6 +181,12 @@ pub struct Buzzer {
     /// Source.minDistance / maxDistance (UpdateLoudness).
     pub min_distance: f32,
     pub max_distance: f32,
+    /// SerialisableAudioData (null outside Start and after OnBeforeSerialise).
+    pub SerialisableAudioData: Option<Vec<u8>>,
+    /// clip (ClipFromData's; None: the FallbackAudioClip plays).
+    pub clip: Option<super::audio::ClipRef>,
+    /// SpriteRenderer.color (UpdateColour).
+    pub color: [f32; 4],
 }
 
 /// DulcamarusBehaviour.SiphonSource
@@ -177,18 +198,16 @@ pub struct SiphonSource {
     pub Time: f32,
     pub Strength: f32,
     pub Seed: f32,
-    /// LineRenderer ("tendril"): widthMultiplier, start/end colour, the 12 positions, enabled (rendering).
+    /// LineRenderer ("tendril"), drawn from `Game::lines`.
     pub LineRenderer: Option<Tendril>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Tendril {
+    /// The LineRenderer's instance id.
     pub id: i32,
-    pub width: f32,
-    pub start_color: [f32; 4],
-    pub end_color: [f32; 4],
-    pub positions: Vec<[f32; 3]>,
-    pub enabled: bool,
+    /// Its index in `Game::lines`.
+    pub line: usize,
 }
 
 /// DulcamarusBehaviour (added at runtime to a person by the Dulcamarus liquid).
@@ -220,6 +239,27 @@ pub struct DrippingBlood {
     pub emitted: Vec<([f32; 2], [f32; 4])>,
 }
 
+/// MagneticBehaviour (no 1.28.45 prefab carries it; a mod's or a saved one's).
+#[derive(Clone, Debug, Default)]
+pub struct Magnetic {
+    pub id: i32,
+    /// rb: GetComponent<Rigidbody2D>() in Awake, the physical on its object.
+    pub phys: usize,
+    pub EffectiveDistance: f32,
+    pub NorthPole: [f32; 2],
+    pub SouthPole: [f32; 2],
+    pub MagnetStrength: f32,
+    pub globalNorthPole: [f32; 2],
+    pub globalSouthPole: [f32; 2],
+}
+
+/// MagneticBehaviour.Pole
+#[derive(Clone, Copy, PartialEq)]
+enum Pole {
+    North,
+    South,
+}
+
 /// The new classes' arenas.
 #[derive(Default)]
 pub struct V45 {
@@ -229,14 +269,16 @@ pub struct V45 {
     pub buzzers: Vec<Buzzer>,
     pub dulcamarus: Vec<Dulcamarus>,
     pub drips: Vec<DrippingBlood>,
-    /// UserPreferenceManager.Current.SpeedUnit (Preferences.SpeedUnit).
-    pub speed_unit: SpeedUnit,
-    /// Disconnected syringes' Utils.DelayCoroutine(1f, SetLayer(9)): (due time, physical).
-    pub delayed_layers: Vec<(f32, usize)>,
+    pub magnets: Vec<Magnetic>,
+    /// BuzzerBehaviour.DataCache and BuzzerBehaviour.ClipCache (statics: kept for the whole run).
+    pub buzzer_data_cache: std::collections::HashMap<u32, Vec<u8>>,
+    pub buzzer_clip_cache: std::collections::HashMap<u32, super::audio::ClipRef>,
     /// Global.DrippingParticlesPrefab: each object's (ids it takes, parent), the controller's (object, component), and
-    /// its Amount and DecaySpeed.
-    pub drip_prefab: Option<(Vec<(usize, Option<usize>)>, (usize, usize), f32, f32)>,
+    /// its Amount and DecaySpeed, and its ParticleSystem field's (GameObject, Transforms up to the clone root).
+    pub drip_prefab: Option<DripPrefab>,
 }
+
+type DripPrefab = (Vec<(usize, Option<usize>)>, (usize, usize), f32, f32, Option<(ObjRef, Vec<crate::unity::transform::Trs>)>);
 
 /// A script's PPtr field `name` as the prefab object it points at (None: null).
 fn field_object(prefab: &Prefab, o: usize, v: &Value, name: &str) -> Option<usize> {
@@ -306,6 +348,26 @@ pub fn format_n1(x: f32) -> String {
     format!("{}{grouped}.{}", if negative && !zero { "-" } else { "" }, frac[0])
 }
 
+/// MagneticBehaviour.GetForce
+fn magnetic_get_force(MagnetStrength: f32, a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    let val = [b[0] - a[0], b[1] - a[1]];
+    let sqr = val[0] * val[0] + val[1] * val[1];
+    if sqr < 0.01 {
+        return [0.0, 0.0];
+    }
+    let num2 = MagnetStrength / (sqr + 0.01);
+    [val[0] * num2, val[1] * num2]
+}
+
+/// MagneticBehaviour.GetPoleSign
+fn magnetic_get_pole_sign(a: Pole, b: Pole) -> f32 {
+    if a == b {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
 /// SpeedometerBehaviour.ConvertSpeed: switches on the preference, not on `toUnit`; km/h reads "km/s" (the game's text).
 pub fn convert_speed(metersPerSecond: f32, unit: SpeedUnit) -> String {
     let (v, suffix) = match unit {
@@ -357,11 +419,11 @@ impl Game {
                     imbue_color: [1.0; 4],
                     imbue_emission: true,
                 });
-                // Awake: Launcher.OnLaunch += OnLaunch (launcher.rs calls crossbow_on_launch).
+                // CrossbowBehaviour.Awake: Launcher.OnLaunch += OnLaunch (launcher.rs calls crossbow_on_launch).
                 V::Crossbow(self.v45.crossbows.len() - 1)
             }
             "BuzzerBehaviour" => {
-                // Awake: PhysicalBehaviour and SpriteRenderer default to this object's.
+                // BuzzerBehaviour.Awake: PhysicalBehaviour and SpriteRenderer default to this object's.
                 let p = physical_at(field_object(prefab, o, v, "PhysicalBehaviour")).or_else(|| linked.physicals.get(&o).copied()).unwrap_or_else(|| unimplemented!("mod-only: BuzzerBehaviour without a PhysicalBehaviour"));
                 let damagable = field_object(prefab, o, v, "DamagableBehaviour").and_then(|k| linked.machinery.get(&k).copied());
                 self.v45.buzzers.push(Buzzer {
@@ -389,8 +451,23 @@ impl Game {
                 });
                 V::DrippingBlood(self.v45.drips.len() - 1)
             }
+            "MagneticBehaviour" => {
+                // MagneticBehaviour.Awake: rb = GetComponent<Rigidbody2D>().
+                let phys = linked.physicals.get(&o).copied().unwrap_or_else(|| unimplemented!("mod-only: MagneticBehaviour without a PhysicalBehaviour's Rigidbody2D"));
+                self.v45.magnets.push(Magnetic {
+                    id,
+                    phys,
+                    EffectiveDistance: f(v, "EffectiveDistance", 1.0),
+                    NorthPole: vec2(v, "NorthPole"),
+                    SouthPole: vec2(v, "SouthPole"),
+                    MagnetStrength: f(v, "MagnetStrength", 1.0),
+                    ..Default::default()
+                });
+                V::Magnetic(self.v45.magnets.len() - 1)
+            }
             _ => unreachable!(),
         };
+        self.script_slots.insert(id, super::save_slots::Slot::V45(b));
         Some(Behaviour::V45(b))
     }
 
@@ -419,6 +496,7 @@ impl Game {
             (Phase::Update, V::Crossbow(c)) => self.crossbow_update(c),
             (Phase::Update, V::Dulcamarus(d)) => self.dulcamarus_update(d),
             (Phase::Update, V::DrippingBlood(d)) => self.dripping_blood_update(d),
+            (Phase::Fixed, V::Magnetic(m)) => self.magnetic_fixed_update(m),
             (phase, v) => unreachable!("{v:?} in the {phase:?} manager"),
         }
     }
@@ -430,6 +508,69 @@ impl Game {
             V::Buzzer(b) => self.buzzer_use(b),
             _ => unreachable!(),
         }
+    }
+
+    // ---- MagneticBehaviour ---------------------------------------------------------------------------------------
+
+    /// MagneticBehaviour.FixedUpdate
+    pub(super) fn magnetic_fixed_update(&mut self, m: usize) {
+        use super::shatter::ShatterHost;
+        let p = self.v45.magnets[m].phys;
+        let rb = self.physicals[p].rigidbody.clone();
+        let (north, south) = (self.v45.magnets[m].NorthPole, self.v45.magnets[m].SouthPole);
+        self.v45.magnets[m].globalNorthPole = self.rigidbody_point_relative(&rb, north);
+        self.v45.magnets[m].globalSouthPole = self.rigidbody_point_relative(&rb, south);
+        let center = <Game as ShatterHost>::world_center_of_mass(self, p);
+        let (mut val, mut val2) = ([0.0f32; 2], [0.0f32; 2]);
+        // Physics2D.OverlapCircleNonAlloc(worldCenterOfMass, EffectiveDistance, buffer): 16 colliders at most.
+        let hits = self.overlap_circle(crate::b2::math::Vec2::new(center[0], center[1]), self.v45.magnets[m].EffectiveDistance, super::explosion::DEFAULT_RAYCAST_LAYERS);
+        for (q, collider) in hits.into_iter().take(16) {
+            // PhysicalObjectsInWorldByTransform.TryGetValue(collider.transform): the collider sits on the physical's own object.
+            let Some(q) = q.filter(|&q| self.physicals[q].in_world && !self.physicals[q].destroyed && Some(self.physical_game_object(q)) == self.world.collider_game_object(collider)) else { continue };
+            if !(mathf::clamp01(self.properties[self.physicals[q].Properties].MagneticAttractionIntensity) > f32::EPSILON) {
+                continue;
+            }
+            let a = self.magnetic_attract(m, q, Pole::North);
+            val = [val[0] + a[0], val[1] + a[1]];
+            let b = self.magnetic_attract(m, q, Pole::South);
+            val2 = [val2[0] + b[0], val2[1] + b[1]];
+        }
+        let (gn, gs) = (self.v45.magnets[m].globalNorthPole, self.v45.magnets[m].globalSouthPole);
+        if val[0] * val[0] + val[1] * val[1] > 0.0 {
+            rb.add_force_at_position(&mut self.world, val, gn);
+        }
+        if val2[0] * val2[0] + val2[1] * val2[1] > 0.0 {
+            rb.add_force_at_position(&mut self.world, val2, gs);
+        }
+    }
+
+    /// MagneticBehaviour.GetGlobalPole
+    fn magnetic_global_pole(&self, m: usize, pole: Pole) -> [f32; 2] {
+        match pole {
+            Pole::North => self.v45.magnets[m].globalNorthPole,
+            Pole::South => self.v45.magnets[m].globalSouthPole,
+        }
+    }
+
+    /// MagneticBehaviour.Attract: another magnet pulls on both its poles; anything else is pulled at its closest point.
+    fn magnetic_attract(&mut self, m: usize, other: usize, pole: Pole) -> [f32; 2] {
+        let global = self.magnetic_global_pole(m, pole);
+        // other.TryGetComponent<MagneticBehaviour>: the first on its object.
+        let destroyed = &self.destroyed_components;
+        if let Some(k) = self.v45.magnets.iter().position(|x| x.phys == other && !destroyed.contains(&x.id)) {
+            let strength = self.v45.magnets[m].MagnetStrength;
+            let n = magnetic_get_force(strength, self.magnetic_global_pole(k, Pole::North), global);
+            let s = magnetic_get_force(strength, self.magnetic_global_pole(k, Pole::South), global);
+            let (sn, ss) = (magnetic_get_pole_sign(pole, Pole::North), magnetic_get_pole_sign(pole, Pole::South));
+            let (val, val2) = ([n[0] * sn, n[1] * sn], [s[0] * ss, s[1] * ss]);
+            return [-(val[0] + val2[0]), -(val[1] + val2[1])];
+        }
+        // other.rigidbody.ClosestPoint(globalPole)
+        let val3 = self.rigidbody_closest_point(other, global);
+        let force = magnetic_get_force(self.v45.magnets[m].MagnetStrength, val3, global);
+        let rb = self.physicals[other].rigidbody.clone();
+        rb.add_force_at_position(&mut self.world, force, val3);
+        [-force[0], -force[1]]
     }
 
     // ---- SpeedometerBehaviour ------------------------------------------------------------------------------------
@@ -466,9 +607,14 @@ impl Game {
         x.TopSpeedMs = mathf::max(x.TopSpeedMs, x.speedMs);
     }
 
-    /// SpeedometerBehaviour.OnWillRenderObject: SetText.
+    // SpeedometerBehaviour.OnWillRenderObject: presentation (SetText each render; the TextMesh is not drawn here).
+    // SpeedometerBehaviour.OnDisable: presentation (Light and TextMesh off).
+    // SpeedometerBehaviour.OnEnable: UpdateActivation (run from Start; a component's later re-enable is not wired for the 1.28.45 classes).
+
+    /// SpeedometerBehaviour.SetText: the TextMesh's text, both speeds in the SpeedUnit preference.
     pub fn speedometer_set_text(&mut self, s: usize) {
-        let unit = self.v45.speed_unit;
+        // UserPreferenceManager.Current.SpeedUnit
+        let unit = SpeedUnit::from_index(self.prefs.SpeedUnit);
         let x = &mut self.v45.speedometers[s];
         let tag = crate::il45!(str "SpeedometerBehaviour::SetText" 0);
         x.text = format!("{}{tag}{}", convert_speed(x.speedMs, unit), convert_speed(x.TopSpeedMs, unit));
@@ -487,7 +633,7 @@ impl Game {
     /// CrossbowBehaviour.OnCollisionEnter2D
     pub(super) fn crossbow_on_collision_enter(&mut self, c: usize, col: &crate::b2::contacts2d::ScriptCollision) {
         let x = &self.v45.crossbows[c];
-        if x.hasSyringe || x.syringeJoint.is_some() || x.AttachedSyringe.is_some() || self.time.time - x.lastDisconnectTime < 1.0 {
+        if x.hasSyringe || self.crossbow_joint_alive(c) || self.crossbow_attached(c).is_some() || self.time.time - x.lastDisconnectTime < 1.0 {
             return;
         }
         let Some(other) = self.collision_physical(col) else { return };
@@ -538,7 +684,9 @@ impl Game {
         x.imbue_playing = true;
         // syringe.gameObject.SetLayer(10)
         self.v45_set_layer(sp, 10);
-        // component.PauseDragOverride = false; PreventGripping = true: dragging and gripping (not rewritten).
+        // component.PauseDragOverride = false; component.PreventGripping = true
+        self.physicals[sp].PauseDragOverride = false;
+        self.physicals[sp].PreventGripping = true;
         self.v45.crossbows[c].hasSyringe = true;
     }
 
@@ -548,17 +696,34 @@ impl Game {
         self.with_component_instance(id, |g, inst, o| g.game_object_set_layer(inst, o, layer));
     }
 
+    /// `(bool)syringeJoint`: the FixedJoint2D ConnectSyringe added, not yet destroyed.
+    fn crossbow_joint_alive(&self, c: usize) -> bool {
+        self.v45.crossbows[c].syringeJoint.is_some_and(|j| !self.fixed_joints[j].destroyed)
+    }
+
+    /// `(bool)AttachedSyringe`: the syringe it holds, while its object lives.
+    fn crossbow_attached(&self, c: usize) -> Option<usize> {
+        self.v45.crossbows[c].AttachedSyringe.filter(|&s| !self.physicals[self.syringes[s].Phys].destroyed)
+    }
+
     /// CrossbowBehaviour.DisconnectSyringe
     fn crossbow_disconnect_syringe(&mut self, c: usize) {
-        if let Some(j) = self.v45.crossbows[c].syringeJoint.take() {
-            self.fixed_joint_destroy(j);
+        if self.crossbow_joint_alive(c) {
+            // Object.Destroy(syringeJoint): queued to the end of the frame.
+            let j = self.v45.crossbows[c].syringeJoint.unwrap();
+            if !self.joint_destroys.iter().any(|&(_, k)| k == j) {
+                self.destroy_joint_delayed(j);
+            }
         }
-        if let Some(s) = self.v45.crossbows[c].AttachedSyringe {
+        if let Some(s) = self.crossbow_attached(c) {
             let sp = self.syringes[s].Phys;
-            // StartCoroutine(DelayCoroutine(1, SetLayer(9))).
-            self.v45.delayed_layers.push((self.time.time + 1.0, sp));
-            if !self.physicals[sp].destroyed {
-                // PreventGripping = false; PauseDragOverride = true (not rewritten).
+            // StartCoroutine(Utils.DelayCoroutine(1f, () => s.SetLayer(9))): owned by the crossbow.
+            let owner = self.v45.crossbows[c].id;
+            self.start_wait(owner, 1.0, super::destroyable::Step::CrossbowSetLayer(sp));
+            {
+                // TryGetComponent<PhysicalBehaviour>: PreventGripping = false; PauseDragOverride = true.
+                self.physicals[sp].PreventGripping = false;
+                self.physicals[sp].PauseDragOverride = true;
                 let me = self.v45.crossbows[c].phys;
                 let q = self.physicals[me].transform.rotation;
                 let up = mathf::rotate(q, [0.0, 1.0, 0.0]);
@@ -583,7 +748,7 @@ impl Game {
 
     /// CrossbowBehaviour.Update
     fn crossbow_update(&mut self, c: usize) {
-        if let Some(s) = self.v45.crossbows[c].AttachedSyringe.filter(|&s| !self.physicals[self.syringes[s].Phys].destroyed) {
+        if let Some(s) = self.crossbow_attached(c) {
             let o = Owner::Syringe(s);
             let fallback = self.bc(o).cachedComputedColour;
             let mut color = self.get_computed_color(o, fallback);
@@ -598,18 +763,90 @@ impl Game {
         } else if self.v45.crossbows[c].hasSyringe {
             self.crossbow_disconnect_syringe(c);
         }
-        // The crossbow's coroutines step after its Update (Unity runs them after every Update).
-        self.v45_coroutines();
     }
 
-    /// The delayed SetLayer(9) of disconnected syringes (Utils.DelayCoroutine(1f, ...)), run with the coroutines.
-    fn v45_coroutines(&mut self) {
-        let now = self.time.time;
-        let due: Vec<usize> = self.v45.delayed_layers.iter().filter(|&&(t, _)| now >= t).map(|&(_, p)| p).collect();
-        self.v45.delayed_layers.retain(|&(t, _)| now < t);
-        for p in due {
-            if !self.physicals[p].destroyed {
-                self.v45_set_layer(p, 9);
+    /// The lambda of DisconnectSyringe's Utils.DelayCoroutine: s.SetLayer(9). A syringe destroyed meanwhile makes it throw
+    /// (MissingReferenceException, logged by the coroutine).
+    pub(super) fn crossbow_set_layer_resume(&mut self, p: usize) {
+        if self.physicals[p].destroyed {
+            let msg = "MissingReferenceException: The object of type 'GameObject' has been destroyed but you are still trying to access it.\nYour script should either check if it is null or you should not destroy the object.";
+            self.log_exception(Some(super::menu::ManagedException(msg.into())));
+            return;
+        }
+        self.v45_set_layer(p, 9);
+    }
+
+    /// CrossbowBehaviour.OnJointBreak2D (sent to the broken joint's GameObject): its own syringeJoint disconnects.
+    pub(super) fn crossbow_on_joint_break(&mut self, f: usize) {
+        if !crate::assets::il::is_1_28_45() {
+            return;
+        }
+        for c in 0..self.v45.crossbows.len() {
+            if self.v45.crossbows[c].syringeJoint == Some(f) && !self.destroyed_components.contains(&self.v45.crossbows[c].id) {
+                self.crossbow_disconnect_syringe(c);
+            }
+        }
+    }
+
+    /// CrossbowBehaviour.OnAfterDeserialise: a loaded AttachedSyringe is connected again.
+    pub(super) fn crossbow_on_after_deserialise(&mut self, c: usize) {
+        if let Some(s) = self.crossbow_attached(c) {
+            self.crossbow_connect_syringe(c, s);
+        }
+    }
+
+    /// CrossbowBehaviour.OnPreFlip: an attached syringe that is not selected is parented to the crossbow for the flip, and
+    /// Utils.NextFrameCoroutine sets its parent back to null at the end of the frame.
+    pub(super) fn crossbow_on_pre_flip(&mut self, c: usize) {
+        let Some(s) = self.crossbow_attached(c) else { return };
+        let sp = self.syringes[s].Phys;
+        if self.tool.as_ref().is_some_and(|t| t.rawSelection.contains(&sp)) {
+            return;
+        }
+        self.crossbow_parent_syringe(c, sp);
+        self.coroutine_seq += 1;
+        let owner = self.v45.crossbows[c].id;
+        self.end_of_frame.push(super::destroyable::Coroutine { seq: self.coroutine_seq, at: self.time.timeAsDouble, owner, from: i64::MIN, step: super::destroyable::Step::CrossbowUnparent(c) });
+    }
+
+    /// AttachedSyringe.transform.SetParent(transform) (worldPositionStays).
+    fn crossbow_parent_syringe(&mut self, c: usize, sp: usize) {
+        let me = self.v45.crossbows[c].phys;
+        if self.physicals[sp].parent.is_some() {
+            // From one parent to another: the world pose stays either way.
+            self.physical_set_parent_null(sp);
+        }
+        self.physical_set_parent(sp, me);
+    }
+
+    /// The lambda of OnPreFlip's NextFrameCoroutine (`from_coroutine`), and OnPlayerDragEnd: AttachedSyringe.transform.SetParent(null).
+    /// With no syringe any more the lambda throws (NullReferenceException, logged by the coroutine).
+    pub(super) fn crossbow_unparent(&mut self, c: usize, from_coroutine: bool) {
+        match self.v45.crossbows[c].AttachedSyringe {
+            Some(s) if !self.physicals[self.syringes[s].Phys].destroyed => self.physical_set_parent_null(self.syringes[s].Phys),
+            _ if from_coroutine => self.log_exception(Some(super::menu::ManagedException("NullReferenceException: Object reference not set to an instance of an object".into()))),
+            _ => {}
+        }
+    }
+
+    /// CrossbowBehaviour.OnPlayerDragStart / CrossbowBehaviour.OnPlayerDragEnd (`end`) of the crossbows on `item` and below it:
+    /// the attached syringe is parented to the crossbow while it is dragged in pause mode.
+    pub(super) fn crossbow_on_drag(&mut self, item: usize, end: bool) {
+        if !crate::assets::il::is_1_28_45() {
+            return;
+        }
+        for c in 0..self.v45.crossbows.len() {
+            let me = self.v45.crossbows[c].phys;
+            if self.destroyed_components.contains(&self.v45.crossbows[c].id) || self.physicals[me].destroyed || !self.physicals[me].active || !self.physical_is_child_of(me, item) {
+                continue;
+            }
+            match (end, self.crossbow_attached(c)) {
+                (false, Some(s)) => {
+                    let sp = self.syringes[s].Phys;
+                    self.crossbow_parent_syringe(c, sp);
+                }
+                (true, Some(_)) => self.crossbow_unparent(c, false),
+                _ => {}
             }
         }
     }
@@ -621,10 +858,11 @@ impl Game {
             return;
         }
         for c in 0..self.v45.crossbows.len() {
-            if self.v45.crossbows[c].Launcher != l {
+            // CrossbowBehaviour.OnDestroy: Launcher.OnLaunch -= OnLaunch, so a destroyed crossbow no longer hears it.
+            if self.v45.crossbows[c].Launcher != l || self.destroyed_components.contains(&self.v45.crossbows[c].id) {
                 continue;
             }
-            let Some(s) = self.v45.crossbows[c].AttachedSyringe.filter(|&s| !self.physicals[self.syringes[s].Phys].destroyed) else { continue };
+            let Some(s) = self.crossbow_attached(c) else { continue };
             let o = Owner::Syringe(s);
             if !(self.scaled_liquid_amount(o) > 0.0) {
                 continue;
@@ -640,10 +878,11 @@ impl Game {
             let mut out = Vec::new();
             for liquid in self.bc(o).LiquidDistribution.keys() {
                 let amount = self.remove_liquid(o, liquid, usage).abs();
-                out.push((liquid, amount));
+                out.push((super::circulation::liquid_identity(liquid).to_string(), amount));
             }
-            // Start: GetComponentInChildren<ParticleSystem>() gets FxColor and Play (rendering).
+            // InjectableBehaviour.Start: presentation (ImbueParticles' startColor = FxColor, then Play; FxColor is kept, the bolt's particles are not drawn).
             self.v45.injectables.push(Injectable { id, phys: bolt, LiquidDistributions: Some(out), FxColor: fx, destroyed: false });
+            self.injectable_attach(self.v45.injectables.len() - 1, true);
         }
     }
 
@@ -661,29 +900,215 @@ impl Game {
                 continue;
             }
             let Some(target) = self.physical_container(victim) else { continue };
-            // Liquid.TryGetLiquid(LiquidID): the ids written by OnLaunch always resolve.
+            // Liquid.TryGetLiquid(LiquidID): an unknown id (a mod's liquid) is skipped.
             for (liquid, amount) in self.v45.injectables[i].LiquidDistributions.take().unwrap() {
-                self.add_liquid(target, liquid, amount);
+                if let Some(liquid) = super::circulation::liquid_get(&liquid) {
+                    self.add_liquid(target, liquid, amount);
+                }
             }
             // ImbueParticles.Stop() (rendering); Object.Destroy(this).
             self.v45.injectables[i].destroyed = true;
         }
     }
 
+    /// e.AddComponent<InjectableBehaviour>() on the bolt's object (`enabled`: a loaded one's Enabled), so a save packs it.
+    pub(super) fn injectable_attach(&mut self, i: usize, enabled: bool) {
+        let id = self.v45.injectables[i].id;
+        if let Some(p) = self.v45.injectables[i].phys {
+            let on = self.physicals[p].id;
+            self.attach_script(on, "InjectableBehaviour", id, enabled);
+        }
+        self.script_slots.insert(id, super::save_slots::Slot::V45(V::Injectable(i)));
+    }
+
+    /// The stored members of a new class's component (MonoBehaviourPrototype's storedFields; save_members_45).
+    pub(super) fn v45_extras(&mut self, v: V) -> Vec<(&'static str, super::save_extras::Extra<'_>)> {
+        use super::save_extras::Extra;
+        match v {
+            V::Speedometer(i) => {
+                let x = &mut self.v45.speedometers[i];
+                vec![("Activated", Extra::F(&mut x.Activated)), ("TopSpeedMs", Extra::F(&mut x.TopSpeedMs))]
+            }
+            V::Crossbow(i) => {
+                let x = &mut self.v45.crossbows[i];
+                vec![("SyringeEjectForce", Extra::F(&mut x.SyringeEjectForce)), ("SyringeFluidUsage", Extra::F(&mut x.SyringeFluidUsage))]
+            }
+            V::Buzzer(i) => {
+                let x = &mut self.v45.buzzers[i];
+                vec![("AudioData", Extra::F(&mut x.AudioData)), ("SerialisableAudioData", Extra::Bytes(&mut x.SerialisableAudioData)), ("Loudness", Extra::F(&mut x.Loudness))]
+            }
+            V::Dulcamarus(i) => {
+                let x = &mut self.v45.dulcamarus[i];
+                vec![("Radius", Extra::F(&mut x.Radius)), ("isNew", Extra::F(&mut x.isNew))]
+            }
+            V::Injectable(i) => {
+                let x = &mut self.v45.injectables[i];
+                vec![("LiquidDistributions", Extra::Distributions(&mut x.LiquidDistributions)), ("FxColor", Extra::F(&mut x.FxColor))]
+            }
+            V::Magnetic(i) => {
+                let x = &mut self.v45.magnets[i];
+                vec![("EffectiveDistance", Extra::F(&mut x.EffectiveDistance)), ("NorthPole", Extra::F(&mut x.NorthPole)), ("SouthPole", Extra::F(&mut x.SouthPole)), ("MagnetStrength", Extra::F(&mut x.MagnetStrength))]
+            }
+            // [SkipSerialisation]: never packed.
+            V::DrippingBlood(_) => Vec::new(),
+        }
+    }
+
     // ---- BuzzerBehaviour -----------------------------------------------------------------------------------------
 
-    /// BuzzerBehaviour.Start: the "chooseAudioClip" (FilePicker) and "setLoudness" (float dialog) buttons are UI; a
-    /// saved AudioData is decoded into the clip; then UpdateLoudness and UpdateColour.
+    /// BuzzerBehaviour.Start: the "chooseAudioClip" and "setLoudness" buttons; the saved audio (DataCache by CurrentDataId,
+    /// else Utils.FBSF(AudioData), else SerialisableAudioData as loaded) becomes the clip; then UpdateLoudness and UpdateColour.
     fn buzzer_start(&mut self, b: usize) {
-        if !self.v45.buzzers[b].AudioData.trim().is_empty() {
-            unimplemented!("BuzzerBehaviour.Start: a saved AudioData (Utils.FBSF and ClipFromData's NAudio conversion are not rewritten)");
+        use super::menu::{MenuAction, MenuButton};
+        let p = self.v45.buzzers[b].PhysicalBehaviour;
+        self.physicals[p].menu.push(MenuButton::new("chooseAudioClip", "Pick audio", "Pick a file from your computer", MenuAction::BuzzerChooseAudio(b)));
+        self.physicals[p].menu.push(MenuButton::new("setLoudness", "Set loudness", "Set buzzer loudness", MenuAction::Entry(super::menu::Entry::BuzzerLoudness(b))));
+        let id = self.v45.buzzers[b].CurrentDataId;
+        if let Some(v) = self.v45.buzzer_data_cache.get(&id).filter(|_| id != 0) {
+            self.v45.buzzers[b].SerialisableAudioData = Some(v.clone());
+        } else if !self.v45.buzzers[b].AudioData.trim().is_empty() {
+            // try { Utils.FBSF(AudioData) } catch: ModdingApi.Notify, Debug.LogError(ex), null.
+            let text = self.v45.buzzers[b].AudioData.clone();
+            let mut out = None;
+            if let Some(ex) = super::menu::catch_managed(|| out = Some(super::utils::fbsf(&text))) {
+                self.notify("Buzzer contains malformed audio data".into());
+                self.log_message_received(&ex.0, super::menu::LogType::Error);
+            }
+            self.v45.buzzers[b].SerialisableAudioData = out;
         }
+        if let Some(data) = self.v45.buzzers[b].SerialisableAudioData.clone().filter(|d| !d.is_empty()) {
+            let mut made = None;
+            if super::menu::catch_managed(|| made = Some(self.buzzer_clip_from_data(data))).is_some() {
+                // catch (Exception): UISoundBehaviour.Main.Error(), ModdingApi.Notify, null.
+                self.ui_sound(super::audio::UiSoundKind::Error);
+                self.notify("Buzzer contains malformed audio data".into());
+                self.v45.buzzers[b].SerialisableAudioData = None;
+            }
+            if let Some((clip, id)) = made {
+                self.v45.buzzers[b].clip = Some(clip);
+                self.v45.buzzers[b].CurrentDataId = id;
+            }
+        }
+        self.v45.buzzers[b].SerialisableAudioData = None;
         self.buzzer_update_loudness(b);
-        // UpdateColour: CurrentDataId 0 keeps SpriteRenderer.color white (rendering).
+        self.buzzer_update_colour(b);
+    }
+
+    /// BuzzerBehaviour.UpdateColour: white without data, else Color.HSVToRGB(CurrentDataId % 1000 / 1000, 1, 1).
+    fn buzzer_update_colour(&mut self, b: usize) {
+        let id = self.v45.buzzers[b].CurrentDataId;
+        self.v45.buzzers[b].color = if id == 0 { [1.0; 4] } else { super::menu::hsv_to_rgb([(id % 1000) as f32 / 1000.0, 1.0, 1.0]) };
+    }
+
+    /// BuzzerBehaviour.ClipFromData (with BuzzerBehaviour.GetId): the clip of 8 kHz unsigned 8-bit mono `bytes` (at most
+    /// MaxSamples), cached by its xxHash; DataCache keeps the bytes.
+    pub(super) fn buzzer_clip_from_data(&mut self, bytes: Vec<u8>) -> (super::audio::ClipRef, u32) {
+        // GetId: xxHash.CalculateHash(bytes, bytes.Length, 0)
+        let id = super::contraption::xxhash(&bytes, 0);
+        let cached = self.v45.buzzer_clip_cache.get(&id).cloned();
+        if let Some(c) = cached {
+            self.v45.buzzer_data_cache.insert(id, bytes);
+            return (c, id);
+        }
+        let samples = super::naudio::clip_from_data_samples(&bytes);
+        self.v45.buzzer_data_cache.insert(id, bytes);
+        // AudioClip.Create($"buzzer_clip_{id}", num, 1, 8000, false); SetData(array, 0).
+        if samples.is_empty() {
+            super::menu::throw("ArgumentException: Length of created clip must be larger than 0");
+        }
+        let clip_id = self.allocate_instance_id();
+        // The 8-bit samples are (b - 128) / 128: as 16-bit PCM exactly (b - 128) * 256.
+        let data = samples.iter().map(|&x| (x * 32768.0) as i16).collect();
+        let pcm = crate::assets::audio::Pcm { channels: 1, frequency: 8000, data };
+        let clip = crate::assets::classes::AudioClip { name: format!("buzzer_clip_{id}"), load_type: 0, channels: 1, frequency: 8000, length: samples.len() as f32 / 8000.0, resource: Default::default(), compression_format: 0 };
+        let clip = std::sync::Arc::new(super::audio::Clip { asset: ObjRef { file: usize::MAX, path_id: clip_id as i64 }, clip, pcm: Some(std::sync::Arc::new(pcm)), stream: None });
+        self.v45.buzzer_clip_cache.insert(id, clip.clone());
+        (clip, id)
+    }
+
+    /// BuzzerBehaviour.OnBeforeSerialise: SerialisableAudioData = the first MaxSamples of DataCache[CurrentDataId].
+    pub(super) fn buzzer_on_before_serialise(&mut self, b: usize) {
+        let id = self.v45.buzzers[b].CurrentDataId;
+        if let Some(v) = self.v45.buzzer_data_cache.get(&id).filter(|_| id != 0) {
+            self.v45.buzzers[b].SerialisableAudioData = Some(v[..v.len().min(120000)].to_vec());
+        }
+    }
+
+    /// The "chooseAudioClip" button (BuzzerBehaviour.<Start> lambda): BuzzerBehaviour.OpenFile, whose FilePicker.OpenFile makes a
+    /// "FilePicker" GameObject with an Optout (its GameObject, Transform and Optout ids) running FilePicker.OpenFile's coroutine:
+    /// the Windows dialog on a Task, WaitUntil it completes, then the callback. A throw in the callback ends the coroutine (logged).
+    pub(super) fn buzzer_choose_audio(&mut self, b: usize) {
+        let old = self.v45.buzzers[b].SerialisableAudioData.clone();
+        self.allocate_instance_id();
+        self.allocate_instance_id();
+        let owner = self.allocate_instance_id();
+        let paths = std::sync::Arc::new(std::sync::Mutex::new(None::<Vec<String>>));
+        let task = paths.clone();
+        // Task.Run: FilePicker.Windows.WindowsFileSelector.SelectFile("Select file", filters, null, false).
+        std::thread::spawn(move || {
+            let got = super::naudio::file_picker_open_file(&[("WAVE files", &["wav"]), ("All files", &["*"])], false);
+            *task.lock().unwrap() = Some(got);
+        });
+        // FilePicker.MoveNext: the OpenFile iterator, as a coroutine routine (stage 1 waits, stage 2 calls back).
+        // FilePicker.System.IDisposable.Dispose: the iterator's, nothing to free (the routine is dropped when done).
+        // FilePicker.System.Collections.IEnumerator.get_Current: the yielded WaitUntil (the routine's return value).
+        // FilePicker.System.Collections.Generic.IEnumerator<System.Object>.get_Current: the same.
+        // FilePicker.System.Collections.IEnumerator.Reset: throws NotSupportedException; Unity never calls it.
+        let mut stage = 0;
+        self.co_start(owner, Box::new(move |g| {
+            stage += 1;
+            if stage == 1 {
+                let done = paths.clone();
+                return super::coroutine::Yield::WaitUntil(Box::new(move |_| done.lock().unwrap().is_some()));
+            }
+            let got = paths.lock().unwrap().take().unwrap_or_default();
+            g.buzzer_open_file_callback(b, &got, old.clone());
+            super::coroutine::Yield::Done
+        }));
+    }
+
+    /// BuzzerBehaviour.OpenFile's FilePicker callback: one picked path is converted (BuzzerBehaviour.OpenFile's NAudio chain, naudio.rs),
+    /// ClipFromData, UpdateColour, then the button's callback.
+    pub(super) fn buzzer_open_file_callback(&mut self, b: usize, paths: &[String], old: Option<Vec<u8>>) {
+        if paths.len() != 1 {
+            return;
+        }
+        let bytes = match super::naudio::buzzer_open_file_convert(std::path::Path::new(&paths[0])) {
+            Ok(bytes) => bytes,
+            // DialogBoxManager.Notification (too big, too long), then throw new PpgPlayerException (or the .NET exception).
+            Err(e) => {
+                if let Some(text) = e.notification() {
+                    self.contraption.dialogs.push(super::contraption::DialogRequest::notification(text.into()));
+                }
+                super::menu::throw(e.exception_text())
+            }
+        };
+        let (clip, id) = self.buzzer_clip_from_data(bytes);
+        self.v45.buzzers[b].clip = Some(clip.clone());
+        self.v45.buzzers[b].CurrentDataId = id;
+        self.buzzer_update_colour(b);
+        self.buzzer_choose_audio_done(b, Some(clip), old);
+    }
+
+    /// The button's OpenFile callback: a clip plays once unless the buzzer is destroyed; none restores the old data.
+    fn buzzer_choose_audio_done(&mut self, b: usize, c: Option<super::audio::ClipRef>, old: Option<Vec<u8>>) {
+        let Some(c) = c else {
+            self.ui_sound(super::audio::UiSoundKind::Warning);
+            self.notify("No file selected".into());
+            self.v45.buzzers[b].SerialisableAudioData = old;
+            return;
+        };
+        self.v45.buzzers[b].clip = Some(c.clone());
+        let destroyed = self.v45.buzzers[b].DamagableBehaviour.map_or_else(|| super::menu::throw("NullReferenceException: Object reference not set to an instance of an object"), |m| self.machinery[m].Destroyed);
+        if !destroyed {
+            if let Some(source) = self.audio.source_field(self.v45.buzzers[b].id, "Source") {
+                self.audio.play_one_shot(source, Some(&c), 1.0);
+            }
+        }
     }
 
     /// BuzzerBehaviour.UpdateLoudness
-    fn buzzer_update_loudness(&mut self, b: usize) {
+    pub(super) fn buzzer_update_loudness(&mut self, b: usize) {
         let (num, num2) = (1.2136364f32, 24.272728f32);
         let x = &mut self.v45.buzzers[b];
         let num3 = mathf::clamp01(mathf::map_range(num, num2, 0.0, 1.0, x.Loudness));
@@ -691,13 +1116,16 @@ impl Game {
         x.max_distance = mathf::lerp(30.0, 100.0, num3);
     }
 
+    // BuzzerBehaviour.OnWillRenderObject: presentation (the Diaphragm's y scale from the AudioSource's output data; the rewrite does not draw it).
+
     /// BuzzerBehaviour.Use: Source.PlayOneShot(clip ?? FallbackAudioClip) at most every 0.1 s, unless destroyed.
     fn buzzer_use(&mut self, b: usize) {
         let x = &self.v45.buzzers[b];
         let destroyed = x.DamagableBehaviour.map_or_else(|| super::menu::throw("NullReferenceException: Object reference not set to an instance of an object"), |m| self.machinery[m].Destroyed);
         if x.enabled && !destroyed && !(self.time.time - x.lastPlayedTime < 0.1) {
             let id = x.id;
-            let clip = self.audio.clip(id, "FallbackAudioClip");
+            // clip ? clip : FallbackAudioClip
+            let clip = x.clip.clone().or_else(|| self.audio.clip(id, "FallbackAudioClip"));
             if let Some(source) = self.audio.source_field(id, "Source") {
                 self.audio.play_one_shot(source, clip.as_ref(), 1.0);
             }
@@ -715,7 +1143,7 @@ impl Game {
     /// gameObject.AddComponent<DulcamarusBehaviour>() on a person: Awake now, Update from the next frame, Start pending.
     pub(super) fn dulcamarus_add(&mut self, person: usize) -> usize {
         let id = self.allocate_instance_id();
-        // Awake: head = Person.Limbs.FirstOrDefault(HasBrain); new GameObject("siphoning tendrils", typeof(Optout))
+        // DulcamarusBehaviour.Awake: head = Person.Limbs.FirstOrDefault(HasBrain); new GameObject("siphoning tendrils", typeof(Optout))
         // under this transform takes the GameObject's, Transform's and Optout's ids; Resources.Load("Materials/DivineLight").
         let head = self.people[person].Limbs.iter().copied().find(|&l| self.limbs[l].HasBrain);
         for _ in 0..3 {
@@ -734,6 +1162,10 @@ impl Game {
             destroyed: false,
         });
         let d = self.v45.dulcamarus.len() - 1;
+        // The component is on the person's object, so a save packs it.
+        let on = self.people[person].id;
+        self.attach_script(on, "DulcamarusBehaviour", id, true);
+        self.script_slots.insert(id, super::save_slots::Slot::V45(V::Dulcamarus(d)));
         let b = Behaviour::V45(V::Dulcamarus(d));
         self.behaviour_of.insert(id, (0, b));
         self.behaviours.add(0, b);
@@ -768,10 +1200,15 @@ impl Game {
     fn dulcamarus_update(&mut self, d: usize) {
         let head = self.v45.dulcamarus[d].head.filter(|&h| self.limb_alive(h));
         if head.is_none_or(|h| self.physicals[self.limbs[h].PhysicalBehaviour].isDisintegrated || self.limbs[h].IsZombie) {
+            // The tendrils are destroyed (their GameObjects).
+            for s in self.v45.dulcamarus[d].siphonSources.iter().flatten() {
+                if let Some(t) = &s.LineRenderer {
+                    self.lines[t.line].visible = false;
+                }
+            }
             let x = &mut self.v45.dulcamarus[d];
             x.siphonSources = Default::default();
             x.indexByLimb.clear();
-            // The tendrils are destroyed (their GameObjects).
             x.shouldHeal = false;
         }
         let Some(head) = head else { super::menu::throw("NullReferenceException: Object reference not set to an instance of an object") };
@@ -780,18 +1217,20 @@ impl Game {
         let position = self.limb_position(head);
         for i in 0..16 {
             let Some(mut s) = self.v45.dulcamarus[d].siphonSources[i].take() else { continue };
-            if let Some(line) = s.LineRenderer.as_mut() {
+            if let Some(t) = &s.LineRenderer {
+                let line = &mut self.lines[t.line];
                 let seed_frac = s.Seed - s.Seed.floor();
                 let num = mathf::clamp01(s.Strength) * mathf::clamp01(s.Time * mathf::lerp(1.0, 0.5, seed_frac));
                 let num2 = num * num;
-                line.start_color = [num, num, num, 1.0];
-                line.end_color = [num2, num2, num2, 1.0];
+                line.gradient.set_start_color([num, num, num, 1.0]);
+                line.gradient.set_end_color([num2, num2, num2, 1.0]);
                 let num3 = mathf::map_range(0.0, 1.0, 1.0, 4.0, (s.Seed / 2.0).floor());
                 let sa = |past: [f32; 3], target: [f32; 3], speed: f32| [super::fire::smooth_approach(past[0], target[0], speed, dt), super::fire::smooth_approach(past[1], target[1], speed, dt), 0.0];
                 s.SourcePos = sa(s.SourcePos, position, num3 * 2.0);
                 if self.limb_alive(s.Limb) {
                     s.TargetPos = sa(s.TargetPos, self.limb_position(s.Limb), num3);
                 }
+                let line = &mut self.lines[t.line];
                 let n = line.positions.len();
                 for j in 0..n {
                     let num4 = j as f32 / (n as f32 - 1.0);
@@ -807,8 +1246,12 @@ impl Game {
             }
             s.Time += dt;
             s.Strength -= dt * 0.1;
+            // DulcamarusBehaviour.IsDeadSource: Strength <= 0.
             if s.Strength <= 0.0 {
                 // The LineRenderer's GameObject is destroyed; indexByLimb.Remove(Limb).
+                if let Some(t) = &s.LineRenderer {
+                    self.lines[t.line].visible = false;
+                }
                 self.v45.dulcamarus[d].indexByLimb.remove(&s.Limb);
             } else {
                 self.v45.dulcamarus[d].siphonSources[i] = Some(s);
@@ -847,12 +1290,13 @@ impl Game {
                     if s.Time < 1.0 {
                         continue;
                     }
+                    // DulcamarusBehaviour.TryGetFreeSource: the first slot that IsDeadSource (null or Strength <= 0; a dead source's slot is emptied below).
                 } else if let Some(value) = self.v45.dulcamarus[d].siphonSources.iter().position(Option::is_none) {
                     self.v45.dulcamarus[d].indexByLimb.insert(l, value);
                     // new SiphonSource { ... }: the Seed initialiser draws first, then the LineRenderer's coin flip.
                     let seed = self.random.value() * 1000.0;
                     let target = self.limb_position(l);
-                    let line = if self.random.value() > 0.5 { Some(self.dulcamarus_create_line_renderer()) } else { None };
+                    let line = if self.random.value() > 0.5 { Some(self.dulcamarus_create_line_renderer(head)) } else { None };
                     self.v45.dulcamarus[d].siphonSources[value] = Some(SiphonSource { Limb: l, SourcePos: position, TargetPos: target, Time: 0.0, Strength: 1.0, Seed: seed, LineRenderer: line });
                 }
                 self.v45.dulcamarus[d].shouldHeal = true;
@@ -876,12 +1320,42 @@ impl Game {
 
     /// DulcamarusBehaviour.CreateLineRenderer: new GameObject("tendril") with a LineRenderer (their ids), width
     /// Random.Range(0.05, 0.4), 12 positions.
-    fn dulcamarus_create_line_renderer(&mut self) -> Tendril {
+    fn dulcamarus_create_line_renderer(&mut self, head: usize) -> Tendril {
         self.allocate_instance_id();
         self.allocate_instance_id();
         let id = self.allocate_instance_id();
         let width = self.random.range(0.05, 0.4);
-        Tendril { id, width, start_color: [0.0, 0.0, 0.0, 1.0], end_color: [1.0; 4], positions: vec![[0.0; 3]; 12], enabled: false }
+        // material = divineLightMat (Resources.Load<Material>("Materials/DivineLight")); startColor black, endColor white.
+        let db = self.assets.as_ref().expect("Resources.Load without the game's data");
+        let material = db.resource("Materials/DivineLight", 21).ok().flatten().expect("Resources.Load(Materials/DivineLight) found no Material");
+        let mut gradient = super::visual::Gradient::default();
+        gradient.set_start_color([0.0, 0.0, 0.0, 1.0]);
+        gradient.set_end_color([1.0; 4]);
+        // ponytail: a dead tendril's entry stays in `lines` hidden (as other runtime lines); reuse slots if counts grow large.
+        self.lines.push(super::line::LineVisual {
+            id,
+            // Under the person (the container is a child of its transform): hidden once the head's object is gone (lines::shown).
+            // DulcamarusBehaviour.OnDestroy: Destroy(lineRendererContainer): the same, as only the person's destruction removes the component.
+            anchor: super::BareAnchor::Physical(self.limbs[head].PhysicalBehaviour),
+            chain: Vec::new(),
+            positions: vec![[0.0; 3]; 12],
+            width,
+            curve: crate::wires::WidthCurve::constant(1.0),
+            gradient,
+            material: Some(material),
+            layer: 0,
+            order: 0,
+            game_layer: 0,
+            cap_vertices: 0,
+            corner_vertices: 0,
+            alignment: 0,
+            looped: false,
+            texture_mode: 0,
+            use_world_space: true,
+            enabled: false,
+            visible: true,
+        });
+        Tendril { id, line: self.lines.len() - 1 }
     }
 
     /// DulcamarusBehaviour.Heal
@@ -987,12 +1461,24 @@ impl Game {
                 let a = areas.pick_random(self);
                 let r = self.random.inside_unit_circle();
                 let local = [a[0] + r[0] * 0.25, a[1] + r[1] * 0.25];
-                // Rigidbody2D.GetRelativePoint (SlashColliders: none in the rewrite, so no ClosestPoint).
+                // Rigidbody2D.GetRelativePoint
                 self.sync_pending();
                 let xf = self.world.body(self.physicals[p].rigidbody.body).xf;
-                let at = [xf.q.c * local[0] - xf.q.s * local[1] + xf.p.x, xf.q.s * local[0] + xf.q.c * local[1] + xf.p.y];
+                let mut at = [xf.q.c * local[0] - xf.q.s * local[1] + xf.p.x, xf.q.s * local[0] + xf.q.c * local[1] + xf.p.y];
+                // SlashColliders.PickRandom().ClosestPoint(val) (Utils.PickRandom: Random.Range(0, Length)).
+                if let Some(cs) = self.physicals[p].SlashColliders.clone().filter(|c| !c.is_empty()) {
+                    let c = cs[self.random.range_int(0, cs.len() as i32) as usize];
+                    if c == 0 {
+                        super::menu::throw("NullReferenceException: Object reference not set to an instance of an object");
+                    }
+                    let q = self.world.collider_closest_point(c, crate::b2::math::Vec2 { x: at[0], y: at[1] });
+                    at = [q.x, q.y];
+                }
                 let colour = self.v45.drips[d].Colour;
                 self.v45.drips[d].emitted.push((at, colour));
+                // particleSystem.Emit(new EmitParams { startColor = Colour, position = val }, 1)
+                let position = Some(bevy::math::Vec3::new(at[0], at[1], 0.0));
+                self.ps_emit_params(|x| matches!(x.drive, super::EmbeddedDrive::Drip(e) if e == d), crate::particles::EmitParams { position, start_color: Some(colour), ..Default::default() });
             }
         }
     }
@@ -1005,10 +1491,14 @@ impl Game {
             let db = self.assets.as_mut().expect("the game's data");
             let prefab = db.prefab(source).expect("Global.DrippingParticlesPrefab");
             let mut at = None;
+            let mut ps = None;
             for (o, obj) in prefab.objects.iter().enumerate() {
                 for (k, (_, c)) in obj.components.iter().enumerate() {
                     match c {
-                        Component::Script { class, fields, .. } if class == "DrippingBloodParticleController" => at = Some((o, k, f(fields, "Amount", 1.0), f(fields, "DecaySpeed", 0.25))),
+                        Component::Script { class, fields, .. } if class == "DrippingBloodParticleController" => {
+                            at = Some((o, k, f(fields, "Amount", 1.0), f(fields, "DecaySpeed", 0.25)));
+                            ps = field_object(&prefab, o, fields, "ParticleSystem");
+                        }
                         // Optout is a marker (no messages).
                         Component::Script { class, .. } if class == "Optout" => {}
                         Component::Script { class, .. } => unimplemented!("mod-only: a {class} on Global.DrippingParticlesPrefab"),
@@ -1018,9 +1508,27 @@ impl Game {
             }
             let (o, k, amount, decay) = at.expect("DrippingParticlesPrefab's DrippingBloodParticleController");
             let objects = prefab.objects.iter().map(|x| (1 + x.components.len(), x.parent)).collect();
-            self.v45.drip_prefab = Some((objects, (o, k), amount, decay));
+            // The ParticleSystem's object and its Transforms up to the root, whose localPosition the Start sets to 0.
+            let system = ps.map(|s| {
+                let trs = |o: usize| match &prefab.objects[o].components[0].1 {
+                    Component::Transform(t) => crate::unity::transform::Trs { t: [t.local_position[0], t.local_position[1], t.local_position[2], 0.0], q: t.local_rotation, s: [t.local_scale[0], t.local_scale[1], t.local_scale[2], 0.0] },
+                    _ => unreachable!("a GameObject's first component is its Transform"),
+                };
+                let mut chain = Vec::new();
+                let mut up = Some(s);
+                while let Some(x) = up {
+                    let mut t = trs(x);
+                    if prefab.objects[x].parent.is_none() {
+                        t.t = [0.0; 4];
+                    }
+                    chain.push(t);
+                    up = prefab.objects[x].parent;
+                }
+                (prefab.objects[s].game_object, chain)
+            });
+            self.v45.drip_prefab = Some((objects, (o, k), amount, decay, system));
         }
-        let (objects, (o, k), amount, decay) = self.v45.drip_prefab.clone().unwrap();
+        let (objects, (o, k), amount, decay, system) = self.v45.drip_prefab.clone().unwrap();
         // Each object's id, then its components' (the Transform first), going down by 2 (as Global.MetalScrapePrefab's).
         let mut id = self.next_instance_id;
         let mut controller = 0;
@@ -1047,6 +1555,10 @@ impl Game {
             emitted: Vec::new(),
         });
         let d = self.v45.drips.len() - 1;
+        // The clone's ParticleSystem, drawn by the embedded systems (Emit(EmitParams) in Update).
+        if let Some((go, chain)) = system {
+            self.embedded_ps.push(super::EmbeddedPs { go, anchor: super::BareAnchor::Physical(p), chain, owner: controller, drive: super::EmbeddedDrive::Drip(d), shape_texture: None, awake: true, emission: None });
+        }
         let b = Behaviour::V45(V::DrippingBlood(d));
         self.behaviour_of.insert(controller, (0, b));
         self.behaviours.add(0, b);
@@ -1258,6 +1770,224 @@ mod tests {
         // One siphon pass heals at once, so the drain is tiny and B's regeneration outruns it: check the sources instead.
         let sources: Vec<_> = g.v45.dulcamarus[0].siphonSources.iter().flatten().map(|s| s.Limb).collect();
         assert!(!sources.is_empty() && sources.iter().all(|&l| g.limbs[l].Person == person_b), "{sources:?}");
+        // Some sources got a tendril LineRenderer in `lines` (DivineLight, world space, 12 points), drawn while enabled.
+        let tendrils: Vec<usize> = g.v45.dulcamarus[0].siphonSources.iter().flatten().filter_map(|s| s.LineRenderer.as_ref().map(|t| t.line)).collect();
+        for &l in &tendrils {
+            let line = &g.lines[l];
+            assert!(line.use_world_space && line.positions.len() == 12 && line.material.is_some() && line.enabled && line.visible);
+        }
+    }
+
+    /// MagneticBehaviour (no 1.28.45 prefab has one): a magnet on one brick pulls a nearby iron brick and is pulled back.
+    #[test]
+    fn magnetic_behaviour_attracts_metal() {
+        let Some(mut g) = game45() else { return };
+        let a = spawn(&mut g, "Pistol", [0.0, 10.0, 0.0]);
+        let b = spawn(&mut g, "Pistol", [3.0, 10.0, 0.0]);
+        frames(&mut g, 1);
+        for p in [a, b] {
+            g.physicals[p].rigidbody.set_gravity_scale(&mut g.world, 0.0);
+        }
+        let id = g.allocate_instance_id();
+        g.v45.magnets.push(super::Magnetic { id, phys: a, EffectiveDistance: 6.0, NorthPole: [0.0, 0.2], SouthPole: [0.0, -0.2], MagnetStrength: 20.0, ..Default::default() });
+        let x0 = (g.physicals[a].transform.position[0], g.physicals[b].transform.position[0]);
+        for _ in 0..20 {
+            g.magnetic_fixed_update(0);
+            frames(&mut g, 1);
+        }
+        let x1 = (g.physicals[a].transform.position[0], g.physicals[b].transform.position[0]);
+        assert!(x1.0 > x0.0 && x1.1 < x0.1, "{x0:?} -> {x1:?}");
+        assert!(super::magnetic_get_pole_sign(super::Pole::North, super::Pole::North) < 0.0);
+        assert_eq!(super::magnetic_get_force(1.0, [0.0, 0.0], [0.05, 0.0]), [0.0, 0.0]);
+    }
+
+    /// CrossbowBehaviour: OnPreFlip parents the syringe for the frame, a drag of the bow parents it until the drag ends,
+    /// and DisconnectSyringe sets its layer 9 only after a second.
+    #[test]
+    fn crossbow_flip_drag_and_delayed_layer() {
+        let Some(mut g) = game45() else { return };
+        let bow = spawn(&mut g, "Crossbow", [0.0, 2.0, 0.0]);
+        let s = g.syringes.len();
+        spawn(&mut g, "Life Syringe", [3.0, 2.0, 0.0]);
+        frames(&mut g, 10);
+        g.crossbow_connect_syringe(0, s);
+        frames(&mut g, 2);
+        let sp = g.syringes[s].Phys;
+        g.crossbow_on_pre_flip(0);
+        assert!(g.physical_is_child_of(sp, bow));
+        frames(&mut g, 1);
+        assert!(!g.physical_is_child_of(sp, bow), "unparented at the end of the frame");
+        g.crossbow_on_drag(bow, false);
+        assert!(g.physical_is_child_of(sp, bow));
+        g.crossbow_on_drag(bow, true);
+        assert!(!g.physical_is_child_of(sp, bow));
+        assert_eq!(g.physical_layer(sp), 10);
+        g.crossbow_disconnect_syringe(0);
+        frames(&mut g, 30);
+        assert_eq!(g.physical_layer(sp), 10, "not before the second");
+        frames(&mut g, 40);
+        assert_eq!(g.physical_layer(sp), 9);
+    }
+
+    /// The saved members of the new classes come back through a contraption's bytes (ObjectStates, Ceras, paste).
+    #[test]
+    fn new_classes_round_trip_through_a_save() {
+        let Some(mut g) = game45() else { return };
+        let buzzer = spawn(&mut g, "Buzzer", [0.0, 2.0, 0.0]);
+        let meter = spawn(&mut g, "Speedometer", [2.0, 2.0, 0.0]);
+        let bow = spawn(&mut g, "Crossbow", [4.0, 2.0, 0.0]);
+        let s = g.syringes.len();
+        let syringe = spawn(&mut g, "Life Syringe", [6.0, 2.0, 0.0]);
+        let human = spawn(&mut g, "Human", [-6.0, 3.0, 0.0]);
+        frames(&mut g, 10);
+        g.crossbow_connect_syringe(0, s);
+        let head = g.limbs.iter().position(|l| l.PhysicalBehaviour >= human && l.HasBrain).unwrap();
+        g.add_liquid(Owner::Circulation(head), liquid_of_class("Dulcamarus"), 0.5);
+        frames(&mut g, 5);
+        // Buzzer audio: 8 kHz unsigned 8-bit samples.
+        let audio: Vec<u8> = (0..4000).map(|i| (128.0 + 100.0 * (i as f32 * 0.3).sin()) as u8).collect();
+        let (_, data_id) = g.buzzer_clip_from_data(audio.clone());
+        g.v45.buzzers[0].CurrentDataId = data_id;
+        g.v45.buzzers[0].Loudness = 7.5;
+        g.v45.speedometers[0].TopSpeedMs = 12.5;
+        g.v45.crossbows[0].SyringeEjectForce = 3.25;
+        g.v45.dulcamarus[0].Radius = 4.5;
+        // An InjectableBehaviour as OnLaunch leaves it on a bolt.
+        let bolt = spawn(&mut g, "Crossbow Bolt", [8.0, 2.0, 0.0]);
+        frames(&mut g, 2);
+        let id = g.allocate_instance_id();
+        g.v45.injectables.push(super::Injectable { id, phys: Some(bolt), LiquidDistributions: Some(vec![("LIFE SERUM".into(), 0.25)]), FxColor: [0.5, 0.25, 1.0, 1.0], destroyed: false });
+        g.injectable_attach(g.v45.injectables.len() - 1, true);
+        let humans: Vec<usize> = (human..g.physicals.len()).filter(|&p| g.limbs.iter().any(|l| l.PhysicalBehaviour == p)).collect();
+        let mut picked = vec![buzzer, meter, bow, syringe, bolt];
+        picked.extend(humans.iter().take(1));
+        let states = g.object_states_of(&picked, [0.0; 3]);
+        let bytes = crate::game::contraption::serialise_states(&states).unwrap();
+        let states = crate::game::contraption::deserialise_states(&bytes).unwrap();
+        let counts = (g.v45.buzzers.len(), g.v45.speedometers.len(), g.v45.crossbows.len(), g.v45.dulcamarus.len(), g.v45.injectables.len());
+        g.paste_states(&states, [0.0, 12.0, 0.0], false, "Paste");
+        frames(&mut g, 3);
+        let b = &g.v45.buzzers[counts.0];
+        assert_eq!((b.Loudness, b.CurrentDataId), (7.5, data_id), "the buzzer's Loudness and its audio (SerialisableAudioData)");
+        assert!(b.clip.is_some() && b.SerialisableAudioData.is_none());
+        assert_eq!(g.v45.speedometers[counts.1].TopSpeedMs, 12.5);
+        assert_eq!(g.v45.crossbows[counts.2].SyringeEjectForce, 3.25);
+        assert!(g.v45.crossbows[counts.2].AttachedSyringe.is_some_and(|x| x != s), "AttachedSyringe links to the pasted syringe");
+        assert_eq!(g.v45.dulcamarus.len(), counts.3 + 1);
+        assert_eq!(g.v45.dulcamarus[counts.3].Radius, 4.5);
+        assert_eq!(g.v45.injectables.len(), counts.4 + 1);
+        let x = &g.v45.injectables[counts.4];
+        assert_eq!((x.LiquidDistributions.clone(), x.FxColor), (Some(vec![("LIFE SERUM".to_string(), 0.25)]), [0.5, 0.25, 1.0, 1.0]));
+    }
+
+    /// BuzzerBehaviour: ClipFromData caches by xxHash, OnBeforeSerialise writes the data back, OpenFile converts a WAVE file
+    /// and refuses one over 1 MB.
+    #[test]
+    fn buzzer_audio_data_and_open_file() {
+        let Some(mut g) = game45() else { return };
+        let p = spawn(&mut g, "Buzzer", [0.0, 2.0, 0.0]);
+        frames(&mut g, 3);
+        assert!(g.physicals[p].menu.iter().any(|b| b.Identity == "chooseAudioClip") && g.physicals[p].menu.iter().any(|b| b.Identity == "setLoudness"));
+        let data: Vec<u8> = (0..800).map(|i| (i % 256) as u8).collect();
+        let (c1, id) = g.buzzer_clip_from_data(data.clone());
+        let (c2, id2) = g.buzzer_clip_from_data(data.clone());
+        assert!(id == id2 && std::sync::Arc::ptr_eq(&c1, &c2) && id == crate::game::contraption::xxhash(&data, 0));
+        // 8-bit sample 0 is -1.0, 128 is 0.0.
+        let pcm = c1.pcm.as_ref().unwrap();
+        assert_eq!((pcm.frequency, pcm.data.len(), pcm.data[0], pcm.data[128]), (8000, 800, -32768, 0));
+        g.v45.buzzers[0].CurrentDataId = id;
+        g.buzzer_on_before_serialise(0);
+        assert_eq!(g.v45.buzzers[0].SerialisableAudioData.as_deref(), Some(&data[..]));
+        // A 0.5 s 16-bit 22050 Hz mono WAVE file: 4000 samples at 8 kHz.
+        let dir = std::env::temp_dir().join(format!("ppg-buzzer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = |n: usize| {
+            let mut v = Vec::new();
+            let len = (n * 2) as u32;
+            v.extend(b"RIFF");
+            v.extend((36 + len).to_le_bytes());
+            v.extend(b"WAVEfmt ");
+            v.extend(16u32.to_le_bytes());
+            v.extend(1u16.to_le_bytes());
+            v.extend(1u16.to_le_bytes());
+            v.extend(22050u32.to_le_bytes());
+            v.extend(44100u32.to_le_bytes());
+            v.extend(2u16.to_le_bytes());
+            v.extend(16u16.to_le_bytes());
+            v.extend(b"data");
+            v.extend(len.to_le_bytes());
+            for i in 0..n {
+                v.extend((((i as f32 * 0.1).sin() * 12000.0) as i16).to_le_bytes());
+            }
+            v
+        };
+        let small = dir.join("small.wav");
+        std::fs::write(&small, wav(11025)).unwrap();
+        g.buzzer_open_file_callback(0, &[small.to_string_lossy().into_owned()], None);
+        let id = g.v45.buzzers[0].CurrentDataId;
+        assert!(id != 0 && g.v45.buzzers[0].clip.is_some());
+        let n = g.v45.buzzer_data_cache[&id].len();
+        assert!((3990..=4000).contains(&n), "{n}");
+        assert_ne!(g.v45.buzzers[0].color, [1.0; 4]);
+        let big = dir.join("big.wav");
+        std::fs::write(&big, wav(600_000)).unwrap();
+        let path = big.to_string_lossy().into_owned();
+        let ex = crate::game::menu::catch_managed(|| g.buzzer_open_file_callback(0, &[path], None));
+        assert_eq!(ex.map(|e| e.0), Some("PpgPlayerException: File size may not exceed 1MB".to_string()));
+        let _ = std::fs::remove_file(&small);
+        let _ = std::fs::remove_file(&big);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// Preferences.SpeedUnit: read from config.json by name, used by the speedometer text, listed after TemperatureUnit.
+    #[test]
+    fn speed_unit_preference() {
+        let Some(mut g) = game45() else { return };
+        let prefs = crate::game::Prefs::from_json("{\"SpeedUnit\": \"MilesPerHour\"}").unwrap();
+        assert_eq!(prefs.SpeedUnit, 3);
+        g.prefs.SpeedUnit = 3;
+        spawn(&mut g, "Speedometer", [0.0, 2.0, 0.0]);
+        frames(&mut g, 2);
+        g.speedometer_set_text(0);
+        assert!(g.v45.speedometers[0].text.ends_with(" mph"), "{}", g.v45.speedometers[0].text);
+        let rows = crate::ui::tables::SETTINGS.iter().position(|s| s.field == "SpeedUnit").expect("a SpeedUnit setting");
+        assert_eq!(crate::ui::tables::SETTINGS[rows].title, "Speed unit");
+        let mut s = crate::ui::state::Settings::default();
+        s.load("{\"SpeedUnit\": \"FeetPerSecond\"}");
+        assert_eq!(s.text(rows), "ft/s");
+        let j = s.json();
+        let (t, u) = (j.find("\"TemperatureUnit\"").unwrap(), j.find("\"SpeedUnit\": \"FeetPerSecond\"").expect("written by name"));
+        assert!(t < u && !j[t..u].contains("VSync"), "right after TemperatureUnit");
+    }
+
+    /// DrippingBloodParticleController.Update: a drip lands on a SlashColliders collider (ClosestPoint) and is emitted on
+    /// the clone's ParticleSystem.
+    #[test]
+    fn drips_land_on_the_slash_collider() {
+        let Some(mut g) = game45() else { return };
+        g.prefs.FancyEffects = true;
+        let first = spawn(&mut g, "Sword", [0.0, 6.0, 0.0]);
+        frames(&mut g, 2);
+        // Held still in the air, so each drip can be checked against where the blade is now.
+        for q in first..g.physicals.len() {
+            g.physicals[q].rigidbody.set_gravity_scale(&mut g.world, 0.0);
+        }
+        let p = (first..g.physicals.len()).find(|&q| g.physicals[q].DrippingBloodParticles.is_some()).unwrap();
+        let d = g.physicals[p].DrippingBloodParticles.unwrap();
+        assert!(g.embedded_ps.iter().any(|e| matches!(e.drive, crate::game::EmbeddedDrive::Drip(x) if x == d)));
+        // Far off the blade: each drip is pulled onto the slash collider.
+        g.dripping_blood_drip(d, [0.0, 3.0], [1.0, 0.0, 0.0, 1.0], 1.0);
+        frames(&mut g, 10);
+        let cs = g.physicals[p].SlashColliders.clone().unwrap();
+        let drips = g.v45.drips[d].emitted.clone();
+        assert!(!drips.is_empty());
+        for (at, _) in drips {
+            let on = cs.iter().any(|&c| {
+                let q = g.world.collider_closest_point(c, crate::b2::math::Vec2 { x: at[0], y: at[1] });
+                (q.x - at[0]).abs() < 0.05 && (q.y - at[1]).abs() < 0.05
+            });
+            assert!(on, "{at:?} is off the blade");
+        }
     }
     use crate::assets::db::{AssetDb, Component};
     use crate::assets::mono::Value;

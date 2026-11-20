@@ -162,6 +162,8 @@ pub(super) enum Slot {
     ParticleMachines(usize),
     /// ParticleSystemSerialisationHelper (`serialisation_helpers`).
     SerialisationHelpers(usize),
+    /// 1.28.45's new classes (v45_new.rs; their members in `v45_extras`).
+    V45(super::v45_new::V),
 }
 
 impl Game {
@@ -487,7 +489,7 @@ impl Game {
             Slot::Waters(i) => self.waters[i].fields(),
             Slot::Winches(i) => self.winches[i].fields(),
             Slot::WormStaffs(i) => self.worm_staffs[i].fields(),
-            Slot::Mutes(_) | Slot::ShatterGenerators(_) | Slot::Gores(_) | Slot::RandomCarTextures(_) | Slot::Invisibles(_) | Slot::EditableTints(_) | Slot::ParticleMachines(_) | Slot::SerialisationHelpers(_) => Vec::new(),
+            Slot::Mutes(_) | Slot::ShatterGenerators(_) | Slot::Gores(_) | Slot::RandomCarTextures(_) | Slot::Invisibles(_) | Slot::EditableTints(_) | Slot::ParticleMachines(_) | Slot::SerialisationHelpers(_) | Slot::V45(_) => Vec::new(),
             Slot::Translated(b) => match b {
                 super::translated::TBehaviour::AerialFaithPlateBehaviour(i) => self.tr.aerial_faith_plate_behaviour[i].fields(),
                 super::translated::TBehaviour::BoatMotorBehaviour(i) => self.tr.boat_motor_behaviour[i].fields(),

@@ -1123,6 +1123,8 @@ impl Game {
             }
             Step::DoAtTimeOnceNext(d, i) => self.do_at_time_once_next(d, i),
             Step::Routine(id, _) => self.co_run(id),
+            Step::CrossbowSetLayer(p) => self.crossbow_set_layer_resume(p),
+            Step::CrossbowUnparent(c) => self.crossbow_unparent(c, true),
         }
     }
 
@@ -1215,6 +1217,10 @@ pub enum Step {
     /// A translated routine (`coroutine::Routine`) by id, and for a yield null / WaitForSeconds the frame count from
     /// which DelayedCallManager::Update runs it (kWaitForNextFrame: the frame it was started in + 1; else i64::MIN).
     Routine(u64, i64),
+    /// CrossbowBehaviour.DisconnectSyringe's Utils.DelayCoroutine(1f, SetLayer(9)): the syringe's physical (1.28.45).
+    CrossbowSetLayer(usize),
+    /// CrossbowBehaviour.OnPreFlip's Utils.NextFrameCoroutine after WaitForEndOfFrame: the `V45::crossbows` index.
+    CrossbowUnparent(usize),
 }
 
 #[derive(Clone, Debug)]

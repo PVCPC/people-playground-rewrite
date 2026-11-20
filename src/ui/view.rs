@@ -1204,7 +1204,9 @@ fn setting_row(s: &mut Kids, i: usize, settings: &Settings) {
                     }
                     Kind::Enum(names) => {
                         for (n, name) in names.iter().enumerate() {
-                            choice(w, name.to_string(), n as f32);
+                            // [SpeedUnitDisplay] (1.28.45): EnumDisplayAttribute.GetDisplay gives the radio's label.
+                            let label = if def.field == "SpeedUnit" { crate::game::v45_new::SpeedUnit::from_index(n as i32).display().to_string() } else { name.to_string() };
+                            choice(w, label, n as f32);
                         }
                     }
                     Kind::Options(options) => {

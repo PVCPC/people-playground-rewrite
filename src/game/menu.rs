@@ -135,6 +135,8 @@ pub enum Cond {
 pub enum MenuAction {
     /// SpeedometerBehaviour "resetTopSpeed": TopSpeedMs = 0 (1.28.45, v45_new.rs).
     SpeedometerReset(usize),
+    /// BuzzerBehaviour "chooseAudioClip": OpenFile (1.28.45, v45_new.rs).
+    BuzzerChooseAudio(usize),
     /// PhysicalBehaviour "setTemperature": Utils.OpenFloatInputDialog (a dialog box: UI not rewritten).
     /// PhysicalBehaviour "setAngle": DialogBoxManager.TextEntry (UI not rewritten).
     /// LimbBehaviour "inspectLimb": LimbStatusViewBehaviour.
@@ -285,6 +287,8 @@ pub enum Entry {
     Temperature(usize),
     /// PhysicalBehaviour "setAngle": DialogBoxManager.TextEntry (the physical).
     Angle(usize),
+    /// BuzzerBehaviour "setLoudness" (1.28.45, v45_new.rs).
+    BuzzerLoudness(usize),
     /// Utils.OpenColourInputDialog
     LedColour(usize),
     CathodeColour(usize),
@@ -993,6 +997,8 @@ impl Game {
             HoverHeight(h) => (self.hover_thrusters[h].BaseHoverHeight * 0.82397, crate::il!(str "HoverThrusterBehaviour::<Start>b__16_0" 0), "Target height in meters from 0.5 m to 10 km".into()),
             Lagbox(g) => (self.lagboxes[g].DelayModifier, crate::il!(str "LagboxBehaviour::<Start>b__10_0" 0), "Target delay in seconds from 0.04s to 60s".into()),
             LiquidGate(g) => (self.liquid_level_gates[g].Threshold * 100.0, crate::il!(str "LiquidLevelGateBehaviour::<Start>b__12_2" 0), crate::il!(str "GateBehaviour::<Start>b__17_0" 1).into()),
+            // Utils.OpenFloatInputDialog(Loudness * 0.82397f, ..., "Set loudness", $"Minimum distance from {1f}m to {20f}m")
+            BuzzerLoudness(b) => (self.v45.buzzers[b].Loudness * 0.82397, "Set loudness", format!("Minimum distance from {}m to {}m", cs_float(1.0), cs_float(20.0))),
             Metronome(m) => (self.metronomes[m].TempoModifier, crate::il!(str "MetronomeBehaviour::<Start>b__18_0" 0), "Target rate in Hertz from 0.125 Hz to 32 Hz".into()),
             ServoDelta(i) => (self.tr.motorised_hinge_behaviour[i].Delta, crate::il!(str "MotorisedHingeBehaviour::<Start>b__10_0" 0), "Angle".into()),
             ServoSpeed(i) => (self.tr.motorised_hinge_behaviour[i].Speed, crate::il!(str "MotorisedHingeBehaviour::<Start>b__10_2" 0), "Speed".into()),
@@ -1096,6 +1102,10 @@ impl Game {
                 }
                 LiquidGate(g) => self.liquid_level_gates[g].Threshold = clamp01(v / 100.0),
                 Metronome(m) => self.metronomes[m].TempoModifier = clamp(v, 0.125, 32.0),
+                BuzzerLoudness(b) => {
+                    self.v45.buzzers[b].Loudness = v * 1.2136364;
+                    self.buzzer_update_loudness(b);
+                }
                 ServoDelta(i) => self.motorised_hinge_behaviour_set_delta(i, v),
                 ServoSpeed(i) => self.tr.motorised_hinge_behaviour[i].Speed = clamp(v, 0.0, 10.0),
                 RotorSpeed(i) => self.rotor_behaviour_set_speed(i, v),
@@ -1638,6 +1648,7 @@ impl Game {
                 }
                 MenuAction::Pose(person, i) => self.people[person].OverridePoseIndex = i,
                 MenuAction::SpeedometerReset(s) => self.v45.speedometers[s].TopSpeedMs = 0.0,
+                MenuAction::BuzzerChooseAudio(b) => self.buzzer_choose_audio(b),
                 MenuAction::MachineryRepair(m) => {
                     self.machinery[m].Health = self.machinery[m].initialHealth;
                     self.machinery_act_on_repair(m);

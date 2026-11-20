@@ -74,15 +74,15 @@ pub fn load(game: &Path) -> Result<(), String> {
     let path = game.join("People Playground_Data/Managed/Assembly-CSharp.dll");
     let a = Assembly::open(&path)?;
     let hash = sha256(a.bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>();
-    // ponytail: 1.28.45 is accepted only with PPG_ALLOW_1_28_45=1 until its changes are rewritten (ISSUES #28).
+    // Both versions run: 1.28.41 and 1.28.45 (the changed code branches on is_1_28_45()).
     let v = if hash == DLL_SHA256 {
         GameVersion::V1_28_41
-    } else if hash == DLL_SHA256_45 && std::env::var_os("PPG_ALLOW_1_28_45").is_some() {
+    } else if hash == DLL_SHA256_45 {
         GameVersion::V1_28_45
     } else {
         return Err(format!(
-            "{} is not People Playground 1.28.41's (SHA-256 {hash}). The rewrite reads the game's numbers and text from \
-             that exact build's Assembly-CSharp.dll; install version 1.28.41.",
+            "{} is not People Playground 1.28.41's or 1.28.45's (SHA-256 {hash}). The rewrite reads the game's numbers \
+             and text from those exact builds' Assembly-CSharp.dll; install one of them.",
             path.display()
         ));
     };
