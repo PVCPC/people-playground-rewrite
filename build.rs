@@ -16,6 +16,8 @@ fn main() {
     // The commit for crash reports ("unknown" for a download without git).
     let commit = std::process::Command::new("git").args(["rev-parse", "--short", "HEAD"]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     println!("cargo:rustc-env=PPG_COMMIT={}", commit.unwrap_or_else(|| "unknown".into()));
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/heads");
+    // Only paths that exist (a missing one would rerun this script, and rebuild the game, on every build).
+    for p in [".git/HEAD", ".git/refs/heads"].into_iter().filter(|p| std::path::Path::new(p).exists()) {
+        println!("cargo:rerun-if-changed={p}");
+    }
 }
