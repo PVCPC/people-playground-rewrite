@@ -1,4 +1,5 @@
 mod achievements;
+mod crash;
 mod assets;
 mod audio_out;
 mod b2;
@@ -47,6 +48,7 @@ use std::path::PathBuf;
 
 fn main() {
     crash_log();
+    crash::note("started".into());
     if let Err(error) = run() {
         eprintln!("{error}");
         std::process::exit(1);
@@ -67,6 +69,7 @@ fn crash_log() {
 {info}
 {}
 ", env!("CARGO_PKG_VERSION"), std::backtrace::Backtrace::force_capture());
+        crash::set_panic(text.clone());
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash.log")) {
             let _ = f.write_all(text.as_bytes());

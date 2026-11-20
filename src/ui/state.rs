@@ -420,6 +420,8 @@ pub enum Mode {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     Nav(Page),
+    /// The crash screen's Report button.
+    CrashReport,
     Back,
     /// Esc / the "pause" action.
     Escape,
@@ -921,7 +923,9 @@ impl Ui {
 
     pub fn press(&mut self, act: &Act, now: f64) -> Effect {
         self.dirty = true;
+        crate::crash::note(format!("{act:?}"));
         match act {
+            Act::CrashReport => crate::crash::open_report(),
             Act::Nav(p) => {
                 // Opened from the toolbar, a page belongs to the pause menu.
                 if self.mode == Mode::Game {

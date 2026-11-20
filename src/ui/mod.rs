@@ -2055,6 +2055,7 @@ fn game_frame(time: Res<Time<Real>>, mut ui: ResMut<Ui>, mut play: ResMut<Play>,
     // At a zero scale Time.deltaTime is 0: no fixed step runs, the Update scripts still do.
     if ui.mode == Mode::Game {
         if let Err(m) = play::step(&mut play.game, real) {
+            crate::crash::write(&mut play.game, ui.map.as_deref(), &m);
             play.stopped = Some(m);
             return;
         }

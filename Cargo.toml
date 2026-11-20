@@ -40,6 +40,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graph
 # Rebuild only what changed in release builds too (the default rebuilds the whole crate every time).
 [profile.release]
 incremental = true
+# Crash reports' backtraces name the functions and lines (a separate .pdb; the exe's code is unchanged).
+debug = "line-tables-only"
 
 [profile.dev]
 opt-level = 1
