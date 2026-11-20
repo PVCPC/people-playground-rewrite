@@ -334,6 +334,9 @@ pub struct Sys {
     /// ParticleSystemRenderer renderAlignment (0 view, 1 world, 2 local) and allowRoll.
     alignment: i32,
     allow_roll: bool,
+    /// Render mode 1 (Stretched Billboard): ([m_CameraVelocityScale, m_VelocityScale, m_LengthScale],
+    /// m_FreeformStretching, m_RotateWithStretchDirection).
+    stretch: Option<([f32; 3], bool, bool)>,
     ps: ParticleSystem,
     /// (system, kind, properties, probability)
     subs: Vec<(usize, i32, i32, f32)>,
@@ -2313,6 +2316,9 @@ fn quads(b: &mut Buffers, s: &Sys, run: &Run, width: f32, cam: &crate::particle_
     // Vector2f::epsilon (0x1816a1440) = 1e-5; uses3DSize as in looks(); UV module in sprite mode.
     let uses_3d_size = uses_3d_size(&s.ps);
     let with_pivot = 1e-5 < s.pivot.x * s.pivot.x + s.pivot.y * s.pivot.y + s.pivot.z * s.pivot.z || uses_3d_size || s.ps.sheet.as_ref().is_some_and(|sh| sh.mode == 1);
+    if let Some(stretch) = s.stretch {
+        return stretched(b, s, run, width, cam, stretch, with_pivot);
+    }
     // uses3DRotation (AllocateParticleArrays 0x1801b4e70): a 3D start rotation, shape alignToDirection, or the
     // rotation / rotation by speed modules' separate axes.
     if uses_3d_rotation(&s.ps) {
@@ -2382,6 +2388,57 @@ fn quads(b: &mut Buffers, s: &Sys, run: &Run, width: f32, cam: &crate::particle_
         for (corner, (u, v)) in corners.iter().zip([(0, 3), (2, 3), (2, 1), (0, 1)]) {
             // The corner as GenerateParticleGeometry writes it, z included (the renderer's sorting orders the draws).
             b.positions.push([corner[0], corner[1], corner[2]]);
+            b.uvs.push([a[u], a[v]]);
+            b.colors.push(color);
+            b.uv2.push([c[u], c[v], blend]);
+        }
+        b.indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
+    }
+}
+
+/// Render mode 1, GenerateParticleGeometry<1,0,0,0> (0x180d88a40): the same colours, sheet frames, flips, clamped
+/// half sizes and corner UV table as the billboards, the corners from ParticleGeomStretch3D<0> or, with
+/// freeformStretching, ParticleGeomStretchFreeform<1>.
+fn stretched(b: &mut Buffers, s: &Sys, run: &Run, width: f32, cam: &crate::particle_render::CameraMatrices, stretch: ([f32; 3], bool, bool), with_pivot: bool) {
+    use crate::particle_render as pr;
+    let ([camera_velocity_scale, velocity_scale, length_scale], freeform, rotate) = stretch;
+    if with_pivot {
+        unimplemented!("mod-only: stretched billboard with a pivot, 3D size or sprite sheet: GenerateParticleGeometry<1,1,0,0> (0x180d87010)");
+    }
+    if s.ps.space != 1 {
+        unimplemented!("mod-only: stretched billboard outside World simulation space: View * World is not rewritten");
+    }
+    if camera_velocity_scale != 0.0 {
+        unimplemented!("mod-only: stretched billboard cameraVelocityScale: m_CameraVelocityVS/WS are not rewritten");
+    }
+    let k = run.scale;
+    let axes = pr::scaled_rows(cam.axes, [k; 3]);
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let limits = pr::ortho_size_limits(s.size_range, width, k);
+    let uses_3d_size = uses_3d_size(&s.ps);
+    // cameraVelocityScale * renderScale.x times the camera velocity: zero above.
+    let cam_vel = [0.0f32; 3];
+    for p in &run.particles {
+        let t = (p.age / p.lifetime).min(1.0);
+        let (color, size) = looks(s, p, t);
+        let color = linear(s, color);
+        let (mut a, mut c, blend, _) = sheet_frames(s, p, t);
+        if pr::random01(p.seed.wrapping_add(0x294fb5c7)) < s.flip.x {
+            (a[0], a[2], c[0], c[2]) = (a[2], a[0], c[2], c[0]);
+        }
+        if pr::random01(p.seed.wrapping_add(0x00d4cb82)) < s.flip.y {
+            (a[1], a[3], c[1], c[3]) = (a[3], a[1], c[3], c[1]);
+        }
+        let (sx, sy) = (size.x, if uses_3d_size { size.y } else { size.x });
+        let q = pr::Stretched { p: p.position.to_array(), vel: (p.animated + p.velocity).to_array(), size_y: sy, half: pr::clamped_half(sx, sy, p.alive, limits), rot: p.rotation };
+        let corners = if freeform {
+            pr::stretch_freeform(cam, identity, [k; 3], &q, cam_vel, velocity_scale, length_scale * k, rotate)
+        } else {
+            pr::stretch_3d(cam, axes, &q, cam_vel, velocity_scale, length_scale * k)
+        };
+        let first = b.positions.len() as u32;
+        for (corner, (u, v)) in corners.iter().zip([(0, 3), (2, 3), (2, 1), (0, 1)]) {
+            b.positions.push(*corner);
             b.uvs.push([a[u], a[v]]);
             b.colors.push(color);
             b.uv2.push([c[u], c[v], blend]);
@@ -2585,7 +2642,7 @@ impl Library {
             0 if ps.looping && ps.supports_procedural() => Cull::Procedural,
             _ => Cull::Never,
         };
-        if !matches!(r.render_mode, 0 | 5) {
+        if !matches!(r.render_mode, 0 | 1 | 5) {
             unimplemented!("mod-only: ParticleSystemRenderer: render mode {}", r.render_mode);
         }
         let (frames, sheet_texture) = ps.sheet.as_ref().filter(|s| s.mode == 1).map_or((Vec::new(), None), |sheet| sprite_table(db, go.file, &sheet.sprites));
@@ -2594,7 +2651,7 @@ impl Library {
         let subs = ps.subs.clone();
         let (pivot, flip) = (Vec3::from(r.pivot), Vec2::new(r.flip[0], r.flip[1]));
         let game_layer = db.game_object(go).ok()?.layer as i32;
-        self.systems.push(Sys { ps, subs: Vec::new(), rotation, prefab: None, local_rotation: Quat::IDENTITY, game_layer, fancy_only: false, awake: true, hierarchy: 1.0, local: 1.0, size_range: r.size_range, alignment: r.alignment, allow_roll: r.allow_roll, pivot, flip, linear: r.apply_active_color_space, frames, go: Some(go), sheet_texture, max_step: crate::game::particle_clock::maximum_particle_delta_time(db).unwrap(), order, first_cull });
+        self.systems.push(Sys { ps, subs: Vec::new(), rotation, prefab: None, local_rotation: Quat::IDENTITY, game_layer, fancy_only: false, awake: true, hierarchy: 1.0, local: 1.0, size_range: r.size_range, alignment: r.alignment, allow_roll: r.allow_roll, stretch: (r.render_mode == 1).then_some((r.stretch, r.freeform, r.rotate_with_stretch)), pivot, flip, linear: r.apply_active_color_space, frames, go: Some(go), sheet_texture, max_step: crate::game::particle_clock::maximum_particle_delta_time(db).unwrap(), order, first_cull });
         let subs: Vec<_> = subs.iter().filter_map(|sub| {
             let c = db.resolve(go.file, sub.emitter)?;
             let child = db.resolve(c.file, crate::assets::components::game_object_of(db.data(c)).ok()?)?;
@@ -4135,7 +4192,7 @@ mod tests {
         fn add(db: &crate::assets::db::AssetDb, file: usize, ps: ParticleSystem, systems: &mut Vec<Sys>) -> usize {
             let i = systems.len();
             let entries = ps.subs.clone();
-            systems.push(Sys { game_layer: 0, fancy_only: false, awake: true, hierarchy: 1.0, local: 1.0, size_range: [0.0, 1.0], alignment: 0, allow_roll: false, ps, subs: Vec::new(), rotation: Quat::IDENTITY, prefab: None, local_rotation: Quat::IDENTITY, pivot: Vec3::ZERO, flip: Vec2::ZERO, linear: false, frames: Vec::new(), go: None, sheet_texture: None, max_step: 0.1, order: 0, first_cull: Cull::Never });
+            systems.push(Sys { game_layer: 0, fancy_only: false, awake: true, hierarchy: 1.0, local: 1.0, size_range: [0.0, 1.0], alignment: 0, allow_roll: false, stretch: None, ps, subs: Vec::new(), rotation: Quat::IDENTITY, prefab: None, local_rotation: Quat::IDENTITY, pivot: Vec3::ZERO, flip: Vec2::ZERO, linear: false, frames: Vec::new(), go: None, sheet_texture: None, max_step: 0.1, order: 0, first_cull: Cull::Never });
             let mut subs = Vec::new();
             for e in entries {
                 let Some(c) = db.resolve(file, e.emitter) else { continue };

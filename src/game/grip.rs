@@ -190,6 +190,10 @@ Your script should either check if it is null or you should not destroy the obje
             if self.transform_root_id(v) == root {
                 continue;
             }
+            // 1.28.45: an object with PreventGripping is skipped.
+            if crate::assets::il::is_1_28_45() && self.physicals[v].PreventGripping {
+                continue;
+            }
             let (at, distance) = self.nearest_local_holding_point(v, world);
             if distance < nearest {
                 nearest = distance;

@@ -699,7 +699,8 @@ impl Game {
             for (k, (_, c)) in inst.prefab.objects[x].components.iter().enumerate() {
                 let crate::assets::db::Component::Script { class, fields, .. } = c else { continue };
                 // The tools' use wires are the `wired` ones below.
-                if !USE_RECEIVERS.contains(&class.as_str()) || class == "UseWireBehaviour" {
+                let v45 = crate::assets::il::is_1_28_45() && super::v45_new::USE_CLASSES.contains(&class.as_str());
+                if !(USE_RECEIVERS.contains(&class.as_str()) || v45) || class == "UseWireBehaviour" {
                     continue;
                 }
                 if class == "PhysicalBehaviour" {
@@ -743,6 +744,7 @@ impl Game {
                 match self.behaviour_of.get(&inst.objects[x].components[k]) {
                     Some(&(_, b @ (Behaviour::Inverter(_) | Behaviour::ObstructionEmitter(_) | Behaviour::Counter(_) | Behaviour::Pointer(_) | Behaviour::Transmitter(_) | Behaviour::Coupler(_) | Behaviour::Jukebox(_) | Behaviour::Winch(_) | Behaviour::Conveyor(_) | Behaviour::Hovercar(_) | Behaviour::HoverThruster(_) | Behaviour::Fireworks(_) | Behaviour::RayCannon(_) | Behaviour::Railgun(_) | Behaviour::BeamCannon(_) | Behaviour::BeamRepeater(_) | Behaviour::AndroidLaser(_) | Behaviour::Lagbox(_) | Behaviour::ParticleMachine(_) | Behaviour::LiquidDuplicator(_) | Behaviour::PulseDrum(_) | Behaviour::Liquidentifier(_) | Behaviour::Centrifuge(_) | Behaviour::LiquidPump(_) | Behaviour::Firearm(_) | Behaviour::Glowtube(_) | Behaviour::Led(_) | Behaviour::Detector(_) | Behaviour::Explosive(_) | Behaviour::Launcher(_) | Behaviour::Bell(_) | Behaviour::MachineGun(_) | Behaviour::Minigun(_) | Behaviour::Generator(_) | Behaviour::Floodlight(_) | Behaviour::SpikeGrenade(_) | Behaviour::HeatingElement(_) | Behaviour::Bulb(_) | Behaviour::CathodeLight(_) | Behaviour::Thrusterbed(_) | Behaviour::Piston(_) | Behaviour::Car(_) | Behaviour::TruckDoor(_) | Behaviour::Scherbewerfer(_) | Behaviour::Needler(_) | Behaviour::Raygun(_) | Behaviour::Plane(_) | Behaviour::Syringe(_) | Behaviour::JetEngine(_) | Behaviour::Chainsaw(_) | Behaviour::Emp(_) | Behaviour::Decimator(_) | Behaviour::ImmobilityField(_) | Behaviour::EnergySword(_) | Behaviour::SignalConverter(_) | Behaviour::Metronome(_) | Behaviour::ActivatorElectrode(_) | Behaviour::Thermometer(_) | Behaviour::InfraredThermometer(_) | Behaviour::Blaster(_) | Behaviour::Beamformer(_) | Behaviour::Scifi40(_) | Behaviour::HealthGun(_) | Behaviour::FreezeGun(_) | Behaviour::Flare(_) | Behaviour::Display(_) | Behaviour::Laser(_) | Behaviour::LaserTurret(_) | Behaviour::FirearmAttachment(_) | Behaviour::BatteryAttachment(_) | Behaviour::Television(_) | Behaviour::UniversalBell(_) | Behaviour::Valve(_) | Behaviour::TimedGate(_) | Behaviour::Defibrillator(_) | Behaviour::CardiopulmonaryBypass(_) | Behaviour::HeartMonitor(_) | Behaviour::Excalibur(_) | Behaviour::BloodTank(_) | Behaviour::ArchelixCaster(_) | Behaviour::Grip(_) | Behaviour::TeslaCoil(_) | Behaviour::AtomBomb(_) | Behaviour::SeismicCharge(_) | Behaviour::Drone(_))))=> out.push(UseReceiver::Behaviour(b)),
                     Some(&(_, b @ Behaviour::Translated(t))) if t.has_use() => out.push(UseReceiver::Behaviour(b)),
+                    Some(&(_, b @ Behaviour::V45(_))) if v45 => out.push(UseReceiver::Behaviour(b)),
                     _ => unimplemented!("mod-only: {class}.Use"),
                 }
             }
@@ -940,6 +942,7 @@ impl Game {
             Behaviour::HealthGun(i) | Behaviour::FreezeGun(i) => self.effect_gun_use(i),
             // The activation's Direct flag and channel.
             Behaviour::SignalConverter(i) => self.signal_converter_use(i, direct, channel),
+            Behaviour::V45(v) => self.v45_use(v),
             _ => unreachable!(),
         }
     }
@@ -957,18 +960,28 @@ impl Game {
         let mut best = None;
         let mut least = f32::MAX;
         let (mut depth_layer, mut depth_order) = (i32::MIN, i32::MIN);
+        // 1.28.45 (SelectByMass, SelectBySize, SelectByDepth): a SelectionPriority object goes first.
+        let v45 = crate::assets::il::is_1_28_45();
         for ph in hits {
             let p = &self.physicals[ph];
-            let v = match self.prefs.ToolSelectionMode {
+            let priority = v45 && p.SelectionPriority;
+            let mut v = match self.prefs.ToolSelectionMode {
                 // PhysicalBehaviour.ObjectAreaByMass
                 SELECTION_AREA => p.rigidbody.mass(&self.world) / p.TrueInitialMass * p.ObjectArea,
                 SELECTION_MASS => p.InitialMass,
                 _ => 0.0,
             };
+            if priority {
+                v -= 10000000.0;
+            }
             if self.prefs.ToolSelectionMode == SELECTION_DEPTH {
                 // SortingLayer.GetLayerValueFromID(sortingLayerID) and sortingOrder: a higher layer wins, then a higher order.
-                let layer = crate::play::sorting_layer_index(self.physicals[ph].sprite_layer) as i32;
-                let order = self.physicals[ph].sprite.map_or(0, |s| s.2 as i32);
+                let mut layer = crate::play::sorting_layer_index(self.physicals[ph].sprite_layer) as i32;
+                let mut order = self.physicals[ph].sprite.map_or(0, |s| s.2 as i32);
+                if priority {
+                    layer = layer.wrapping_add(100000);
+                    order = order.wrapping_add(100000);
+                }
                 if layer > depth_layer {
                     depth_layer = layer;
                     depth_order = order;
@@ -1485,8 +1498,8 @@ impl Game {
         let selected = self.tool.as_ref().unwrap().rawSelection.clone();
         self.tool.as_mut().unwrap().objectsToMoveInPauseMode.clear();
         for p in selected {
-            // Nothing in the scene is Undraggable.
-            if !self.physicals[p].destroyed && !self.drag_is_any_parent_selected(p) {
+            // Nothing in the scene is Undraggable. 1.28.45: PauseDragOverride must be set.
+            if !self.physicals[p].destroyed && (!crate::assets::il::is_1_28_45() || self.physicals[p].PauseDragOverride) && !self.drag_is_any_parent_selected(p) {
                 self.tool.as_mut().unwrap().objectsToMoveInPauseMode.push(p);
                 self.drag_broadcast_drag_message(p, false);
             }
@@ -1869,7 +1882,8 @@ impl Game {
                 continue;
             }
             for q in self.flip_hierarchy_physicals(root) {
-                if self.physicals[q].has_optout {
+                // 1.28.45 also skips a disintegrated one.
+                if self.physicals[q].has_optout || (crate::assets::il::is_1_28_45() && self.physicals[q].isDisintegrated) {
                     continue;
                 }
                 if self.physicals[q].sprite_bounds.is_some() {
@@ -3649,7 +3663,13 @@ mod tests {
         let (rate, health, soak) = (g.circulations[l].BleedingRate, g.limbs[l].Health, g.blood_wires[0].SoakAmount);
         assert!(rate < 2.0, "{rate}");
         assert!(health > 1.0, "{health}");
-        assert!(soak > 0.0, "{soak}");
+        // 1.28.45: SoakAmount is Obsolete (never grows); SoakColour moves toward the blood instead.
+        if crate::assets::il::is_1_28_45() {
+            assert_eq!(soak, 0.0);
+            assert_ne!(g.blood_wires[0].SoakColour, [1.0; 4]);
+        } else {
+            assert!(soak > 0.0, "{soak}");
+        }
         assert_ne!(g.blood_wires[0].start_color, [1.0; 4]);
         // A bandage's FixedUpdate hides the Tick: a slice does nothing.
         g.blood_wire_slice(p);
@@ -3882,10 +3902,10 @@ mod tests {
         let menu = open(&mut g);
         assert!(ids(&menu).contains(&"clearOverride") && !ids(&menu).contains(&"startWalking"));
         let bone = menu.iter().find(|b| b.Identity == "breakBones").unwrap();
-        assert_eq!(bone.label, crate::il!(str "LimbBehaviour::<CreateContextMenuOptions>b__100_1" 0));
+        assert_eq!(bone.label, crate::il_v!(str "LimbBehaviour::<CreateContextMenuOptions>b__100_1" 0, "LimbBehaviour::<CreateContextMenuOptions>b__102_1" 0));
         g.context_menu_click(&bone.actions);
         assert!(g.limbs[l].Broken);
-        assert_eq!(open(&mut g).iter().find(|b| b.Identity == "breakBones").unwrap().label, crate::il!(str "LimbBehaviour::<CreateContextMenuOptions>b__100_1" 1));
+        assert_eq!(open(&mut g).iter().find(|b| b.Identity == "breakBones").unwrap().label, crate::il_v!(str "LimbBehaviour::<CreateContextMenuOptions>b__100_1" 1, "LimbBehaviour::<CreateContextMenuOptions>b__102_1" 1));
     }
 
     #[test]
@@ -4371,6 +4391,9 @@ mod tests {
     #[test]
     fn sword_side_blade_soft_connects_a_human() {
         let Some((mut g, _)) = spawned("Sword") else { return };
+        if crate::assets::il::is_1_28_45() {
+            return sword_slashes_a_human(g);
+        }
         let blade = g.sharp_on_all_sides[0].physical;
         let at = g.physicals[blade].transform.position;
         let first_limb = g.limbs.len();
@@ -4386,6 +4409,33 @@ mod tests {
             let f = g.sharp_on_all_sides[0].softConnections.get(k).unwrap().joint;
             assert_eq!(g.fixed_joints[f].friction, Some((10.0, 10.0)));
         }
+        frames(&mut g, 5);
+    }
+
+    /// 1.28.45's sword has no SharpOnAllSides: its PhysicalBehaviour.SlashColliders slash. A slash on a limb joins the
+    /// two with a FrictionJoint2D, ignores the blade collider against the limb's colliders, and lives through frames.
+    fn sword_slashes_a_human(mut g: Game) {
+        assert!(g.sharp_on_all_sides.is_empty());
+        let blade = (0..g.physicals.len()).find(|&p| g.physicals[p].SlashColliders.as_ref().is_some_and(|s| s.iter().any(|c| *c != 0))).expect("no SlashColliders");
+        let collider = *g.physicals[blade].SlashColliders.as_ref().unwrap().iter().find(|c| **c != 0).unwrap();
+        let at = g.physicals[blade].transform.position;
+        let first_limb = g.limbs.len();
+        g.catalog_selected = Some("Human".into());
+        g.input.mouse = [at[0], at[1], 0.0];
+        ctl(&mut g, "spawnRight", false, false, true);
+        frames(&mut g, 1);
+        assert!(g.limbs.len() > first_limb, "no human spawned");
+        let victim = g.limbs[first_limb].PhysicalBehaviour;
+        let victim_collider = g.physicals[victim].colliders[0];
+        let s = g.do_slash(blade, [at[0], at[1]], victim, collider, victim_collider);
+        let slash = g.physicals[blade].SlashConnections[s].clone();
+        assert_eq!(slash.Victim, victim);
+        assert!(slash.Strength > 0.0);
+        assert_eq!(g.fixed_joints[slash.Joint].friction, Some((2.0, 2.0)));
+        // OnBeforeSerialise: the victim's identity and the strength.
+        let saved = g.physical_on_before_serialise(blade);
+        assert_eq!(saved.slash_strength, vec![slash.Strength]);
+        assert_ne!(saved.slash_victims, vec![0]);
         frames(&mut g, 5);
     }
 
@@ -4527,10 +4577,10 @@ mod tests {
         g.syringe_lodged(s, p);
         assert_eq!(g.syringes[s].pushTargets, [Some(Owner::LiquidCanister(c))]);
         frames(&mut g, 120);
-        assert!(g.get_amount(Owner::LiquidCanister(c), crate::game::circulation::liquid(crate::il!(str "Global::Awake" 17))) > 0.1);
+        assert!(g.get_amount(Owner::LiquidCanister(c), crate::game::circulation::liquid_of_class("LifeSerumLiquid")) > 0.1);
         // BuoyancyModifier = 1 - BuoyancyResponseCurve(ScaledLiquidAmount), full at Capacity.
         assert_eq!(g.container_limits(Owner::LiquidCanister(c)), [0.0, 70.0]);
-        let life = crate::game::circulation::liquid(crate::il!(str "Global::Awake" 17));
+        let life = crate::game::circulation::liquid_of_class("LifeSerumLiquid");
         g.add_liquid(Owner::LiquidCanister(c), life, 100.0);
         assert_eq!(g.bc(Owner::LiquidCanister(c)).TotalLiquidAmount, 70.0);
         frames(&mut g, 1);
@@ -4574,7 +4624,7 @@ mod tests {
         let Some((mut g, p)) = spawned("Centrifuge") else { return };
         let c = g.centrifuges.iter().position(|x| x.physical == p).expect("the centrifuge");
         let o = Owner::Centrifuge(c);
-        let (life, small) = (crate::game::circulation::liquid(crate::il!(str "Global::Awake" 17)), crate::game::circulation::liquid("ADRENALINE"));
+        let (life, small) = (crate::game::circulation::liquid_of_class("LifeSerumLiquid"), crate::game::circulation::liquid("ADRENALINE"));
         g.add_liquid(o, life, 2.0);
         g.add_liquid(o, small, 0.5);
         g.centrifuge_use(c);
@@ -4592,7 +4642,7 @@ mod tests {
         let Some((mut g, p)) = spawned("Liquidentifier") else { return };
         let l = g.liquidentifiers.iter().position(|x| x.physical == p).expect("the liquidentifier");
         let o = Owner::Liquidentifier(l);
-        g.add_liquid(o, crate::game::circulation::liquid(crate::il!(str "Global::Awake" 17)), 3.0);
+        g.add_liquid(o, crate::game::circulation::liquid_of_class("LifeSerumLiquid"), 3.0);
         g.add_liquid(o, crate::game::circulation::liquid("ADRENALINE"), 1.0);
         g.liquidentifier_use(l, 0);
         assert!(g.liquidentifiers[l].isBusy);
@@ -4662,7 +4712,7 @@ mod tests {
         let Some((mut g, p)) = spawned("Liquid Duplicator") else { return };
         let l = g.liquid_duplicators.iter().position(|x| x.physical == p).expect("the duplicator");
         let o = Owner::LiquidDuplicator(l);
-        let life = crate::game::circulation::liquid(crate::il!(str "Global::Awake" 17));
+        let life = crate::game::circulation::liquid_of_class("LifeSerumLiquid");
         g.add_liquid(o, life, 0.1);
         assert_eq!(g.container_pressure(o), 2);
         g.liquid_duplicator_use(l, 0);
@@ -4683,7 +4733,7 @@ mod tests {
         let Some((mut g, flask_p)) = spawned("Flask") else { return };
         let f = g.flasks.iter().position(|x| x.Phys == Some(flask_p)).expect("the flask");
         let at = g.physicals[flask_p].transform.position;
-        let life = crate::game::circulation::liquid(crate::il!(str "Global::Awake" 17));
+        let life = crate::game::circulation::liquid_of_class("LifeSerumLiquid");
         // A finite Life Syringe lodged in the flask pushes its serum in (SyringeBehaviour.push, PressureMode Push).
         let s = g.syringes.len();
         spawn_at(&mut g, "Life Syringe", [at[0] + 1.0, at[1] + 1.0, 0.0]);

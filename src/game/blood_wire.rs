@@ -276,6 +276,8 @@ pub struct BloodWire {
     pub bloodColour: [f32; 4],
     /// AppliedBandageBehaviour.SoakAmount
     pub SoakAmount: f32,
+    /// AppliedBandageBehaviour.SoakColour (1.28.45; white at first).
+    pub SoakColour: [f32; 4],
     /// The component's instance id.
     pub id: i32,
     /// physicalBehaviour: the PhysicalBehaviour on its GameObject (GetComponent in Awake).
@@ -360,6 +362,7 @@ impl Default for BloodWire {
             limb: Default::default(),
             bloodColour: Default::default(),
             SoakAmount: Default::default(),
+            SoakColour: [1.0; 4],
             id: Default::default(),
             physical: Default::default(),
             other: Default::default(),
@@ -1030,7 +1033,7 @@ impl Game {
     }
 
     /// physical.GetComponent<BloodContainer>(): a limb, flask, syringe, blood tank or valve.
-    fn wire_container(&mut self, q: usize) -> Option<Owner> {
+    pub(super) fn wire_container(&mut self, q: usize) -> Option<Owner> {
         if let Some(v) = self.valves.iter().position(|x| x.physical == q) {
             return Some(Owner::Valve(v));
         }
@@ -1365,6 +1368,14 @@ impl Game {
     /// AppliedBandageBehaviour.SetSoakColour
     pub(crate) fn bandage_soak_colour(&mut self, w: usize) {
         let wire = &mut self.blood_wires[w];
+        if crate::assets::il::is_1_28_45() {
+            // 1.28.45: the line takes SoakColour.
+            if wire.limb.is_some() {
+                wire.start_color = wire.SoakColour;
+                wire.end_color = wire.SoakColour;
+            }
+            return;
+        }
         if wire.limb.is_some() {
             let t = mathf::clamp01((super::d(wire.SoakAmount) * 0.7).f());
             let color: [f32; 4] = std::array::from_fn(|i| 1.0 + (wire.bloodColour[i] - 1.0) * t);
@@ -1377,6 +1388,18 @@ impl Game {
     /// it on. (`limb` is a limb that is not destroyed.)
     pub(crate) fn applied_bandage_fixed_update(&mut self, w: usize) {
         let Some(l) = self.blood_wires[w].limb.filter(|&l| self.wire_physical_alive(self.limbs[l].PhysicalBehaviour)) else { return };
+        if crate::assets::il::is_1_28_45() {
+            // 1.28.45: SoakColour moves toward the blood's computed colour, then SetSoakColour when the line is visible (only the
+            // drawn colour; set every time here), then the bleeding and healing as before.
+            let fallback = self.bc(super::container::Owner::Circulation(l)).cachedComputedColour;
+            let computed = self.get_computed_color(super::container::Owner::Circulation(l), fallback);
+            let t = mathf::clamp01((super::d(self.time.fixedDeltaTime) * self.circulations[l].BleedingRate * 0.5f32).f());
+            self.blood_wires[w].SoakColour = super::visual::color_lerp(self.blood_wires[w].SoakColour, computed, t);
+            self.bandage_soak_colour(w);
+            self.circulations[l].BleedingRate = (super::d(self.circulations[l].BleedingRate) * 0.9).f();
+            self.limbs[l].Health = mathf::lerp(self.limbs[l].Health, self.limbs[l].InitialHealth, 0.001);
+            return;
+        }
         self.circulations[l].BleedingRate = (super::d(self.circulations[l].BleedingRate) * 0.9).f();
         self.limbs[l].Health = mathf::lerp(self.limbs[l].Health, self.limbs[l].InitialHealth, 0.001);
         let soak = self.blood_wires[w].SoakAmount;
@@ -2360,6 +2383,8 @@ pub struct RootWire {
     pub Channel: u16,
     pub CanBreak: bool,
     pub SoakAmount: f32,
+    /// AppliedBandageBehaviour.SoakColour (1.28.45).
+    pub SoakColour: [f32; 4],
     pub shouldIgnoreUpdate: bool,
     pub IsMouseInsideBounds: bool,
     pub IsMouseOverlapping: bool,
@@ -2399,6 +2424,7 @@ impl RootWire {
             Channel: 0,
             CanBreak: false,
             SoakAmount: 0.0,
+            SoakColour: [1.0; 4],
             shouldIgnoreUpdate: false,
             IsMouseInsideBounds: false,
             IsMouseOverlapping: false,

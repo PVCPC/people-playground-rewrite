@@ -101,7 +101,8 @@ impl Game {
         }
         let (ov, sv) = (self.eye.oV, self.eye.sV);
         // The same arithmetic as the sprites' wave (visual.rs visual_will_render).
-        let time = self.time.time;
+        // 1.28.45 reads Time.unscaledTime.
+        let time = if crate::assets::il::is_1_28_45() { self.time.unscaledTimeAsDouble as f32 } else { self.time.time };
         let num = (d((d(time) * (d(1.0) + d(sv) * *sv_var) / *duration).f()) + *offset + d(ov) * *ov_var).f();
         let mut num2 = if *sin { mathf::sin(num) * 0.5 + 0.5 } else { super::physical::utils_mod(num, 1.0) };
         if *randomisation != 0.0 {

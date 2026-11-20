@@ -437,6 +437,11 @@ impl Game {
 
     /// PhysicalBehaviour.ManagedFixedUpdate's penetration loop.
     pub fn stab_fixed_update(&mut self, p: usize) {
+        // 1.28.45: the SlashConnections loop comes first, and a live penetration always transfers (TransferPropertiesForPenetration).
+        let v45 = crate::assets::il::is_1_28_45();
+        if v45 {
+            self.slash_fixed_update(p);
+        }
         let mut i = 0;
         while i < self.physicals[p].penetrations.len() {
             let pen = self.physicals[p].penetrations[i];
@@ -449,6 +454,10 @@ impl Game {
                 Some(v) if !self.physicals[stabber].destroyed && !self.physicals[v].destroyed => v,
                 _ => continue,
             };
+            if v45 {
+                self.transfer_properties_for_penetration(p, victim);
+                continue;
+            }
             if self.physicals[stabber].SimulateTemperature && self.physicals[victim].SimulateTemperature {
                 if !self.penetration_arena[pen].Active {
                     continue;
@@ -532,6 +541,10 @@ impl Game {
     /// gameObject.SendMessage("Lodged", stabbing): ExcaliburBehaviour, OldSyringeBehaviour and SyringeBehaviour are the
     /// only receivers; an item without one (Knife, Sword) does nothing.
     pub(super) fn send_lodged(&mut self, p: usize, stabbing: Stabbing) {
+        // 1.28.45: a crossbow bolt's InjectableBehaviour (v45_new.rs; the bolt has no other receiver).
+        if self.physicals[p].active {
+            self.injectable_lodged_on(p, stabbing.victim);
+        }
         if self.physicals[p].active && !self.physicals[p].lodge_receiver.is_empty() {
             let r = &self.physicals[p].lodge_receiver;
             if !r.starts_with("Old") && super::syringe::is_syringe(r) {
@@ -595,6 +608,14 @@ impl Game {
     pub fn send_unstabbed(&mut self, s: Stabbing) {
         if !self.physicals[s.victim].active || self.physicals[s.victim].destroyed {
             return;
+        }
+        // 1.28.45: PhysicalBehaviour.Unstabbed, PlayClipOnce(Properties.StabSound.PickRandom(), 0.6f).
+        if crate::assets::il::is_1_28_45() {
+            if let Some(n) = self.properties[self.physicals[s.victim].Properties].StabSound.filter(|&n| n != 0) {
+                let k = self.pick_random(n).unwrap();
+                let clip = self.properties[self.physicals[s.victim].Properties].clips.StabSound.get(k).cloned().flatten();
+                self.play_clip_once(s.victim, clip, 0.6);
+            }
         }
         if let Some(l) = self.limbs.iter().position(|l| l.PhysicalBehaviour == s.victim) {
             self.circulation_unstabbed(l, s);
@@ -670,6 +691,253 @@ impl Game {
     }
 }
 
+/// PhysicalBehaviour.Slash (1.28.45): the FrictionJoint2D as a `Game.fixed_joints` index, colliders by instance id. Its `Self`
+/// is the physical whose SlashConnections hold it.
+#[derive(Clone, Debug, Default)]
+pub struct Slash {
+    pub Joint: usize,
+    pub Lifetime: f32,
+    pub MyCollider: i32,
+    pub OtherCollider: i32,
+    pub Victim: usize,
+    pub Strength: f32,
+    pub CurrentPosition: [f32; 2],
+    pub VictimLiquidContainer: Option<super::container::Owner>,
+}
+
+/// System.Math.Max(float, float): NaN if either is NaN.
+fn math_max(a: f32, b: f32) -> f32 {
+    if a.is_nan() || b.is_nan() {
+        f32::NAN
+    } else if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+impl Game {
+    /// Rigidbody2D.GetPoint: a world point in the body's local space.
+    fn rigidbody_get_point(&mut self, p: usize, point: [f32; 2]) -> [f32; 2] {
+        self.sync_pending();
+        let v = self.world.body(self.physicals[p].rigidbody.body).xf.apply_t(crate::b2::math::Vec2::new(point[0], point[1]));
+        [v.x, v.y]
+    }
+
+    /// PhysicalBehaviour.HandleSlashing (1.28.45): true when a slash began.
+    pub(super) fn handle_slashing(&mut self, p: usize, c: &ScriptCollision, contact: &ContactPoint2D) -> bool {
+        if !self.physicals[p].SlashColliders.as_ref().is_some_and(|s| s.contains(&contact.other_collider)) {
+            return false;
+        }
+        let Some(other) = self.collision_physical(c) else { return false };
+        let (props, victim) = (&self.properties[self.physicals[p].Properties], &self.properties[self.physicals[other].Properties]);
+        if victim.Softness < 0.1 && !props.IgnoreStabResistance {
+            return false;
+        }
+        if victim.IgnoreStabResistance && props.IgnoreStabResistance {
+            return false;
+        }
+        if self.physicals[p].SlashConnections.iter().any(|s| s.Victim == other) {
+            return false;
+        }
+        let num = mathf::magnitude2([c.relative_velocity.x, c.relative_velocity.y]) / props.SharpForceThresholdMultiplier;
+        let num2 = mathf::map_range(0.01, 1.0, 20.0, 1.25, if props.IgnoreStabResistance { 1.0 } else { mathf::sqrt(victim.Softness) });
+        if num < num2 {
+            return false;
+        }
+        let point = [contact.point.x, contact.point.y];
+        let s = self.do_slash(p, point, other, c.other_collider, contact.collider);
+        self.on_while_slashed(other, p, s);
+        let stabbing = Stabbing { stabber: p, victim: other, normal: [contact.normal.x, contact.normal.y], point };
+        self.send_stabbed(stabbing);
+        self.send_lodged(p, stabbing);
+        true
+    }
+
+    /// PhysicalBehaviour.DoSlash (1.28.45): the new slash's index in SlashConnections.
+    pub(super) fn do_slash(&mut self, p: usize, world_pos: [f32; 2], victim: usize, self_collider: i32, victim_collider: i32) -> usize {
+        let softness = mathf::clamp(self.properties[self.physicals[victim].Properties].Softness, 0.1, 10.0);
+        let r = self.random.range(0.5, 1.0);
+        let strength = (d(30.0f32) / softness * r).f();
+        // AddComponent<FrictionJoint2D>() takes an instance id.
+        self.allocate_instance_id();
+        let f = self.add_friction_joint_component(p);
+        self.fixed_joint_set_auto_configure(f, true);
+        self.fixed_joint_set_enable_collision(f, false);
+        self.friction_joint_set_max_force(f, 2.0);
+        self.friction_joint_set_max_torque(f, 2.0);
+        self.fixed_joint_set_connected_body(f, Some(super::BodyOwner::Physical(victim)));
+        let a = self.inverse_transform_point(p, [world_pos[0], world_pos[1], 0.0]);
+        self.fixed_joint_set_anchor(f, [a[0], a[1]]);
+        let b = self.inverse_transform_point(victim, [world_pos[0], world_pos[1], 0.0]);
+        self.fixed_joint_set_connected_anchor(f, [b[0], b[1]]);
+        for b in self.physicals[victim].colliders.clone() {
+            self.ignore_collision_substitute(self_collider, b, true);
+        }
+        let container = self.wire_container(victim);
+        let slash = Slash { Joint: f, Lifetime: 0.0, MyCollider: self_collider, OtherCollider: victim_collider, Victim: victim, Strength: strength, CurrentPosition: world_pos, VictimLiquidContainer: container };
+        self.physicals[p].SlashConnections.push(slash);
+        self.physicals[p].SlashConnections.len() - 1
+    }
+
+    /// victim.OnWhileSlashed.Invoke(slash): the victim's LimbBehaviour.OnWhileSlashed (added in its Start, removed in OnDestroy).
+    fn on_while_slashed(&mut self, victim: usize, stabber: usize, s: usize) {
+        let Some(l) = self.limbs.iter().position(|l| l.PhysicalBehaviour == victim) else { return };
+        if !self.limbs[l].started || self.physicals[victim].destroyed {
+            return;
+        }
+        let slash = self.physicals[stabber].SlashConnections[s].clone();
+        self.limb_on_while_slashed(l, stabber, &slash);
+    }
+
+    /// LimbBehaviour.OnWhileSlashed (1.28.45)
+    fn limb_on_while_slashed(&mut self, l: usize, stabber: usize, slash: &Slash) {
+        if !self.soft_joint_alive(slash.Joint) || self.time.time - self.limbs[l].lastSlashProcessTime < 0.1 {
+            return;
+        }
+        let p = self.limbs[l].PhysicalBehaviour;
+        let circulation = super::container::Owner::Circulation(l);
+        if slash.Lifetime <= mathf::EPSILON {
+            let v = self.physicals[stabber].rigidbody.velocity(&self.world);
+            let size = mathf::clamp((d(mathf::magnitude2(v)) * 0.1f32).f(), 1.0, 2.0);
+            self.create_impact_effect(p, slash.CurrentPosition, [-v[0], -v[1]], size);
+            let fallback = self.original_blood_color(l);
+            let colour = self.get_computed_color(circulation, fallback);
+            // SendMessage skips an inactive stabber.
+            if self.physicals[stabber].active {
+                let ty = self.limb_blood_decal(l);
+                self.physical_decal(stabber, ty, slash.CurrentPosition, 1.0, colour);
+            }
+            return;
+        }
+        self.limbs[l].lastSlashProcessTime = self.time.time;
+        let (force, torque) = self.friction_joint_reaction(slash.Joint);
+        let num = math_max(mathf::magnitude2(force), torque);
+        let (max_force, max_torque) = self.fixed_joints[slash.Joint].friction.expect("a FrictionJoint2D");
+        if num >= math_max(max_force, max_torque) {
+            if self.nodes[l].IsConnectedToRoot && self.limbs[l].Numbness < 0.5 && self.limb_is_considered_alive(l) {
+                self.limb_wince(l, num);
+                let person = self.limbs[l].Person;
+                self.add_pain(person, (d(num) * 0.1f32).f());
+            }
+            let n = self.properties[self.physicals[p].Properties].StabSound.unwrap_or(0);
+            if n != 0 && self.random.value() > 0.8 {
+                let v = self.physicals[stabber].rigidbody.velocity(&self.world);
+                let size = mathf::clamp((d(mathf::magnitude2(v)) * 0.05f32).f(), 1.0, 2.0);
+                self.create_impact_effect(p, slash.CurrentPosition, [-v[0], -v[1]], size);
+                let k = self.pick_random(n).unwrap();
+                let clip = self.properties[self.physicals[p].Properties].clips.StabSound.get(k).cloned().flatten();
+                self.play_clip_once(p, clip, mathf::clamp((d(num) * 0.01f32).f(), 0.1, 0.8));
+            }
+            if self.bc(circulation).TotalLiquidAmount > 0.1 {
+                let fallback = self.original_blood_color(l);
+                let colour = self.get_computed_color(circulation, fallback);
+                let ty = self.limb_blood_decal(l);
+                self.physical_behaviour_decal(stabber, ty, slash.CurrentPosition, 1.0, colour);
+            }
+        }
+    }
+
+    /// PhysicalBehaviour.TransferPropertiesForPenetration (1.28.45)
+    fn transfer_properties_for_penetration(&mut self, p: usize, other: usize) {
+        if self.physicals[p].SimulateTemperature && self.physicals[other].SimulateTemperature {
+            self.average_temperature(other, p, 0.3);
+        }
+        let (other_charge, charge) = (self.physicals[other].Charge(), self.physicals[p].Charge());
+        if (d(other_charge) * 0.95f32).f() > charge {
+            self.physicals[p].charge = (d(other_charge) * 0.95f32).f();
+        } else if (d(charge) * 0.95f32).f() > other_charge {
+            self.physicals[other].charge = (d(charge) * 0.95f32).f();
+        }
+    }
+
+    /// PhysicalBehaviour.ManagedFixedUpdate's SlashConnections loop (1.28.45), last to first.
+    fn slash_fixed_update(&mut self, p: usize) {
+        use super::shatter::ShatterHost;
+        let mut i = self.physicals[p].SlashConnections.len();
+        while i > 0 {
+            i -= 1;
+            let slash = self.physicals[p].SlashConnections[i].clone();
+            let victim = slash.Victim;
+            if slash.Lifetime > 0.1 {
+                let alive = !self.physicals[victim].destroyed && !self.physicals[victim].isDisintegrated && !self.physicals[p].isDisintegrated;
+                let overlapped = alive && {
+                    self.sync_pending();
+                    self.world.body_collider_overlapped(self.physicals[p].rigidbody.body, slash.OtherCollider)
+                };
+                if overlapped {
+                    self.transfer_properties_for_penetration(p, victim);
+                    self.on_while_slashed(victim, p, i);
+                    if let (Some(o), Some(dp)) = (slash.VictimLiquidContainer, self.physicals[p].DrippingBloodParticles) {
+                        if self.time.frameCount % 8 == 0 && mathf::magnitude2(self.friction_joint_reaction(slash.Joint).0) > 10.0 {
+                            let local = self.rigidbody_get_point(p, slash.CurrentPosition);
+                            let cached = self.bc(o).cachedComputedColour;
+                            let colour = self.get_computed_color(o, cached);
+                            let amount = mathf::clamp((d(self.bc(o).TotalLiquidAmount) * mathf::clamp01(slash.Lifetime)).f(), 0.0, 5.0);
+                            self.dripping_blood_particles_drip(dp, local, colour, amount);
+                        }
+                    }
+                    if !self.fixed_joints[slash.Joint].state.enable_collision {
+                        self.fixed_joint_set_enable_collision(slash.Joint, true);
+                    }
+                } else {
+                    self.physicals[p].SlashConnections.remove(i);
+                    if !self.fixed_joints[slash.Joint].destroyed {
+                        self.destroy_joint_delayed(slash.Joint);
+                    }
+                    if !self.physicals[victim].destroyed {
+                        let (a, b) = (<Game as ShatterHost>::world_center_of_mass(self, p), <Game as ShatterHost>::world_center_of_mass(self, victim));
+                        let normal = mathf::normalized2([a[0] - b[0], a[1] - b[1]]);
+                        self.send_unstabbed(Stabbing { stabber: p, victim, normal, point: slash.CurrentPosition });
+                        for b in self.physicals[victim].colliders.clone() {
+                            self.ignore_collision_substitute(slash.MyCollider, b, false);
+                        }
+                    }
+                    continue;
+                }
+            }
+            // IL_07f3
+            if self.physicals[victim].destroyed {
+                continue;
+            }
+            // ponytail: Rigidbody2D.ClosestPoint taken as Utils.ClosestPointFix (nearest of the attached colliders' ClosestPoint).
+            let position = <Game as ShatterHost>::position(self, p);
+            let closest = <Game as ShatterHost>::closest_point_fix(self, victim, position);
+            let com = <Game as ShatterHost>::world_center_of_mass(self, p);
+            let num3 = super::shatter::v2_distance(com, closest);
+            let (_, e) = self.physicals[p].InitialBounds;
+            let ls = self.physicals[p].transform.localScale;
+            let num4 = (d(mathf::max((d(e[0] * 2.0) * ls[0]).f(), (d(e[1] * 2.0) * ls[1]).f())) * 0.4f32).f();
+            let fdt = self.time.fixedDeltaTime;
+            self.physicals[p].SlashConnections[i].Lifetime += fdt;
+            if num4 > 0.0 {
+                let num5 = 1.0 - ((d(num3) / num4).f()).abs();
+                let (mf, mt) = self.fixed_joints[slash.Joint].friction.expect("a FrictionJoint2D");
+                let v = super::fire::smooth_approach(mf, (d(slash.Strength) * mathf::clamp(num5, 0.5, 1.0)).f(), 6.0, fdt);
+                self.friction_joint_set_max_force(slash.Joint, v);
+                let v = super::fire::smooth_approach(mt, (d(slash.Strength) * mathf::clamp((d(num5) * num5).f(), 0.1, 1.0)).f(), 6.0, fdt);
+                self.friction_joint_set_max_torque(slash.Joint, v);
+            }
+            self.physicals[p].SlashConnections[i].CurrentPosition = closest;
+            let a = self.rigidbody_get_point(p, closest);
+            self.fixed_joint_set_anchor(slash.Joint, a);
+            let b = self.rigidbody_get_point(victim, closest);
+            self.fixed_joint_set_connected_anchor(slash.Joint, b);
+        }
+    }
+
+    /// DrippingBloodParticleController (v45-new) for a slashing physical: Start's Instantiate of Global.DrippingParticlesPrefab
+    /// under it. v45-new fills this in; until then there is none.
+    pub(super) fn dripping_blood_particles_instantiate(&mut self, p: usize) -> Option<usize> {
+        Some(self.dripping_blood_instantiate(p))
+    }
+
+    /// DrippingBloodParticleController (v45-new): LocalDripAreas.Add(local), Colour = colour, Amount = amount.
+    fn dripping_blood_particles_drip(&mut self, d: usize, local: [f32; 2], colour: [f32; 4], amount: f32) {
+        self.dripping_blood_drip(d, local, colour, amount);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,6 +997,25 @@ mod tests {
         assert!(g.joint_break_limits.is_empty(), "infinite break limits");
         assert_eq!(g.ignore_stack.len(), 2);
         assert!(g.world.ignored.contains(&(10, 11)) && g.world.ignored.contains(&(10, 12)));
+    }
+
+    #[test]
+    fn slash_releases_without_overlap() {
+        let (mut g, _) = fixture();
+        // DoSlash's joint and ignores (its InverseTransformPoint anchors need a clone, which the fixture lacks).
+        let f = g.add_friction_joint_component(0);
+        g.fixed_joint_set_connected_body(f, Some(super::super::BodyOwner::Physical(1)));
+        g.ignore_collision_substitute(10, 11, true);
+        let s = 0;
+        g.physicals[0].SlashConnections.push(Slash { Joint: f, MyCollider: 10, OtherCollider: 11, Victim: 1, Strength: 50.0, ..Default::default() });
+        let slash = g.physicals[0].SlashConnections[s].clone();
+        // Past 0.1 s with the bodies apart (no fixtures): the slash ends, the joint goes and the colliders collide again.
+        g.physicals[0].SlashConnections[s].Lifetime = 0.2;
+        g.slash_fixed_update(0);
+        assert!(g.physicals[0].SlashConnections.is_empty());
+        assert!(!g.fixed_joints[slash.Joint].enabled);
+        assert!(g.world.ignored.is_empty());
+        assert!(math_max(1.0, f32::NAN).is_nan() && math_max(2.0, 1.0) == 2.0);
     }
 
     #[test]

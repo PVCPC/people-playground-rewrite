@@ -415,8 +415,15 @@ fn serialisable_distributions(r: &Record) -> Result<Vec<(String, f32)>, String> 
     }).collect()
 }
 
+/// Script fields that only exist in 1.28.45.
+const FIELDS_45: &[&str] = &["IsAttachedToLauncher", "ChargeBoostModifier"];
+
 fn load_fields(fields: Vec<(&'static str, &mut dyn Field)>, r: &Record) -> Result<(), String> {
     for (name, field) in fields {
+        // Fields 1.28.45 added are absent from 1.28.41 recordings: they keep their defaults.
+        if FIELDS_45.contains(&name) && r.get(name).is_none() {
+            continue;
+        }
         field.parse(r.req(name)?).map_err(|e| format!("{} {} {name}: {e}", r.ty, r.name))?;
     }
     Ok(())
@@ -1940,7 +1947,7 @@ impl Game {
                 let (Some(name), Some(dirty), Some(at)) = (f.next(), f.next(), f.next()) else { return Err(format!("bad decal controller {c}")) };
                 let descriptor = if name == "null" { super::physical::NULL_DECAL } else { g.decal_descriptor(name) };
                 let decals = at.split('/').filter(|v| !v.is_empty()).map(|v| super::misc::Decal { position: floats(v), size: 0.0, sprite: 0, colour: [1.0; 4], scale: [1.0, 1.0], streaks: Vec::new() }).collect();
-                list.push(super::misc::DecalController { descriptor, decals, holder: (dirty == "1").then_some((None, 0, 0)) });
+                list.push(super::misc::DecalController { descriptor, decals, holder: (dirty == "1").then_some((None, 0, 0)), holder_hidden: false });
             }
             g.physicals[p].decal_controllers = list;
         }
@@ -2750,6 +2757,7 @@ impl Game {
             (Phase::Fixed, B::ToggleableMirror(m)) => self.toggleable_mirror_fixed_update(m),
             (Phase::Fixed, B::Translated(super::translated::TBehaviour::FireSoundEmitter(i))) => self.fire_sound_emitter_fixed(i),
             (phase, B::Translated(t)) => self.tr_phase(phase, t),
+            (phase, B::V45(v)) => self.v45_phase(phase, v),
             (Phase::Update, B::ThermalDisplay) => self.thermal_display_update(),
             (Phase::Update, B::ResizeHandles) => self.resize_handles_update(),
             (Phase::Fixed, B::Person(p)) => {
@@ -3609,6 +3617,7 @@ pub fn compare(g: &mut Game, s: &Snapshot) -> Vec<String> {
             match r.get(name) {
                 Some(theirs) if theirs == ours => {}
                 Some(theirs) => out.push(format!("{what}.{name}: game {theirs} ours {ours}")),
+                None if FIELDS_45.contains(&name) => {}
                 None => out.push(format!("{what}.{name}: not dumped")),
             }
         }

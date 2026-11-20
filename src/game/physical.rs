@@ -234,6 +234,16 @@ script! {
         /// The GameObject's Transform instance id (0 for physicals loaded from a recording).
         transform_id: i32 = 0,
         BulletPenetration: bool = true,
+        /// SelectionPriority, PreventGripping and PauseDragOverride (1.28.45; 1.28.41's prefabs have none: the defaults).
+        SelectionPriority: bool = false,
+        PreventGripping: bool = false,
+        PauseDragOverride: bool = true,
+        /// SlashColliders (1.28.45) by instance id (0 for a null entry); None: null (1.28.41, or a recording).
+        SlashColliders: Option<Vec<i32>> = None,
+        /// SlashConnections (1.28.45).
+        SlashConnections: Vec<super::stab::Slash> = Vec::new(),
+        /// DrippingBloodParticles (1.28.45): the DrippingBloodParticleController Start made (v45-new's index).
+        DrippingBloodParticles: Option<usize> = None,
         /// C#'s float.NaN (0/0f, the x86 default NaN 0xffc00000): an AddComponent'd PhysicalBehaviour keeps the initializer's bits.
         BulletDeflectChanceOverride: f32 = f32::from_bits(0xffc0_0000),
         /// OverrideShotSounds length.
@@ -482,6 +492,10 @@ impl Game {
         let e = self.sprite_world_bounds(p).1;
         let sqr = (d(e[0]) * e[0] + d(e[1]) * e[1] + d(e[2]) * e[2]).f();
         self.physicals[p].ObjectArea = mathf::sqrt(sqr * 4.0);
+        // 1.28.45: FancyEffects and SlashColliders: a DrippingBloodParticles clone under the object (v45-new).
+        if crate::assets::il::is_1_28_45() && self.prefs.FancyEffects && self.physicals[p].SlashColliders.as_ref().is_some_and(|s| !s.is_empty()) {
+            self.physicals[p].DrippingBloodParticles = self.dripping_blood_particles_instantiate(p);
+        }
         // rigidbody.interpolation = Global.CurrentInterpolationMode
         let mode = self.current_interpolation_mode();
         self.rigidbody_set_interpolation(super::BodyOwner::Physical(p), mode);
@@ -1625,6 +1639,9 @@ impl Game {
     /// Softness < 0.025 and relativeVelocity.sqrMagnitude > 9 emits (int)Clamp(sqr / 2, 1, 8) particles at its point with
     /// velocity Random.insideUnitCircle - relativeVelocity * 0.15. Only the draw reaches the simulation.
     fn physical_scrape_sparks(&mut self, p: usize) {
+        if crate::assets::il::is_1_28_45() {
+            return self.physical_contacts_45(p);
+        }
         let ph = &self.physicals[p];
         if !(self.prefs.FancyEffects && !ph.IsUnderWater && self.properties[ph.Properties].SparksOnSlide && ph.sprite_id != 0 && ph.isVisible && ph.rigidbody.bodyType == 0 && ph.scrapeParticles) {
             return;
@@ -1640,6 +1657,34 @@ impl Game {
             }
             let sq = mathf::sqr_magnitude([c.relative_velocity.x, c.relative_velocity.y]);
             if self.physicals[p].isVisible && sq > 9.0 {
+                // scrapeParticles.Emit(emitParams, count): the MetalScrape clone's particles are not presented.
+                self.random.inside_unit_circle();
+            }
+        }
+    }
+
+    /// The contact loop of PhysicalBehaviour.ManagedFixedUpdate in 1.28.45: a Stabbed every 8th frame for a soft object rubbing a
+    /// SlashCollider, then the scrape sparks.
+    fn physical_contacts_45(&mut self, p: usize) {
+        if self.physicals[p].rigidbody.bodyType != 0 {
+            return;
+        }
+        for i in 0..self.physicals[p].collisionBuffer.len() {
+            let c = self.physicals[p].collisionBuffer[i];
+            if !self.collider_exists(c.collider) {
+                continue;
+            }
+            let Some(v) = self.physical_of_collider(c.collider).filter(|&v| self.physicals[v].in_world) else { continue };
+            let sq = mathf::sqr_magnitude([c.relative_velocity.x, c.relative_velocity.y]);
+            if !(sq > 5.0) {
+                continue;
+            }
+            let softness = self.properties[self.physicals[v].Properties].Softness;
+            if softness > 0.5 && self.time.frameCount % 8 == 0 && self.physicals[p].SlashColliders.as_ref().is_some_and(|s| s.contains(&c.other_collider)) {
+                self.send_stabbed(super::stab::Stabbing { stabber: p, victim: v, normal: [c.normal.x, c.normal.y], point: [c.point.x, c.point.y] });
+            }
+            let ph = &self.physicals[p];
+            if self.prefs.FancyEffects && softness < 0.025 && !ph.IsUnderWater && self.properties[ph.Properties].SparksOnSlide && ph.sprite_id != 0 && ph.scrapeParticles && ph.isVisible && sq > 9.0 {
                 // scrapeParticles.Emit(emitParams, count): the MetalScrape clone's particles are not presented.
                 self.random.inside_unit_circle();
             }
@@ -1670,7 +1715,7 @@ impl Game {
     pub(crate) fn physical_behaviour_decal(&mut self, p: usize, ty: usize, position: [f32; 2], size: f32, colour: [f32; 4]) {
         let ph = &mut self.physicals[p];
         if ph.DisplayBloodDecals && self.prefs.Decals && ph.decal_controllers.iter().all(|c| c.descriptor != ty) {
-            ph.decal_controllers.push(super::misc::DecalController { descriptor: ty, decals: Vec::new(), holder: None });
+            ph.decal_controllers.push(super::misc::DecalController { descriptor: ty, decals: Vec::new(), holder: None, holder_hidden: false });
             // AddComponent<DecalControllerBehaviour>()
             self.allocate_instance_id();
             // DecalControllerBehaviour.Awake: dirty = false, the flag that rebuilds the decal mesh (only the mesh reads it).
@@ -1717,6 +1762,8 @@ impl Game {
             let ph = &self.physicals[p];
             let holder = (ph.sprite.map(|s| s.0), ph.sprite_layer, ph.sprite.map_or(0, |s| s.2));
             self.physicals[p].decal_controllers[c].holder = Some(holder);
+            // A new decalHolder is active.
+            self.physicals[p].decal_controllers[c].holder_hidden = false;
         }
         let local = self.inverse_transform_point(p, [position[0], position[1], 0.0]);
         let local = [local[0], local[1]];
@@ -2141,7 +2188,10 @@ impl Game {
         let at = self.physicals[p].transform.position;
         self.camera_shake((d(average_impulse) * 0.01f32).f(), [at[0], at[1]]);
         self.handle_sounds(p, average_impulse);
-        self.handle_stabbing(p, c, &first_valid_contact);
+        // 1.28.45: HandleSlashing when HandleStabbing did not stab.
+        if !self.handle_stabbing(p, c, &first_valid_contact) && crate::assets::il::is_1_28_45() {
+            self.handle_slashing(p, c, &first_valid_contact);
+        }
         if let Some(v) = self.collision_physical(c) {
             let props = &self.properties[self.physicals[p].Properties];
             let (me, other) = (&self.physicals[p], &self.physicals[v]);
@@ -2260,12 +2310,12 @@ impl Game {
     }
 
     /// PhysicalBehaviour.HandleStabbing
-    pub(super) fn handle_stabbing(&mut self, p: usize, c: &ScriptCollision, contact: &ContactPoint2D) {
+    pub(super) fn handle_stabbing(&mut self, p: usize, c: &ScriptCollision, contact: &ContactPoint2D) -> bool {
         let props = &self.properties[self.physicals[p].Properties];
         if !props.Sharp || self.physicals[p].penetrations.len() as i32 >= self.physicals[p].MaximumStabVictims {
-            return;
+            return false;
         }
-        let Some(v) = self.collision_physical(c) else { return };
+        let Some(v) = self.collision_physical(c) else { return false };
         let victim = &self.properties[self.physicals[v].Properties];
         let relative_velocity = [c.relative_velocity.x, c.relative_velocity.y];
         if (victim.Softness <= 0.01 && !props.IgnoreStabResistance)
@@ -2274,12 +2324,12 @@ impl Game {
                 < mathf::map_range(0.01, 1.0, 20.0, 1.25, if props.IgnoreStabResistance { 1.0 } else { mathf::sqrt(victim.Softness) })
             || !self.is_point_near_loose_sharp_end(p, [contact.point.x, contact.point.y])
         {
-            return;
+            return false;
         }
         let normalized = mathf::normalized2(relative_velocity);
         let contact_normal = [contact.normal.x, contact.normal.y];
         if dot2(contact_normal, normalized) < -0.98 {
-            return;
+            return false;
         }
         let hit = props.SharpAxes.iter().copied().find(|axis| {
             let vector = self.transform_vector(p, axis.Axis);
@@ -2288,7 +2338,9 @@ impl Game {
         });
         if let Some(axis) = hit {
             self.stab_begin(p, v, axis, c, contact);
+            return true;
         }
+        false
     }
 
     /// PhysicalBehaviour.Disintegrate

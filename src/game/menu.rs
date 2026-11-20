@@ -127,10 +127,14 @@ pub enum Cond {
     CathodeLightBroken(usize),
     /// TyreDeflationBehaviour: Deflated.
     TyreDeflated(usize),
+    /// SpeedometerBehaviour "resetTopSpeed": TopSpeedMs > 0 (1.28.45, v45_new.rs).
+    SpeedometerRecord(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MenuAction {
+    /// SpeedometerBehaviour "resetTopSpeed": TopSpeedMs = 0 (1.28.45, v45_new.rs).
+    SpeedometerReset(usize),
     /// PhysicalBehaviour "setTemperature": Utils.OpenFloatInputDialog (a dialog box: UI not rewritten).
     /// PhysicalBehaviour "setAngle": DialogBoxManager.TextEntry (UI not rewritten).
     /// LimbBehaviour "inspectLimb": LimbStatusViewBehaviour.
@@ -1005,13 +1009,13 @@ impl Game {
             // SelectedObjects.Count > 1: every selected object has a PhysicalBehaviour, so one action each.
             Temperature(p) => {
                 let many = actions.iter().filter(|a| matches!(a, MenuAction::Entry(Temperature(_)))).count() > 1;
-                (self.prefs.celsius_to_preference(if many { self.AmbientTemperature } else { self.physicals[p].Temperature }), crate::il!(str "PhysicalBehaviour::<Start>b__137_0" 0), format!("Target temperature in {}", self.prefs.temperature_unit_name()))
+                (self.prefs.celsius_to_preference(if many { self.AmbientTemperature } else { self.physicals[p].Temperature }), crate::il_v!(str "PhysicalBehaviour::<Start>b__137_0" 0, "PhysicalBehaviour::<Start>b__148_0" 0), format!("Target temperature in {}", self.prefs.temperature_unit_name()))
             }
             // With several selected only SelectedObjects[0] opens it; its "0" goes to the text component only, so the
             // field itself starts empty. With one, InputField.text = "0".
             Angle(_) => {
                 let many = targets.len() > 1;
-                return self.entry = Some(EntryBox { number: true, title: crate::il!(str "PhysicalBehaviour::<Start>b__137_1" 0).into(), placeholder: crate::il!(str "PhysicalBehaviour::<Start>b__137_1" 0).into(), text: if many { String::new() } else { "0".into() }, targets });
+                return self.entry = Some(EntryBox { number: true, title: crate::il_v!(str "PhysicalBehaviour::<Start>b__137_1" 0, "PhysicalBehaviour::<Start>b__148_1" 0).into(), placeholder: crate::il_v!(str "PhysicalBehaviour::<Start>b__137_1" 0, "PhysicalBehaviour::<Start>b__148_1" 0).into(), text: if many { String::new() } else { "0".into() }, targets });
             }
             CounterWrap(c) => {
                 let s = &self.counters[c];
@@ -1459,10 +1463,10 @@ impl Game {
             Label::GateTrigger(g) => if !self.gates[g].DoubleTrigger { crate::il!(str "GateBehaviour::<Start>b__17_4" 0) } else { crate::il!(str "GateBehaviour::<Start>b__17_4" 1) }.into(),
             Label::MagnetReversed(m) => if !self.tr.magnet_behaviour[m].Reversed { crate::il!(str "MagnetBehaviour::<Start>b__13_0" 0) } else { crate::il!(str "MagnetBehaviour::<Start>b__13_0" 1) }.into(),
             Label::BellNote(b, step) => self.universal_bell_label(b, step),
-            Label::Bone(limb) => if self.limbs[limb].Broken { crate::il!(str "LimbBehaviour::<CreateContextMenuOptions>b__100_1" 1) } else { crate::il!(str "LimbBehaviour::<CreateContextMenuOptions>b__100_1" 0) }.into(),
+            Label::Bone(limb) => if self.limbs[limb].Broken { crate::il_v!(str "LimbBehaviour::<CreateContextMenuOptions>b__100_1" 1, "LimbBehaviour::<CreateContextMenuOptions>b__102_1" 1) } else { crate::il_v!(str "LimbBehaviour::<CreateContextMenuOptions>b__100_1" 0, "LimbBehaviour::<CreateContextMenuOptions>b__102_1" 0) }.into(),
             Label::MachineryIndestructible(m) => indestructible_label(self.machinery[m].Indestructible).into(),
             Label::DestroyableIndestructible(x) => indestructible_label(self.destroyables[x].Indestructible).into(),
-            Label::SyringeInfinite(s) => if self.syringes[s].Finite { crate::il!(str "SyringeBehaviour::<AddButtons>b__17_7" 1) } else { crate::il!(str "SyringeBehaviour::<AddButtons>b__17_7" 0) }.into(),
+            Label::SyringeInfinite(s) => if self.syringes[s].Finite { crate::il_v!(str "SyringeBehaviour::<AddButtons>b__17_7" 1, "SyringeBehaviour::<AddButtons>b__18_7" 1) } else { crate::il_v!(str "SyringeBehaviour::<AddButtons>b__17_7" 0, "SyringeBehaviour::<AddButtons>b__18_7" 0) }.into(),
             Label::ButtonTrigger(b) => trigger_label(self.buttons[b].TriggerOnExit).into(),
             Label::DetectorTrigger(i) => trigger_label(self.detectors[i].TriggerOnExit).into(),
             Label::CarBrake(c) => if self.cars[c].IsBrakeEngaged { crate::il!(str "CarBehaviour::<Start>b__21_0" 1) } else { crate::il!(str "CarBehaviour::<Start>b__21_0" 0) }.into(),
@@ -1481,6 +1485,7 @@ impl Game {
     pub fn menu_condition(&self, c: Cond) -> bool {
         match c {
             Cond::Always => true,
+            Cond::SpeedometerRecord(s) => self.v45.speedometers[s].TopSpeedMs > 0.0,
             Cond::PoseIsNot(person, i) => self.people[person].OverridePoseIndex != i,
             Cond::MachineryRepair(m) => self.machinery[m].Destroyed && self.machinery[m].CanRepair,
             Cond::MachineryShielded(m, s) => {
@@ -1632,6 +1637,7 @@ impl Game {
                     }
                 }
                 MenuAction::Pose(person, i) => self.people[person].OverridePoseIndex = i,
+                MenuAction::SpeedometerReset(s) => self.v45.speedometers[s].TopSpeedMs = 0.0,
                 MenuAction::MachineryRepair(m) => {
                     self.machinery[m].Health = self.machinery[m].initialHealth;
                     self.machinery_act_on_repair(m);

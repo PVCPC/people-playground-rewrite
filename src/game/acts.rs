@@ -199,6 +199,8 @@ pub enum CollisionScript {
     Plane(usize),
     Wing(usize),
     Translated(super::translated::TBehaviour),
+    /// CrossbowBehaviour: OnCollisionEnter2D only (1.28.45, v45_new.rs).
+    Crossbow(usize),
 }
 
 impl Game {
@@ -220,6 +222,7 @@ impl Game {
             CollisionScript::Plane(x) => self.plane_on_collision_enter(x, c),
             CollisionScript::Wing(x) => self.wing_on_collision_enter(x, c),
             CollisionScript::Translated(t) => self.tr_on_collision_enter2d(t, c),
+            CollisionScript::Crossbow(x) => self.crossbow_on_collision_enter(x, c),
         }
     }
 

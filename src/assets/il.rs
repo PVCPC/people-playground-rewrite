@@ -20,6 +20,27 @@ use super::clr::{AttrArg, Assembly, FIELD, METHOD_DEF, TYPE_DEF};
 
 /// SHA-256 of People Playground 1.28.41's Assembly-CSharp.dll.
 const DLL_SHA256: &str = "36b6db3364d94e24899943994f739859663760d75a520647a9c09c4d73c69352";
+/// SHA-256 of 1.28.45's (Steam, 2026-11-17).
+const DLL_SHA256_45: &str = "6825452f3cadfc2ba29c876f78c6ada08154bf1a52242fd26b7b3e3be3f2817f";
+
+/// The installed game's version: the rewrite follows each version's code where 1.28.45 changed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GameVersion {
+    V1_28_41,
+    V1_28_45,
+}
+
+static VERSION: OnceLock<GameVersion> = OnceLock::new();
+
+/// The loaded game's version (1.28.41 before `load`, as in the tests that build no table).
+pub fn version() -> GameVersion {
+    *VERSION.get().unwrap_or(&GameVersion::V1_28_41)
+}
+
+/// Whether the installed game is 1.28.45: the switch for every place the update changed.
+pub fn is_1_28_45() -> bool {
+    version() == GameVersion::V1_28_45
+}
 
 #[derive(Default)]
 pub struct Consts {
@@ -53,13 +74,19 @@ pub fn load(game: &Path) -> Result<(), String> {
     let path = game.join("People Playground_Data/Managed/Assembly-CSharp.dll");
     let a = Assembly::open(&path)?;
     let hash = sha256(a.bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>();
-    if hash != DLL_SHA256 {
+    // ponytail: 1.28.45 is accepted only with PPG_ALLOW_1_28_45=1 until its changes are rewritten (ISSUES #28).
+    let v = if hash == DLL_SHA256 {
+        GameVersion::V1_28_41
+    } else if hash == DLL_SHA256_45 && std::env::var_os("PPG_ALLOW_1_28_45").is_some() {
+        GameVersion::V1_28_45
+    } else {
         return Err(format!(
             "{} is not People Playground 1.28.41's (SHA-256 {hash}). The rewrite reads the game's numbers and text from \
              that exact build's Assembly-CSharp.dll; install version 1.28.41.",
             path.display()
         ));
-    }
+    };
+    let _ = VERSION.set(v);
     let _ = TABLE.set(Table::build(&a)?);
     Ok(())
 }
@@ -315,6 +342,23 @@ macro_rules! il {
     };
 }
 
+/// A constant 1.28.45 moved: `il_v!(kind "Type::Method" k, "Type::Method45" k45)` reads the first under 1.28.41 and the second under 1.28.45.
+#[macro_export]
+macro_rules! il_v {
+    ($kind:tt $m:literal $k:literal, $m45:literal $k45:literal) => {
+        if $crate::assets::il::is_1_28_45() { $crate::il!($kind $m45 $k45) } else { $crate::il!($kind $m $k) }
+    };
+}
+
+/// A constant only 1.28.45's DLL has (its new classes, v45-new): `il45!(kind "Type::Method" k)`; never read on 1.28.41.
+#[macro_export]
+macro_rules! il45 {
+    ($kind:tt $m:literal $k:literal) => {{
+        debug_assert!($crate::assets::il::is_1_28_45(), "{} is 1.28.45's", $m);
+        $crate::il!($kind $m $k)
+    }};
+}
+
 /// FIPS 180-4 SHA-256.
 fn sha256(data: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
@@ -408,6 +452,30 @@ mod tests {
                         missing.push(format!("{}: {kind} {m} {k}", p.display()));
                     }
                 }
+                // il45!(kind "m" k): 1.28.45's only, checked when 1.28.45 is loaded.
+                for chunk in text.split("il45!(").skip(1).filter(|_| is_1_28_45()) {
+                    let Some((kind, rest)) = chunk.split_once(' ') else { continue };
+                    let Some((m, rest)) = rest.strip_prefix('"').and_then(|r| r.split_once('"')) else { continue };
+                    let k: usize = rest.trim_start().split(')').next().unwrap().trim().parse().unwrap();
+                    count += 1;
+                    if !table.has(m, kind, k) {
+                        missing.push(format!("{}: {kind} {m} {k}", p.display()));
+                    }
+                }
+                // il_v!(kind "m" k, "m45" k45): the pair of the loaded version.
+                for chunk in text.split("il_v!(").skip(1) {
+                    let Some((kind, rest)) = chunk.split_once(' ') else { continue };
+                    let Some((m, rest)) = rest.strip_prefix('"').and_then(|r| r.split_once('"')) else { continue };
+                    let Some((k, rest)) = rest.split_once(',') else { continue };
+                    let Some((m45, rest)) = rest.trim_start().strip_prefix('"').and_then(|r| r.split_once('"')) else { continue };
+                    let k45 = rest.trim_start().split(')').next().unwrap().trim();
+                    let (m, k) = if is_1_28_45() { (m45, k45) } else { (m, k.trim()) };
+                    let k: usize = k.parse().unwrap();
+                    count += 1;
+                    if !table.has(m, kind, k) {
+                        missing.push(format!("{}: {kind} {m} {k}", p.display()));
+                    }
+                }
             }
         }
         assert!(missing.is_empty(), "{count} references, unresolved: {missing:#?}");
@@ -442,5 +510,62 @@ mod tests {
         }
         lines.sort();
         std::fs::write(out, lines.join("\n")).unwrap();
+    }
+
+    /// Every `il!` reference whose constant differs between two DLLs (a changed method moves its constants):
+    /// `IL_OLD=<1.28.41 dll> IL_NEW=<1.28.45 dll> cargo test il_version_diff -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn il_version_diff() {
+        let (Ok(old), Ok(new)) = (std::env::var("IL_OLD"), std::env::var("IL_NEW")) else { return };
+        let old = Table::build(&Assembly::open(Path::new(&old)).unwrap()).unwrap();
+        let new = Table::build(&Assembly::open(Path::new(&new)).unwrap()).unwrap();
+        let val = |t: &Table, m: &str, kind: &str, k: usize| -> Option<String> {
+            let c = t.methods.get(m)?;
+            match kind {
+                "r4" => c.r4.get(k).map(|v| format!("{v:?}")),
+                "r8" => c.r8.get(k).map(|v| format!("{v:?}")),
+                "i4" => c.i4.get(k).map(|v| v.to_string()),
+                "i8" => c.i8.get(k).map(|v| v.to_string()),
+                "str" => c.str.get(k).map(|v| format!("{v:?}")),
+                "arr" => c.arr.get(k).map(|v| format!("{v:02x?}")),
+                _ => None,
+            }
+        };
+        let mut stack = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                if p.extension().is_none_or(|x| x != "rs") || p.ends_with("assets/il.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&p).unwrap();
+                for chunk in text.split("il!(").skip(1) {
+                    let mut it = chunk.splitn(2, ' ');
+                    let kind = it.next().unwrap();
+                    let rest = it.next().unwrap_or("");
+                    let Some((m, rest)) = rest.strip_prefix('"').and_then(|r| r.split_once('"')) else { continue };
+                    let Ok(k) = rest.trim_start().split(')').next().unwrap().trim().parse::<usize>() else { continue };
+                    let (a, b) = (val(&old, m, kind, k), val(&new, m, kind, k));
+                    if a != b {
+                        // Where 1.28.45 holds the old constant: the same method (shifted) or a renamed lambda of its type.
+                        let ty = m.split("::").next().unwrap();
+                        let mut at = Vec::new();
+                        for nm in new.methods.keys().filter(|n| *n == m || (n.starts_with(&format!("{ty}::<")) && m.contains("::<"))) {
+                            for k2 in 0..new.count(nm, kind) {
+                                if a.is_some() && val(&new, nm, kind, k2) == a {
+                                    at.push(format!("{nm} {k2}"));
+                                }
+                            }
+                        }
+                        println!("ILDIFF\t{}\t{kind} {m} {k}\t{a:?}\t{b:?}\t45: {at:?}", p.display());
+                    }
+                }
+            }
+        }
     }
 }

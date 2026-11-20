@@ -463,7 +463,7 @@ pub fn test(start: &Start, rig: &HumanRig) -> Result<(), String> {
                 item_physical = g.physicals.len();
                 let mut meta = crate::game::contraption::ContraptionMetaData::new(Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("contraption"));
                 meta.PathToDataFile = Some(PathBuf::from(&file));
-                meta.Version = Some("1.28".into());
+                meta.Version = Some(crate::game::contraption::current_version().into());
                 let mut messages = crate::game::contraption::LoadMessages::default();
                 let states = crate::game::contraption::load_contraption(&mut meta, &mut messages)?;
                 eprintln!("CONTRAPTION {} states, notifications {:?}, dialogs {:?}", states.len(), messages.notifications, messages.dialogs);

@@ -121,7 +121,10 @@ impl Game {
             let mass = rb.mass(&self.world);
             let attraction = self.properties[properties].MagneticAttractionIntensity;
             // Vector2's operators each return floats.
-            let f = |x: f32| x * (0.0 - num) / sqr * attraction * mass;
+            // 1.28.45 multiplies by (MagneticAttractionIntensity * mass).
+            let am = (d(attraction) * mass).f();
+            let v45 = crate::assets::il::is_1_28_45();
+            let f = |x: f32| if v45 { x * (0.0 - num) / sqr * am } else { x * (0.0 - num) / sqr * attraction * mass };
             let force = [f(n[0]), f(n[1])];
             rb.add_force(&mut self.world, force);
             self.physicals[own].rigidbody.clone().add_force(&mut self.world, [0.0 - force[0], 0.0 - force[1]]);

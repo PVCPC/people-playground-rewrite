@@ -366,7 +366,8 @@ impl ModMetaData {
             Description: s(""),
             RichReadme: None,
             ModVersion: s("1.0"),
-            GameVersion: s("1.28"),
+            // 1.28.45: GameInfo.Version.ToString().
+            GameVersion: s(super::contraption::current_version()),
             ThumbnailPath: s("thumb.png"),
             EntryPoint: s("Mod.Mod"),
             Tags: Some(Vec::new()),

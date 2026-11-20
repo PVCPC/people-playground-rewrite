@@ -179,7 +179,8 @@ pub fn decals(
         transform.rotation = t.rotation;
         transform.scale = t.scale;
         let ph = &g.physicals[d.physical];
-        *visibility = if ph.active && !ph.isDisintegrated { Visibility::Inherited } else { Visibility::Hidden };
+        let holder_hidden = ph.decal_controllers.get(d.controller).is_some_and(|c| c.holder_hidden);
+        *visibility = if ph.active && !ph.isDisintegrated && !holder_hidden { Visibility::Inherited } else { Visibility::Hidden };
         if let Some(streak) = d.streak.and_then(|i| decal.streaks.get(i)) {
             if d.built != Some((streak.z, streak.scale)) {
                 let controller = &ph.decal_controllers[d.controller];

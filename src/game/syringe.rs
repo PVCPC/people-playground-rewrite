@@ -75,6 +75,8 @@ script! {
         PressureMode: i32 = PUSH,
         NewlySpawned: bool = true,
         TransferRate: f32 = 0.01,
+        /// 1.28.45 (set by CrossbowBehaviour)
+        IsAttachedToLauncher: bool = false,
     }
     base { base: BloodContainer }
     links {
@@ -399,6 +401,11 @@ impl Game {
     /// SyringeBehaviour.Use
     pub fn syringe_use(&mut self, s: usize, channel: i32) {
         let x = &mut self.syringes[s];
+        // 1.28.45: the use that comes while attached to a launcher only clears IsAttachedToLauncher.
+        if crate::assets::il::is_1_28_45() && x.IsAttachedToLauncher {
+            x.IsAttachedToLauncher = false;
+            return;
+        }
         match channel {
             1 => x.PressureMode = PUSH,
             2 => {

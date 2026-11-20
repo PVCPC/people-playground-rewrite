@@ -1063,7 +1063,14 @@ Parameter name: index"));
             let dir = [v[0] / num2, v[1] / num2];
             let num3 = (d(force) / mathf::max(1.0, (d(sqr) / (d(range) * range)).f()) * 3.0f32).f();
             let num4 = mathf::min(rb.mass(&self.world), 1.0);
-            rb.add_force_impulse(&mut self.world, [num3 * dir[0] * num4, num3 * dir[1] * num4]);
+            // 1.28.45: val3 * (num3 * num4).
+            let push = if crate::assets::il::is_1_28_45() {
+                let k = (d(num3) * num4).f();
+                [dir[0] * k, dir[1] * k]
+            } else {
+                [num3 * dir[0] * num4, num3 * dir[1] * num4]
+            };
+            rb.add_force_impulse(&mut self.world, push);
             if break_objects && self.random.range_int(0, 10) as f32 > force {
                 // collider2D.BroadcastMessage("Break", (Vector2)(-1f * num3 * vector2), DontRequireReceiver)
                 let k = -1.0 * num3;
@@ -1331,8 +1338,12 @@ Parameter name: index"));
 
     /// ExistInBeta.Start: presentation (SetActive(false) of the "Pre-release build text" UI label under Canvas in Main.unity and Map Editor.unity,
     /// its only holders: it hides a label and nothing reads that object's active flag).
+    /// 1.28.45 (a preview build) does SetActive(true), which leaves the active label as it is.
     pub fn exist_in_beta_start(&mut self, id: i32) {
-        self.with_component_instance(id, |g, inst, o| g.set_active_scripts(inst, o, false));
+        let active = crate::assets::il::is_1_28_45();
+        if !active {
+            self.with_component_instance(id, |g, inst, o| g.set_active_scripts(inst, o, false));
+        }
     }
 
     /// ExistInThermalVision.Start, ExistInThermalVision.ThermalVisionToggled (`thermal_vision_toggle`) and ExistInThermalVision.OnDestroy (the destroyed_components check there):

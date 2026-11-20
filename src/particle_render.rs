@@ -781,6 +781,149 @@ pub(crate) fn pivot_billboard(axes: [[f32; 3]; 3], w: [f32; 3], rot: f32, hx: f3
     [corner(-hx + px, py + hy), corner(hx + px, py + hy), corner(px + hx, -hy + py), corner(px + -hx, py + -hy)]
 }
 
+/// The stretch kernels' 1 / |v|: rsqrtps times rsqrte_magicnumber, 0 at or under 1e-30 (0x0da24260).
+fn inv_length(l2: f32) -> f32 {
+    if l2 <= f32::from_bits(0x0da24260) { 0.0 } else { crate::unity::sse::rsqrt(l2) * (1.0 / crate::unity::sse::rsqrt(1.0)) }
+}
+
+/// The inlined fast normalize's factor: rsqrtps times 0.99999982, capped at FLT_MAX, one Newton step; `l` the squared
+/// length. The kernels keep the result only where 1e-30 < l.
+fn nr_rsqrt(l: f32) -> f32 {
+    let r = crate::unity::sse::rsqrt(l) * f32::from_bits(0x3f7ffffd);
+    let r = if r < f32::MAX { r } else { f32::MAX };
+    ((f32::from_bits(0x40400001) - (r * l) * r) * 0.5) * r
+}
+
+/// One stretched particle as GenerateParticleGeometry<1,0,0,0> (0x180d88a40) hands it to the stretch kernels: `p` the
+/// world position (0x198), `vel` animatedVelocity + velocity (ParticleGeomInit), `size_y` the unclamped y size
+/// (0x178), `half` the clamped half sizes (0x338) and `rot` the z rotation (0x228).
+pub(crate) struct Stretched {
+    pub p: [f32; 3],
+    pub vel: [f32; 3],
+    pub size_y: f32,
+    pub half: (f32, f32),
+    pub rot: f32,
+}
+
+/// ParticleGeomStretch3D<0> (0x180da6440), lane 0, for a World simulation space system (m_WorldMatrix the identity,
+/// so the kernel's View * World is m_ViewMatrix): the velocity into view space, the tail `scale` back along it, the
+/// side vector across the camera ray, then the corners p + side, tail + side, tail - side, p - side in world space.
+/// `length_scale` is m_LengthScale * renderScale.x, `cam_vel` the scaled view-space camera velocity, `axes` the
+/// kernel's view rows times renderScale (0x988), as the View-aligned billboard takes them.
+pub(crate) fn stretch_3d(cam: &CameraMatrices, axes: [[f32; 3]; 3], q: &Stretched, cam_vel: [f32; 3], velocity_scale: f32, length_scale: f32) -> [[f32; 3]; 4] {
+    let (m, inv) = (&cam.w2c, &cam.c2w);
+    let p = q.p;
+    let v: [f32; 3] = std::array::from_fn(|i| (m[0][i] * q.vel[0] + m[1][i] * q.vel[1] + m[2][i] * q.vel[2]) - cam_vel[i]);
+    let l2 = (v[1] * v[1] + v[2] * v[2]) + v[0] * v[0];
+    let at: [f32; 3] = std::array::from_fn(|i| m[0][i] * p[0] + m[1][i] * p[1] + m[2][i] * p[2] + m[3][i]);
+    let scale = (length_scale * q.size_y) * inv_length(l2) + velocity_scale;
+    let tail: [f32; 3] = std::array::from_fn(|i| at[i] - scale * v[i]);
+    let cy = tail[2] * at[0] - tail[0] * at[2];
+    let cx = at[2] * tail[1] - at[1] * tail[2];
+    let l = cy * cy + cx * cx;
+    let f = nr_rsqrt(l);
+    let keep = f32::from_bits(0x0da24260) < l;
+    let w = q.half.0;
+    let (sx, sy) = (w * if keep { f * cx } else { 0.0 }, w * if keep { f * cy } else { 0.0 });
+    let side: [f32; 3] = std::array::from_fn(|i| (sx * axes[0][i] + axes[1][i] * sy) + axes[2][i] * 0.0);
+    let t: [f32; 3] = std::array::from_fn(|i| ((inv[0][i] * tail[0] + inv[1][i] * tail[1]) + tail[2] * inv[2][i]) + inv[3][i]);
+    [std::array::from_fn(|i| side[i] + p[i]), std::array::from_fn(|i| side[i] + t[i]), std::array::from_fn(|i| t[i] - side[i]), std::array::from_fn(|i| p[i] - side[i])]
+}
+
+/// ParticleGeomStretchFreeform<1> (0x180da6a60), lane 0, with no pivot offset (0x3b8 zero): the quad faces the camera
+/// position (InvView.t) with InvView.m1 as up, rotateWithStretchDirection turns it to the velocity, and the corners
+/// stretch along the velocity by |velocityScale |v| / size.y + lengthScale|. `world_rs` m_WorldMatrix's rotation
+/// columns, `scale` m_RenderScale, `cam_vel` the scaled world-space camera velocity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stretch_freeform(cam: &CameraMatrices, world_rs: [[f32; 3]; 3], scale: [f32; 3], q: &Stretched, cam_vel: [f32; 3], velocity_scale: f32, length_scale: f32, rotate: bool) -> [[f32; 3]; 4] {
+    let eps = f32::from_bits(0x0da24260);
+    let k2 = |b: u32| f32::from_bits(b);
+    let (cam_pos, up) = ([cam.c2w[3][0], cam.c2w[3][1], cam.c2w[3][2]], [cam.c2w[1][0], cam.c2w[1][1], cam.c2w[1][2]]);
+    let m = world_rs;
+    let v: [f32; 3] = std::array::from_fn(|i| (m[0][i] * q.vel[0] + m[1][i] * q.vel[1] + m[2][i] * q.vel[2]) - cam_vel[i]);
+    let l2 = (v[2] * v[2] + v[1] * v[1]) + v[0] * v[0];
+    let il = inv_length(l2);
+    let a = (velocity_scale / il) / q.size_y;
+    let k = ((if il * q.size_y <= eps { 0.0 } else { a }) + length_scale).abs();
+    let p = q.p;
+    let d = [p[0] - cam_pos[0], p[1] - cam_pos[1], p[2] - cam_pos[2]];
+    let l = (d[1] * d[1] + d[2] * d[2]) + d[0] * d[0];
+    let n = nr_rsqrt(l);
+    // The identity table (0x8f8): row 2 (0, 0, 1) and row 0 (1, 0, 0) where a normalize fails.
+    let f = if eps < l { [n * d[0], n * d[1], n * d[2]] } else { [0.0, 0.0, 1.0] };
+    let c = [f[2] * up[1] - f[1] * up[2], f[0] * up[2] - f[2] * up[0], f[1] * up[0] - f[0] * up[1]];
+    let l = (c[2] * c[2] + c[1] * c[1]) + c[0] * c[0];
+    let n = nr_rsqrt(l);
+    let r = if eps < l { [n * c[0], n * c[1], n * c[2]] } else { [1.0, 0.0, 0.0] };
+    let sr = [r[0] * scale[0], r[1] * scale[0], r[2] * scale[0]];
+    let u = [scale[1] * (f[1] * r[2] - f[2] * r[1]), scale[1] * (f[2] * r[0] - f[0] * r[2]), scale[1] * (f[0] * r[1] - f[1] * r[0])];
+    let fw = [scale[2] * f[0], scale[2] * f[1], scale[2] * f[2]];
+    let mut angle = q.rot;
+    if rotate {
+        let t = ((v[2] * fw[2] + v[1] * fw[1]) + fw[0] * v[0]) / ((fw[1] * fw[1] + fw[2] * fw[2]) + fw[0] * fw[0]);
+        let w = [(fw[0] * t) * 0.0 + (v[0] - fw[0] * t), (t * fw[1]) * 0.0 + (v[1] - t * fw[1]), (t * fw[2]) * 0.0 + (v[2] - t * fw[2])];
+        let l = (w[1] * w[1] + w[2] * w[2]) + w[0] * w[0];
+        let n = nr_rsqrt(l);
+        let wn = if eps < l { [n * w[0], n * w[1], n * w[2]] } else { [0.0; 3] };
+        let dr = (sr[1] * wn[1] + sr[2] * wn[2]) + sr[0] * wn[0];
+        let du = (u[2] * wn[2] + wn[1] * u[1]) + u[0] * wn[0];
+        let cc = minps(maxps(du, -1.0), 1.0);
+        // atan(|sqrt(1 - c^2) / c|): above 1 through rcpps refined twice and pi/2 minus the polynomial.
+        let x = ((1.0 - cc * cc).sqrt() / cc).abs();
+        let big = 1.0 < x;
+        let x = if big {
+            let r0 = crate::unity::sse::rcp(x);
+            let r1 = (k2(0x40000002) - x * r0) * r0;
+            r1 * (2.0 - x * r1)
+        } else {
+            x
+        };
+        let x2 = x * x;
+        let x6 = (x2 * x2) * x2;
+        let x8 = x6 * x2;
+        let x10 = x8 * x2;
+        let poly = x * ((((((k2(0xbeaaa1a8) * x2 + k2(0x3f7ffff7)) + (k2(0x3e4b9639) * x2) * x2) + k2(0xbe0a1c0f) * x6) + k2(0x3dabc4bf) * x8) + k2(0xbd179b18) * x10) + (x10 * x2) * k2(0x3c00d1c0));
+        let atn = if big { k2(0x3fc90fdb) - poly } else { poly };
+        let turn = if cc.is_sign_negative() { k2(0x40490fdb) - atn } else { atn };
+        let sign = ((0.0 < dr) as i32 - (dr < 0.0) as i32) as f32;
+        angle = (angle + sign * turn) + k2(0x3fc90fdb);
+    }
+    let t = angle * k2(0x3e22f983);
+    let pc = turn_poly(0.25 - (t - round_ps(t)).abs());
+    let t2 = -0.25 + t;
+    let ps = turn_poly(0.25 - (t2 - round_ps(t2)).abs());
+    let ns = -ps;
+    let (ex, ey, ez) = (0.0f32, 0.0f32, 1.0f32);
+    let ma = [(ns * u[0] + fw[0] * 0.0) + sr[0] * pc, (ns * u[1] + fw[1] * 0.0) + sr[1] * pc, (fw[2] * 0.0 + u[2] * ns) + sr[2] * pc];
+    let mb: [f32; 3] = std::array::from_fn(|i| (u[i] * pc + fw[i] * 0.0) + sr[i] * ps);
+    let mc = [(ez * fw[0] + ey * u[0]) + ex * sr[0], (ey * u[1] + ez * fw[1]) + sr[1] * ex, (u[2] * ey + ez * fw[2]) + sr[2] * ex];
+    let (hx, hy) = q.half;
+    let (o0, o1, o2) = (0.0f32, 0.0f32, 0.0f32);
+    let (x0, y0) = (o0 + -hx, hy + o1);
+    let c0: [f32; 3] = std::array::from_fn(|i| (mb[i] * y0 + mc[i] * o2) + ma[i] * x0);
+    let (y1, x1) = (o1 + hy, hx + o0);
+    let c1: [f32; 3] = std::array::from_fn(|i| (mc[i] * o2 + mb[i] * y1) + ma[i] * x1);
+    let (y2, x2) = (o1 + -hy, hx + o0);
+    let c2: [f32; 3] = std::array::from_fn(|i| (mb[i] * y2 + mc[i] * o2) + ma[i] * x2);
+    let (y3, x3) = (o1 + -hy, o0 + -hx);
+    let c3: [f32; 3] = std::array::from_fn(|i| (mb[i] * y3 + mc[i] * o2) + ma[i] * x3);
+    let dd = (v[2] * v[2] + v[1] * v[1]) + v[0] * v[0];
+    let t0 = ((c0[0] * v[0] + c0[1] * v[1]) + v[2] * c0[2]) / dd;
+    let t1 = ((v[0] * c1[0] + v[1] * c1[1]) + c1[2] * v[2]) / dd;
+    let t2 = ((c2[1] * v[1] + c2[2] * v[2]) + c2[0] * v[0]) / dd;
+    let t3 = ((c3[1] * v[1] + c3[2] * v[2]) + c3[0] * v[0]) / dd;
+    let s0: [f32; 3] = std::array::from_fn(|i| (v[i] * t0) * k + (c0[i] - v[i] * t0));
+    let s1: [f32; 3] = std::array::from_fn(|i| (t1 * v[i]) * k + (c1[i] - t1 * v[i]));
+    let s2 = |i: usize| (t2 * v[i]) * k + (c2[i] - t2 * v[i]);
+    let s3 = |i: usize| (v[i] * t3) * k + (c3[i] - v[i] * t3);
+    [
+        [p[0] + s0[0], p[1] + s0[1], s0[2] + p[2]],
+        [s1[0] + p[0], p[1] + s1[1], s1[2] + p[2]],
+        [s2(0) + p[0], (p[1] + (t2 * v[1]) * k) + (c2[1] - t2 * v[1]), s2(2) + p[2]],
+        [s3(0) + p[0], (p[1] + (v[1] * t3) * k) + (c3[1] - v[1] * t3), s3(2) + p[2]],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     /// A NaN or infinite shakeIntensity preference makes the camera angle non-finite: SetMatrices' determinant test fails and the
@@ -810,6 +953,29 @@ mod tests {
         // (The old constants' zero signs came from the probe's input, not the engine's matrix: compare values.)
         assert_eq!(c.w2c, w2c, "{:?}", c.w2c);
         assert_eq!(c.c2w, c2w, "{:?}", c.c2w);
+    }
+
+    /// A particle at the origin moving along +x under the unrotated camera: Stretch3D trails it by
+    /// lengthScale * size.y + velocityScale with the half width across; Freeform stretches it longer along x than y.
+    #[test]
+    fn stretch_kernels() {
+        let cam = super::camera_matrices([0.0, 0.0, -10.0], [0.0, 0.0, 0.0, 1.0]);
+        let q = super::Stretched { p: [0.0; 3], vel: [1.0, 0.0, 0.0], size_y: 0.06, half: (0.03, 0.03), rot: 0.0 };
+        let c = super::stretch_3d(&cam, cam.axes, &q, [0.0; 3], 0.1, 1.0);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(near(c[0][0], 0.0) && near(c[3][0], 0.0) && near(c[1][0], -0.16) && near(c[2][0], -0.16), "{c:?}");
+        assert!(near(c[0][1].abs(), 0.03) && near(c[0][1], -c[3][1]) && near(c[1][1], c[0][1]), "{c:?}");
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, false);
+        let span = |c: &[[f32; 3]; 4], i: usize| c.iter().map(|v| v[i]).fold(f32::MIN, f32::max) - c.iter().map(|v| v[i]).fold(f32::MAX, f32::min);
+        assert!(c.iter().flatten().all(|x| x.is_finite()) && span(&c, 0) > span(&c, 1) * 2.0, "{c:?}");
+        // rotateWithStretchDirection: a velocity square to the camera's up gives cos 0, and the kernel's divps then
+        // rcpps(inf) * inf makes NaN corners (as in UnityPlayer); a slanted velocity is finite.
+        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, true);
+        assert!(c.iter().flatten().all(|x| x.is_nan()), "{c:?}");
+        let q = super::Stretched { vel: [1.0, 0.5, 0.0], ..q };
+        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, true);
+        assert!(c.iter().flatten().all(|x| x.is_finite()), "{c:?}");
     }
 
     #[test]

@@ -939,7 +939,7 @@ mod tests {
         }
     }
 
-    /// And every renderer, with only the render modes the rewrite draws.
+    /// And every renderer, with only the render modes the rewrite draws (1, Stretched Billboard, from 1.28.45).
     #[test]
     fn all_particle_renderers_read() {
         let Ok(game) = crate::game_assets::find_game(None) else { return };
@@ -952,6 +952,6 @@ mod tests {
             }
         }
         println!("{modes:?}");
-        assert!(modes.keys().all(|m| matches!(m.0, 0 | 5) && (0..=2).contains(&m.1)), "{modes:?}");
+        assert!(modes.keys().all(|m| matches!(m.0, 0 | 1 | 5) && (0..=2).contains(&m.1)), "{modes:?}");
     }
 }

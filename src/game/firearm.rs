@@ -73,11 +73,13 @@ impl Game {
     /// particles.
     pub fn firearm_awake(&mut self, f: usize) {
         let casing: Vec<i32> = (0..self.firearms[f].casing_ids).map(|_| self.allocate_instance_id()).collect();
-        // AddComponent<AudioSource>: spread 35, volume ShotVolume, minDistance 15, spatialBlend 1, dopplerLevel 0.
+        // AddComponent<AudioSource>: spread 35, volume ShotVolume, minDistance 15, spatialBlend 1, dopplerLevel 0. 1.28.45 sets the
+        // volume in Start instead (the AudioSource's own 1 until then).
         let id = self.allocate_instance_id();
         self.firearms[f].audio_source = id;
         let (anchor, ancestors) = self.anchor_ancestors(self.firearms[f].physical, self.firearms[f].node);
-        let mut s = super::audio::AudioSource { anchor, ancestors, volume: self.firearms[f].ShotVolume, min_distance: 15.0, doppler_level: 0.0, ..Default::default() };
+        let volume = if crate::assets::il::is_1_28_45() { 1.0 } else { self.firearms[f].ShotVolume };
+        let mut s = super::audio::AudioSource { anchor, ancestors, volume, min_distance: 15.0, doppler_level: 0.0, ..Default::default() };
         s.set_spatial_blend(1.0);
         s.set_spread(35.0);
         self.audio.add(id, s);
@@ -169,6 +171,16 @@ impl Game {
 
     /// FirearmBehaviour.Start: the BallisticsEmitter and SetTraversalSettings.
     pub fn firearm_start(&mut self, f: usize) {
+        // 1.28.45: audioSource.volume = gameObject.HasComponent<RotatingSoundBehaviour>() ? 0 : ShotVolume.
+        if crate::assets::il::is_1_28_45() {
+            let id = self.firearms[f].id;
+            let rotating = self.with_component_instance(id, |_, inst, o| {
+                inst.prefab.objects[o].components.iter().any(|(_, c)| matches!(c, crate::assets::db::Component::Script { class, .. } if class == "RotatingSoundBehaviour"))
+            });
+            let volume = if rotating { 0.0 } else { self.firearms[f].ShotVolume };
+            let source = self.firearms[f].audio_source;
+            self.audio.get_mut(source).volume = volume;
+        }
         let g = &self.firearms[f];
         let layers = g.LayersToHit;
         self.firearms[f].emitter = Some(Emitter::new(g.Cartridge, layers, (1 << 4) | layers));

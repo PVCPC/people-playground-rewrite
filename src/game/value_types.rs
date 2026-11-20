@@ -134,12 +134,14 @@ impl RotatedRectangle {
     }
 }
 
-// RotatedRectangle.Equals: Center and Size by Vector2.Equals, AngleDegrees by ==; the Pivot is not compared.
+// RotatedRectangle.Equals: Center and Size by Vector2.Equals, AngleDegrees by == (1.28.45: Mathf.Approximately); the Pivot is not
+// compared.
 // RotatedRectangle.op_Equality: PartialEq::eq
 // RotatedRectangle.op_Inequality: PartialEq::ne
 impl PartialEq for RotatedRectangle {
     fn eq(&self, o: &Self) -> bool {
-        eq_v2(self.Center, o.Center) && eq_v2(self.Size, o.Size) && self.AngleDegrees == o.AngleDegrees
+        let angle = if crate::assets::il::is_1_28_45() { mathf::approximately(self.AngleDegrees, o.AngleDegrees) } else { self.AngleDegrees == o.AngleDegrees };
+        eq_v2(self.Center, o.Center) && eq_v2(self.Size, o.Size) && angle
     }
 }
 

@@ -101,6 +101,8 @@ script! {
         /// already had). A limb whose PhysicalBehaviour.Start disintegrated it (an isDisintegrated save) is inactive before its own
         /// Start, so it never joins: no ManagedUpdate, no OnDisintegration handler.
         started: bool = true,
+        /// lastSlashProcessTime (1.28.45): float.MinValue.
+        lastSlashProcessTime: f32 = f32::MIN,
         /// The `gforces` slot of a limb whose Start is still waiting (a later limb's Start added its GForceMeasureBehaviour first).
         gforce_pending: bool = false,
         /// The GoreStringBehaviour component: present, enabled and its `Joint` (a SpringJoint2D).

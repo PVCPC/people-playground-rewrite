@@ -60,6 +60,7 @@ pub mod reparent;
 pub mod television;
 pub mod wrench;
 pub mod valve;
+pub mod v45_new;
 pub mod line;
 pub mod trail;
 pub mod liquid_canister;
@@ -221,6 +222,8 @@ pub mod chemistry;
 pub mod contraption;
 pub mod save;
 mod save_members;
+/// 1.28.45's changes to save_members.
+mod save_members_45;
 mod save_extras;
 mod save_slots;
 pub mod undo;
@@ -1872,6 +1875,8 @@ pub enum Behaviour {
     /// PoisonSpreadBehaviour and its subclasses (`Game::poisons`, poison.rs).
     Poison(usize),
     Translated(translated::TBehaviour),
+    /// 1.28.45's new classes (v45_new.rs).
+    V45(v45_new::V),
     /// The Main scene's ThermalVisionTempDisplayBehaviour (thermal_display.rs).
     ThermalDisplay,
     /// The Main scene's ResizeHandles once SetActive(true) put it back into the manager (resize_handles.rs); before
@@ -2088,6 +2093,7 @@ impl Behaviour {
             Behaviour::LiquidOutlet(_) => "LiquidOutletBehaviour",
             Behaviour::ToggleableMirror(_) => "ToggleableMirrorBehaviour",
             Behaviour::Translated(t) => t.class(),
+            Behaviour::V45(v) => v.class(),
             Behaviour::ThermalDisplay => "ThermalVisionTempDisplayBehaviour",
             Behaviour::ResizeHandles => "ResizeHandles",
             Behaviour::ObjectPool(_) => "ObjectPoolBehaviour",
@@ -2097,7 +2103,7 @@ impl Behaviour {
 
 /// Whether a MonoBehaviour class declares or inherits the Unity message (lifecycle.rs).
 pub fn declares(class: &str, message: &str) -> bool {
-    lifecycle::LIFECYCLE.iter().find(|(k, _)| *k == class).is_some_and(|(_, m)| m.contains(&message))
+    lifecycle::LIFECYCLE.iter().chain(v45_new::LIFECYCLE).find(|(k, _)| *k == class).is_some_and(|(_, m)| m.contains(&message))
 }
 
 /// The passes of Unity's FixedBehaviourManager, BehaviourManager and LateBehaviourManager.
@@ -2447,6 +2453,8 @@ pub struct Game {
     pub power_hammers: Vec<power_hammer::PowerHammer>,
     pub balloons: Vec<balloon::Balloon>,
     pub metronomes: Vec<metronome::Metronome>,
+    /// 1.28.45's new classes (v45_new.rs).
+    pub v45: v45_new::V45,
     /// The PseudoBloodImpactHelpers (component id, Color) that LimbBehaviour.PrepareGoreBits added to its shards.
     pub pseudo_blood_helpers: Vec<(i32, [f32; 4])>,
     pub determined_anomalies: Vec<determined_anomaly::DeterminedAnomaly>,

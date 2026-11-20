@@ -166,7 +166,9 @@ fn stop_scan() {
             }
         }
         if let Some(r) = rend {
-            h("renderer render mode not 0|5", !matches!(r.render_mode, 0 | 5));
+            h("renderer render mode not 0|1|5", !matches!(r.render_mode, 0 | 1 | 5));
+            let pivot = r.pivot.iter().any(|x| *x != 0.0) || size3d || p.sheet.as_ref().is_some_and(|s| s.mode == 1);
+            h("stretched billboard with pivot/3D size/sprites, local space or camera velocity", r.render_mode == 1 && (pivot || p.space != 1 || r.stretch[0] != 0.0));
             h("renderer alignment not 0|1|2", !matches!(r.alignment, 0 | 1 | 2));
         } else {
             h("system without a ParticleSystemRenderer", true);

@@ -2367,6 +2367,10 @@ pub(crate) mod tests {
     /// snapshot: the map bodies' creation order, words and fixture proxies.
     #[test]
     fn map_spawn_matches_game() {
+        // Recorded on 1.28.41: 1.28.45's scenes and prefabs number their objects differently.
+        if crate::game_assets::find_game(None).is_ok_and(|g| crate::assets::il::load(&g).is_ok() && crate::assets::il::is_1_28_45()) {
+            return;
+        }
         let Ok(game) = crate::game_assets::find_game(None) else { return };
         let dump = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference-probe/game/dump26stabhead2.txt");
         let Ok(mut snaps) = dump::snapshots(&dump) else { return };
@@ -2441,6 +2445,10 @@ pub(crate) mod tests {
     /// spawned after them take the game's recorded proxy ids.
     #[test]
     fn spawned_proxy_ids_follow_scene_and_map() {
+        // Recorded on 1.28.41: 1.28.45's scenes and prefabs number their objects differently.
+        if crate::game_assets::find_game(None).is_ok_and(|g| crate::assets::il::load(&g).is_ok() && crate::assets::il::is_1_28_45()) {
+            return;
+        }
         let Some((_, _, person, mut db, first)) = spawn_recorded("dump26stabhead2") else { return };
         let mut map = None;
         let mut knife = None;

@@ -680,6 +680,15 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let Ok(old) = std::fs::read_to_string(root.join("local-cache/human.json")) else { return };
         let Ok(game) = crate::game_assets::find_game(None) else { return };
+        // Only a cache made from this same install compares (local-cache is whichever install built it).
+        let made_from: serde_json::Value = serde_json::from_str(&old).unwrap();
+        let same_install = made_from["source_files"].as_array().into_iter().flatten().all(|f| {
+            let ns = |m: &std::fs::Metadata| m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_nanos() as u64);
+            std::fs::metadata(game.join(f["path"].as_str().unwrap_or(""))).is_ok_and(|m| Some(m.len()) == f["bytes"].as_u64() && ns(&m) == f["modified_ns"].as_u64())
+        });
+        if !same_install {
+            return;
+        }
         let out = std::env::temp_dir().join(format!("ppg-cache-test-{}", std::process::id()));
         build_cache(&game, &out).unwrap();
         let new = std::fs::read_to_string(out.join("human.json")).unwrap();

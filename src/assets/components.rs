@@ -1320,6 +1320,11 @@ pub struct ParticleRenderer {
     pub apply_active_color_space: bool,
     pub vertex_streams: Vec<u8>,
     pub mask_interaction: i32,
+    /// m_CameraVelocityScale, m_VelocityScale, m_LengthScale (Stretched Billboard).
+    pub stretch: [f32; 3],
+    /// m_FreeformStretching, m_RotateWithStretchDirection.
+    pub freeform: bool,
+    pub rotate_with_stretch: bool,
 }
 
 impl ParticleRenderer {
@@ -1335,7 +1340,8 @@ impl ParticleRenderer {
         let custom_streams = r.bool()?;
         r.bool()?; // m_EnableGPUInstancing
         let apply_active_color_space = r.bool()?;
-        let allow_roll = r.bytes(3)?[0] != 0; // m_AllowRoll, m_FreeformStretching, m_RotateWithStretchDirection
+        let flags = r.bytes(3)?; // m_AllowRoll, m_FreeformStretching, m_RotateWithStretchDirection
+        let (allow_roll, freeform, rotate_with_stretch) = (flags[0] != 0, flags[1] != 0, flags[2] != 0);
         r.align();
         let n = r.i32()? as usize;
         let vertex_streams = r.bytes(n)?.to_vec();
@@ -1347,7 +1353,7 @@ impl ParticleRenderer {
         if r.pos != data.len() {
             return Err(format!("ParticleSystemRenderer: read {} of {} bytes", r.pos, data.len()));
         }
-        Ok(Self { enabled, materials, layer, order, render_mode, size_range: [sizes[0], sizes[1]], sort_mode, sorting_fudge: sizes[5], alignment, allow_roll, pivot, flip, custom_streams, apply_active_color_space, vertex_streams, mask_interaction })
+        Ok(Self { enabled, materials, layer, order, render_mode, size_range: [sizes[0], sizes[1]], sort_mode, sorting_fudge: sizes[5], alignment, allow_roll, pivot, flip, custom_streams, apply_active_color_space, vertex_streams, mask_interaction, stretch: [sizes[2], sizes[3], sizes[4]], freeform, rotate_with_stretch })
     }
 }
 

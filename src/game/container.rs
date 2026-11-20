@@ -510,6 +510,12 @@ impl Game {
                 self.add_liquid(o, target, rate * sources.len() as f32);
             }
         }
+        // 1.28.45: foreach (Liquid key in LiquidDistribution.Keys) key.OnUpdateNew(this) (v45_new hook).
+        if crate::assets::il::is_1_28_45() {
+            for liquid in self.bc(o).LiquidDistribution.keys() {
+                self.liquid_on_update_new(liquid, o);
+            }
+        }
         if self.bc(o).shouldDeleteEmptyEntries {
             self.delete_empty_liquid_entries(o);
         }

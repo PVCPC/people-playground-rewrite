@@ -304,6 +304,10 @@ impl Game {
     /// FirearmAttachmentPointBehaviour.OnBeforeSerialise: the attachment leaves its parent (so it is saved as an object of its
     /// own) and Utils.NextFrameCoroutine puts it back under the firearm at the end of the frame.
     pub(crate) fn attachment_point_on_before_serialise(&mut self, pt: usize) {
+        // 1.28.45 empties OnBeforeSerialise.
+        if crate::assets::il::is_1_28_45() {
+            return;
+        }
         let Some(a) = self.point_attachment(pt) else { return };
         let att = self.firearm_attachments[a].physical.expect("an attachment without a PhysicalBehaviour");
         self.physical_set_parent_null(att);

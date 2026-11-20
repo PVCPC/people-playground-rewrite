@@ -182,6 +182,9 @@ pub struct SavedStabs {
     pub axes: Vec<([f32; 2], f32, f32, bool, bool)>,
     pub anchors: Vec<[f32; 2]>,
     pub active: Vec<bool>,
+    /// serialisable_slash_victims and serialisable_slash_strength (1.28.45; empty otherwise).
+    pub slash_victims: Vec<u128>,
+    pub slash_strength: Vec<f32>,
 }
 
 /// A rewritten component struct a prototype reads from and injects into.
@@ -218,6 +221,9 @@ const ALLOWED: &[&str] = &[
     "WeightlessHelper", "ActOnDestroy",
 ];
 
+/// The types 1.28.45's ObjectStateTypeList adds (ActOnDestroy moved into the sorted list, which only reorders it).
+const ALLOWED_45: &[&str] = &["DebrisComponent", "DulcamarusBehaviour", "InjectableBehaviour"];
+
 // ObjectStateTypeList..cctor: ALLOWED, then every Hover type (allowed_component_type).
 /// ObjectStateTypeList..cctor: AllowedComponentTypes is the listed types plus every type of the game's assembly that
 /// Hover is assignable from (Hover and its subclasses; mod assemblies are not searched).
@@ -244,7 +250,7 @@ fn allowed_component_type(class: &str) -> bool {
         "SpringCableBehaviour", "SteelBindingBehaviour", "UseWireBehaviour", "VisualDeletableDetachedToolBehaviour", "WireBehaviour", "WoodStrutBehaviour",
         "WoodenBindingBehaviour",
     ];
-    ALLOWED.contains(&class) || HOVER.contains(&class)
+    ALLOWED.contains(&class) || HOVER.contains(&class) || (crate::assets::il::is_1_28_45() && ALLOWED_45.contains(&class))
 }
 
 impl Game {
@@ -475,7 +481,7 @@ impl Game {
                 Some(p) => (p, true),
                 None => (*member, false),
             };
-            let ty = MEMBER_TYPES.iter().find(|(c, n, _)| *c == class && *n == name).map(|(_, _, t)| *t).expect("a member type for every stored member");
+            let ty = Self::member_type_of(class, name).expect("a member type for every stored member");
             let live = slot.and_then(|s| self.slot_fields(s).into_iter().find(|(n, _)| *n == name).map(|(_, f)| f.show())).filter(|t| Self::shape_ok(ty, t)).map(SavedValue::Field);
             let live = live
                 .or_else(|| extras.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone()).filter(|v| !matches!(v, SavedValue::Field(t) if !Self::shape_ok(ty, t))))
@@ -483,7 +489,7 @@ impl Game {
                 .or_else(|| owner.filter(|_| name == "SerialisableDistributions").map(|o| SavedValue::Distributions(self.bc(o).SerialisableDistributions.clone())));
             let value = live
                 .or_else(|| self.script_loose.get(&id).and_then(|l| l.iter().find(|(n, _)| n == name)).map(|(_, v)| v.clone()))
-                .or_else(|| if is_property || !IMMUTABLE_MEMBERS.contains(&(class, name)) { None } else { prefab_fields.get(name).and_then(|v| Self::prefab_saved(ty, v)) });
+                .or_else(|| if is_property || !(IMMUTABLE_MEMBERS.contains(&(class, name)) || (crate::assets::il::is_1_28_45() && super::save_members_45::IMMUTABLE_MEMBERS.contains(&(class, name)))) { None } else { prefab_fields.get(name).and_then(|v| Self::prefab_saved(ty, v)) });
             match value {
                 Some(v) if is_property => proto.storedProperties.push((name.into(), v)),
                 Some(v) => proto.storedFields.push((name.into(), v)),
@@ -796,7 +802,15 @@ impl Game {
         // CachedTypeInfo.CacheFields: new MembersByName<FieldInfo>(Type.GetFields(flags)).
         // CachedTypeInfo.CacheProperties: new MembersByName<PropertyInfo>(Type.GetProperties(flags)).
         // MembersByName`1..ctor: Flat = the array as given (its order is the stored order); ByName maps each Name to its member (`stored_member`).
-        PUBLIC_MEMBERS.iter().find(|(c, _)| *c == class).map_or(&[][..], |(_, m)| *m)
+        // 1.28.45 stores other members for a few classes (save_members_45).
+        let v45 = crate::assets::il::is_1_28_45().then(|| super::save_members_45::PUBLIC_MEMBERS.iter().find(|(c, _)| *c == class)).flatten();
+        v45.or_else(|| PUBLIC_MEMBERS.iter().find(|(c, _)| *c == class)).map_or(&[][..], |(_, m)| *m)
+    }
+
+    /// A stored member's .NET type (MEMBER_TYPES, plus 1.28.45's new members).
+    pub(crate) fn member_type_of(class: &str, name: &str) -> Option<&'static str> {
+        let v45 = if crate::assets::il::is_1_28_45() { super::save_members_45::MEMBER_TYPES } else { &[] };
+        MEMBER_TYPES.iter().chain(v45).find(|(c, n, _)| *c == class && *n == name).map(|(_, _, t)| *t)
     }
 
     /// MonoBehaviourPrototype.IsSerialisableField and MonoBehaviourPrototype.IsSerialisableProperty (and the obsolete MonoBehaviourPrototype.ShouldSerialiseField and MonoBehaviourPrototype.ShouldSerialiseProperty that call them): Some(is_property) for a stored public member.
@@ -956,6 +970,10 @@ impl Game {
             proto.storedFields.push(("serialisable_axes".into(), { let tail = vec![0; 4 * stabs.axes.len()]; SavedValue::Axes(stabs.axes, tail) }));
             proto.storedFields.push(("serialisable_anchors".into(), SavedValue::Vec2s(stabs.anchors)));
             proto.storedFields.push(("serialisable_active".into(), SavedValue::Bools(stabs.active)));
+            if crate::assets::il::is_1_28_45() {
+                proto.storedFields.push(("serialisable_slash_victims".into(), SavedValue::Guids(stabs.slash_victims)));
+                proto.storedFields.push(("serialisable_slash_strength".into(), SavedValue::Floats(stabs.slash_strength)));
+            }
         }
         // LimbBehaviour's StrengthMultipliers (float[]) and Color property; SkinMaterialHandler's RottenProgress and AcidProgress properties.
         let (fields, props): (Vec<(&str, SavedValue)>, Vec<(&str, SavedValue)>) = match r {
@@ -1027,6 +1045,15 @@ impl Game {
             s.axes.push((axis.Axis, axis.LowerLimit, axis.UpperLimit, axis.LooseUpperLimit, axis.LooseLowerLimit));
             s.anchors.push(anchor);
             s.active.push(active);
+        }
+        // 1.28.45: the SlashConnections' victims (Guid.Empty without an identity) and strengths.
+        if crate::assets::il::is_1_28_45() {
+            for slash in self.physicals[p].SlashConnections.clone() {
+                let v = slash.Victim;
+                let guid = if self.object_names.contains_key(&self.root_id(v)) { self.identity_of(self.physicals[v].transform_id) } else { 0 };
+                s.slash_victims.push(guid);
+                s.slash_strength.push(slash.Strength);
+            }
         }
         s
     }
@@ -1347,11 +1374,33 @@ impl Game {
                 continue;
             }
             roots.push(root);
-            let Some(asset) = self.object_names.get(&root).cloned() else { continue };
-            let state = self.with_component_instance(root, |g, inst, _| g.get_current_state(inst, &asset, origin));
-            states.push(state);
+            // 1.28.45: root.GetComponentsInChildren<SerialiseInstructions>(true), each one's state (an item parented below the
+            // root, as an attached firearm attachment, is saved with it); 1.28.41: only the root's own.
+            let items = if crate::assets::il::is_1_28_45() { self.serialise_instructions_in_children(root) } else { vec![root] };
+            for item in items {
+                let Some(asset) = self.object_names.get(&item).cloned() else { continue };
+                let state = self.with_component_instance(item, |g, inst, _| g.get_current_state(inst, &asset, origin));
+                states.push(state);
+            }
         }
         states
+    }
+
+    /// The Transform ids below Transform `tid` (itself first) in hierarchy pre-order, across clones: an object's own children,
+    /// then the clones hung below it (attached later, so its last children).
+    fn serialise_instructions_in_children(&mut self, tid: i32) -> Vec<i32> {
+        let mut out = Vec::new();
+        let mut stack = vec![tid];
+        while let Some(t) = stack.pop() {
+            out.push(t);
+            let own: Vec<i32> = self.with_component_instance(t, |_, inst, _| {
+                let o = inst.objects.iter().position(|x| x.components[0] == t).unwrap();
+                (o + 1..inst.objects.len()).filter(|&d| inst.objects[d].parent == Some(o)).map(|d| inst.objects[d].components[0]).collect()
+            });
+            let attached = self.attached_clones.get(&t).map(|v| v.iter().map(|c| c.id).collect::<Vec<_>>()).unwrap_or_default();
+            stack.extend(own.into_iter().chain(attached).rev());
+        }
+        out
     }
 
     /// ObjectState.Reconstruct (with MonoBehaviourPrototype.InjectIntoMonoBehaviour; `Enabled` is applied to the Chainsaw and EnergySword, the other covered structs have none) on clone object `x`: each prototype goes to the first not yet used component of its type; a missing
@@ -1543,7 +1592,12 @@ impl Game {
                 if let (Some(SavedValue::Guids(victims)), Some(SavedValue::Floats(durations)), Some(SavedValue::Axes(axes, _)), Some(SavedValue::Vec2s(anchors)), Some(active)) =
                     (get("serialisable_victims"), get("serialisable_durations"), get("serialisable_axes"), get("serialisable_anchors"), get("serialisable_active").and_then(SavedValue::bools))
                 {
-                    let stabs = SavedStabs { victims: victims.clone(), durations: durations.clone(), axes: axes.clone(), anchors: anchors.clone(), active: active.clone() };
+                    // 1.28.45's slash arrays keep their new Guid[0] / float[0] when the save has none.
+                    let (slash_victims, slash_strength) = match (get("serialisable_slash_victims"), get("serialisable_slash_strength")) {
+                        (Some(SavedValue::Guids(v)), Some(SavedValue::Floats(s))) if crate::assets::il::is_1_28_45() => (v.clone(), s.clone()),
+                        _ => (Vec::new(), Vec::new()),
+                    };
+                    let stabs = SavedStabs { victims: victims.clone(), durations: durations.clone(), axes: axes.clone(), anchors: anchors.clone(), active: active.clone(), slash_victims, slash_strength };
                     self.saved_stabs.insert(p, stabs);
                 }
             }
@@ -1651,6 +1705,11 @@ impl Game {
             return self.add_tool_component(tid, id, p, proto);
         }
         match class {
+            // AddComponent<DebrisComponent> (allowed since 1.28.45; a projectile launched there carries one): no members, no messages.
+            "DebrisComponent" => {
+                let id = self.allocate_instance_id();
+                self.with_component_instance(tid, |_, inst, o| super::destroyable::push_runtime_script(inst, o, "DebrisComponent", id));
+            }
             "FreezeBehaviour" => {
                 // GetComponent<Rigidbody2D>() in Start needs the object's PhysicalBehaviour; it has no stored member.
                 // No Rigidbody2D: Start's rb.velocity throws a NullReferenceException (logged) before anything else; OnDestroy does nothing with a null rb.
@@ -1703,7 +1762,7 @@ impl Game {
             "DecalControllerBehaviour" => {
                 self.allocate_instance_id();
                 if let Some(p) = p {
-                    self.physicals[p].decal_controllers.push(super::misc::DecalController { descriptor: super::physical::NULL_DECAL, decals: Vec::new(), holder: None });
+                    self.physicals[p].decal_controllers.push(super::misc::DecalController { descriptor: super::physical::NULL_DECAL, decals: Vec::new(), holder: None, holder_hidden: false });
                 }
             }
             // Nitroglycerine.OnEnterContainer's AddComponent<ExplosiveBehaviour> (a flask or limb that held nitroglycerine when saved).
@@ -1849,6 +1908,7 @@ impl Game {
             inject("localRenderEndpoint", &mut wire.localRenderEndpoint);
             inject("breakForceBuffer", &mut wire.breakForceBuffer);
             inject("SoakAmount", &mut wire.SoakAmount);
+            inject("SoakColour", &mut wire.SoakColour);
             if !proto.storedReferenceFields.is_empty() {
                 self.pending_reference_links.push((class.to_string(), vec![id], proto.storedReferenceFields.clone()));
             }
@@ -1935,6 +1995,7 @@ impl Game {
                 inject("usedToHaveConnectedBody", &mut wire.usedToHaveConnectedBody);
                 inject("localRenderEndpoint", &mut wire.localRenderEndpoint);
                 inject("SoakAmount", &mut wire.SoakAmount);
+                inject("SoakColour", &mut wire.SoakColour);
                 wire.start_color = wire.WireColor;
                 wire.end_color = wire.WireColor;
                 wire.saved = Some(saved);
@@ -2029,6 +2090,7 @@ impl Game {
                     "Channel" => x.Channel.show(),
                     "CanBreak" => x.CanBreak.show(),
                     "SoakAmount" => x.SoakAmount.show(),
+                    "SoakColour" => x.SoakColour.show(),
                     n => unreachable!("{class}.{n} is not a stored wire member"),
                 };
                 text.push((name, v));
@@ -2058,6 +2120,7 @@ impl Game {
                     "Channel" => x.Channel.show(),
                     "CanBreak" => x.CanBreak.show(),
                     "SoakAmount" => x.SoakAmount.show(),
+                    "SoakColour" => x.SoakColour.show(),
                     n => unreachable!("{class}.{n} is not a stored wire member"),
                 };
                 text.push((name, v));
@@ -2354,6 +2417,28 @@ impl Game {
             let pen = self.penetration_arena.len();
             self.penetration_arena.push(Penetration { Stabber: p, Axis: axis, Active: stabs.active[i], CurrentConnectedAnchor: stabs.anchors[i], Duration: stabs.durations[i], ..Default::default() });
             self.do_stab(p, v, axis, pen);
+        }
+        // 1.28.45: each SlashCollider's OverlapCollider (Bounds, CollidingDebris, Objects; a Collider2D[8] buffer), and
+        // a hit whose PhysicalBehaviour's SerialisableIdentity is a saved victim slashed again at rigidbody.position with
+        // the saved strength.
+        let Some(colliders) = self.physicals[p].SlashColliders.clone().filter(|c| !c.is_empty() && !stabs.slash_victims.is_empty()) else { return };
+        for c in colliders {
+            if c == 0 {
+                // A null SlashColliders entry: val.OverlapCollider throws, which ends OnAfterDeserialise.
+                return;
+            }
+            let fixtures = self.world.collider_fixtures(c);
+            let mut hits = self.overlap_collider(&fixtures, super::machinegun::LAYERS_TO_HIT);
+            hits.truncate(8);
+            for (victim, other) in hits {
+                let Some(v) = victim else { continue };
+                let Some(guid) = self.identities.get(&self.physicals[v].transform_id).copied() else { continue };
+                let Some(k) = stabs.slash_victims.iter().position(|g| *g == guid) else { continue };
+                self.sync_pending();
+                let at = self.world.body(self.physicals[p].rigidbody.body).xf.p;
+                let s = self.do_slash(p, [at.x, at.y], v, c, other);
+                self.physicals[p].SlashConnections[s].Strength = stabs.slash_strength[k];
+            }
         }
     }
 

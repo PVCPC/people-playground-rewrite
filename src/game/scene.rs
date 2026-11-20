@@ -517,6 +517,14 @@ impl Game {
         (self.tracer_pool.created, self.tracer_pool.available, self.tracer_pool.inactivityTimer) = (created, available, timer);
     }
 
+    /// A prefab field of level1's Global (Global.main.<name>), resolved (v45-new: DrippingParticlesPrefab).
+    pub(super) fn global_prefab(&mut self, name: &str) -> ObjRef {
+        let game = crate::game_assets::find_game(None).expect("the game's data");
+        let db = self.assets.get_or_insert_with(|| Box::new(AssetDb::open(&game).expect("the game's data")));
+        let global = scene_scripts(db, "level1").and_then(|v| v.into_iter().find(|s| s.class == "Global").ok_or("level1: no Global".into())).expect("level1's Global");
+        global.fields.get(name).and_then(Value::pptr).and_then(|p| db.resolve(global.game_object.file, p)).unwrap_or_else(|| panic!("Global.{name}"))
+    }
+
     /// Global.MetalScrapePrefab of level1's Global, for a game not loaded from the scene (a recording's replay).
     pub(super) fn load_metal_scrape(&mut self) -> (usize, usize, Vec<(usize, Option<usize>)>) {
         let game = crate::game_assets::find_game(None).expect("the game's data");

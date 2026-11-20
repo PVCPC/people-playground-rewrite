@@ -7,9 +7,25 @@ use super::misc::{BleedingParticle, FancyBloodSplat, FixedIntervalDistributor};
 /// Liquid.Registry / Liquid.LiquidSet order (Global.Awake); a liquid is its index here.
 /// Each liquid's identity (the registry key) is the k-th ldstr of Global.Awake, which registers them in this order.
 pub static LIQUIDS: std::sync::LazyLock<Vec<(&'static str, &'static str)>> = std::sync::LazyLock::new(|| {
-    LIQUID_CLASSES.iter().enumerate().map(|(k, &c)| (crate::assets::il::get().str("Global::Awake", k), c)).chain(std::iter::once(("CRAB BLOOD", "CrabBlood"))) // extras (not in the real game): the crab's blood, after the game's liquids.
+    let table = crate::assets::il::get();
+    liquid_classes().into_iter().enumerate().map(|(k, c)| (table.str("Global::Awake", k), c)).chain(std::iter::once(("CRAB BLOOD", "CrabBlood"))) // extras (not in the real game): the crab's blood, after the game's liquids.
         .collect()
 });
+
+/// LIQUID_CLASSES; 1.28.45's Global.Awake registers Nasumica, Amaraevelum and Dulcamarus right after Coolant.
+fn liquid_classes() -> Vec<&'static str> {
+    let mut classes = LIQUID_CLASSES.to_vec();
+    if crate::assets::il::is_1_28_45() {
+        let k = classes.iter().position(|&c| c == "Coolant").unwrap() + 1;
+        classes.splice(k..k, ["Nasumica", "Amaraevelum", "Dulcamarus"]);
+    }
+    classes
+}
+
+/// The registry index of the liquid of class `class` (the class names do not move between versions; the ldstr indices do).
+pub fn liquid_of_class(class: &str) -> usize {
+    LIQUIDS.iter().position(|(_, c)| *c == class).unwrap_or_else(|| panic!("no liquid of class {class}"))
+}
 
 /// The Liquid class of each registry entry.
 const LIQUID_CLASSES: &[&str] = &[
@@ -69,6 +85,9 @@ pub fn liquid_display_name(l: usize) -> &'static str {
         "InertLiquid" => crate::il!(str "Chemistry/InertLiquid::GetDisplayName" 0),
         "BeverageM04" => crate::il!(str "Chemistry/BeverageM04::GetDisplayName" 0),
         "Coolant" => "Coolant",
+        "Nasumica" => crate::il45!(str "Chemistry/Nasumica::GetDisplayName" 0),
+        "Amaraevelum" => crate::il45!(str "Chemistry/Amaraevelum::GetDisplayName" 0),
+        "Dulcamarus" => crate::il45!(str "Chemistry/Dulcamarus::GetDisplayName" 0),
         "ZombiePoisonLiquid" => crate::il!(str "ZombieSyringe/ZombiePoisonLiquid::GetDisplayName" 0),
         "AdrenalineLiquid" => "Adrenaline",
         "AcidLiquid" => "Acid",
@@ -121,6 +140,10 @@ pub fn liquid_color(l: usize) -> [f32; 4] {
         "InertLiquid" => [1.0, 1.0, 1.0, 0.1],
         "BeverageM04" => [0.91, 0.25, 0.0, 0.5],
         "Coolant" => [0.0, 0.22, 0.6, 0.74],
+        "Nasumica" => [0.64, 0.84, 0.74, 0.1],
+        "Amaraevelum" => [0.58, 0.18, 0.16, 0.2],
+        // new Color(0.8f, 0.9f, 1f, 1f) * 2.5f: every component, alpha too.
+        "Dulcamarus" => [0.8 * 2.5, 0.9 * 2.5, 1.0 * 2.5, 1.0 * 2.5],
         "ZombiePoisonLiquid" => [0.8835177, 1.0, 0.7122642, 1.0],
         "AdrenalineLiquid" => [0.45, 0.27, 0.77, 1.0],
         "AcidLiquid" => [0.49, 0.44, 0.52, 1.0],
@@ -210,13 +233,24 @@ impl LiquidMixInstructions {
 /// LiquidMixingController..cctor: LiquidMixingController.MixInstructions as Global.Awake fills it.
 pub fn mix_instructions() -> Vec<LiquidMixInstructions> {
     let l = liquid;
+    // Liquid.GetLiquid(id) of a liquid registered by Global.Awake, by its class (the ldstr index moves in 1.28.45).
+    let c = liquid_of_class;
     let outside = |m: LiquidMixInstructions| LiquidMixInstructions { only_outside_circulations: true, ..m };
-    vec![
-        outside(LiquidMixInstructions::new(vec![l("TRITIUM"), l(crate::il!(str "Global::Awake" 19))], l(crate::il!(str "Global::Awake" 22)), 0.01)),
-        outside(LiquidMixInstructions::new(vec![l("ACID"), l(crate::il!(str "Global::Awake" 19))], l(crate::il!(str "Global::Awake" 21)), 0.05)),
-        LiquidMixInstructions::new(vec![l(crate::il!(str "Global::Awake" 20)), l("TRITIUM")], l(crate::il!(str "Global::Awake" 4)), 0.05),
-        LiquidMixInstructions::new(vec![l("ADRENALINE"), l(crate::il!(str "Global::Awake" 19)), l(crate::il!(str "Global::Awake" 6))], l(crate::il!(str "Global::Awake" 7)), 0.05),
-    ]
+    let mut v = vec![
+        outside(LiquidMixInstructions::new(vec![l("TRITIUM"), c("MendingSerum")], c("ImmortalitySerum"), 0.01)),
+        outside(LiquidMixInstructions::new(vec![l("ACID"), c("MendingSerum")], c("OsteomorphosisAgent"), 0.05)),
+        LiquidMixInstructions::new(vec![c("WaterBreathingSerum"), l("TRITIUM")], c("ExoticLiquid"), 0.05),
+        LiquidMixInstructions::new(vec![l("ADRENALINE"), c("MendingSerum"), c("InertLiquid")], c("BeverageM04"), 0.05),
+    ];
+    if crate::assets::il::is_1_28_45() {
+        // 1.28.45: (CIRCULATION POISON, REANIMATION AGENT, FREEZE POISON, INSTANT DEATH POISON) -> NASUMICA with
+        // ContainerFilter c => !(c is CirculationBehaviour); (COOLANT, EXOTIC LIQUID, MENDING SERUM) -> AMARAEVELUM;
+        // (NASUMICA, AMARAEVELUM) -> DULCAMARUS; each at the default 0.05.
+        v.push(outside(LiquidMixInstructions::new(vec![c("CirculationPoison"), c("ZombiePoisonLiquid"), c("FreezePoisonLiquid"), c("InstantDeathPoisonLiquid")], c("Nasumica"), 0.05)));
+        v.push(LiquidMixInstructions::new(vec![c("Coolant"), c("ExoticLiquid"), c("MendingSerum")], c("Amaraevelum"), 0.05));
+        v.push(LiquidMixInstructions::new(vec![c("Nasumica"), c("Amaraevelum")], c("Dulcamarus"), 0.05));
+    }
+    v
 }
 
 /// BloodContainer.RefFloat

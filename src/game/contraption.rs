@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 fn member_type(class: &str, name: &str) -> Option<&'static str> {
     // A namespaced component (Linefy.Primitives.LinefyCircularPolyline) is listed by its class name.
     let short = class.rsplit('.').next().unwrap_or(class);
-    MEMBER_TYPES.iter().find(|(c, n, _)| (*c == class || *c == short) && *n == name).map(|(_, _, t)| *t)
+    let v45 = if crate::assets::il::is_1_28_45() { super::save_members_45::MEMBER_TYPES } else { &[] };
+    MEMBER_TYPES.iter().chain(v45).find(|(c, n, _)| (*c == class || *c == short) && *n == name).map(|(_, _, t)| *t)
 }
 
 fn f32s_to_bytes(v: &[f32]) -> Vec<u8> {
@@ -343,12 +344,12 @@ impl ContraptionMetaData {
 
     /// ContraptionMetaData.constructor(string name)
     pub fn new(name: &str) -> Self {
-        ContraptionMetaData { Name: Some(name.to_string()), DisplayName: Some(name.to_string()), Version: Some("1.28".into()), RequiredMods: Some(Vec::new()), ..Default::default() }
+        ContraptionMetaData { Name: Some(name.to_string()), DisplayName: Some(name.to_string()), Version: Some(current_version().into()), RequiredMods: Some(Vec::new()), ..Default::default() }
     }
 
     /// ContraptionMetaData.get_IsCurrentVersion
     pub fn IsCurrentVersion(&self) -> bool {
-        self.Version.as_deref() == Some("1.28")
+        self.Version.as_deref() == Some(current_version())
     }
 
     /// ContraptionMetaData.get_IsWorkshopItem
@@ -509,9 +510,9 @@ pub static MIGRATIONS: std::sync::OnceLock<std::collections::HashMap<String, Vec
 
 /// ContraptionSerialiser.LoadContraption.
 pub fn load_contraption(metadata: &mut ContraptionMetaData, messages: &mut LoadMessages) -> Result<Vec<ObjectState>, String> {
-    if metadata.Version.as_deref() != Some("1.28") {
-        messages.notifications.push(crate::il!(str "ContraptionSerialiser::LoadContraption" 1).into());
-        messages.warnings.push(format!("Attempt to load save from {} into 1.28", metadata.Version.as_deref().unwrap_or("")));
+    if metadata.Version.as_deref() != Some(current_version()) {
+        messages.notifications.push(crate::il_v!(str "ContraptionSerialiser::LoadContraption" 1, "ContraptionSerialiser::LoadContraption" 0).into());
+        messages.warnings.push(format!("Attempt to load save from {} into {}", metadata.Version.as_deref().unwrap_or(""), current_version()));
     }
     let path = metadata.PathToDataFile.clone().ok_or("no data file")?;
     let buffer = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -950,7 +951,8 @@ fn dotnet_float(x: f32) -> String {
 /// ContraptionOutlineSerialiser.SaveOutline
 pub fn save_outline(metadata: &ContraptionMetaData, rectangles: &[RotatedRectangle]) -> Result<(), String> {
     // WriteLine("1.28"): Environment.NewLine, "\r\n" on the Windows build (fnb1r12b's olw=); each rectangle ends in Write('\n').
-    let mut text = String::from("1.28\r\n");
+    // 1.28.45: WriteLine(GameInfo.Version).
+    let mut text = format!("{}\r\n", current_version());
     for r in rectangles {
         let v = [r.Center[0], r.Center[1], r.Size[0], r.Size[1], r.AngleDegrees];
         text.push_str(&v.iter().map(|&x| dotnet_float(outline_round(x))).collect::<Vec<_>>().join(" "));
@@ -1002,7 +1004,7 @@ pub struct MigrationEvent {
 impl Default for MigrationEvent {
     fn default() -> Self {
         Self {
-            Version: "1.28".to_string(),
+            Version: current_version().to_string(),
             VersionCondition: Default::default(),
         }
     }
@@ -1037,6 +1039,49 @@ pub fn parse_build_index(input: &str) -> Result<i32, String> {
     Ok(if total != -1 { total } else { i32::MAX })
 }
 
+/// The version text the game writes and compares saves by: the literal "1.28" in 1.28.41's code, GameInfo.Version.ToString()
+/// (Major.Minor.Build, 1.28.51) from 1.28.45 on.
+pub fn current_version() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        if crate::assets::il::is_1_28_45() {
+            // GameInfo..cctor: new Version(1, 28, 51).
+            let n = |k: usize| crate::assets::il::get().i4("GameInfo::.cctor", k);
+            format!("{}.{}.{}", n(0), n(1), n(2))
+        } else {
+            "1.28".to_string()
+        }
+    })
+}
+
+/// System.Version.Parse as (Major, Minor, Build, Revision), an unset part -1 (so 1.28 < 1.28.0); None where it throws: other than two to
+/// four '.'-separated parts, or a part Int32.TryParse (NumberStyles.Integer: white space around, a leading sign) rejects or below 0.
+pub fn version_parse(s: &str) -> Option<(i32, i32, i32, i32)> {
+    let parts: Vec<&str> = s.split('.').collect();
+    if !(2..=4).contains(&parts.len()) {
+        return None;
+    }
+    let mut v = [-1i32; 4];
+    for (i, p) in parts.iter().enumerate() {
+        let t = p.trim_matches(|c: char| c == ' ' || ('\u{9}'..='\u{d}').contains(&c));
+        let (neg, digits) = match t.as_bytes().first() {
+            Some(b'-') => (true, &t[1..]),
+            Some(b'+') => (false, &t[1..]),
+            _ => (false, t),
+        };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let n: i64 = digits.parse().ok()?;
+        let n = if neg { -n } else { n };
+        if n < 0 || n > i32::MAX as i64 {
+            return None;
+        }
+        v[i] = n as i32;
+    }
+    Some((v[0], v[1], v[2], v[3]))
+}
+
 /// LegacyGameVersionUtils.GetDifference: ParseBuildIndex(a) - ParseBuildIndex(b).
 pub fn legacy_game_version_get_difference(a: &str, b: &str) -> Result<i32, String> {
     Ok(parse_build_index(a)? - parse_build_index(b)?)
@@ -1062,6 +1107,17 @@ impl MigrationEvent {
     pub fn IsApplicable(&self, origin_version: &str, has_target: bool) -> bool {
         if !has_target {
             return false;
+        }
+        // 1.28.45: a "1.28..." origin compares as System.Version (a parse failure is false).
+        if crate::assets::il::is_1_28_45() && origin_version.starts_with("1.28") {
+            let (Some(a), Some(b)) = (version_parse(origin_version), version_parse(&self.Version)) else { return false };
+            return match self.VersionCondition {
+                MigrationCondition::OlderThan => a < b,
+                MigrationCondition::OlderThanOrEqualTo => a <= b,
+                MigrationCondition::EqualTo => a == b,
+                MigrationCondition::NewerThan => a > b,
+                MigrationCondition::NewerThanOrEqualTo => a >= b,
+            };
         }
         let Ok(difference) = legacy_game_version_get_difference(origin_version, &self.Version) else { return false };
         match self.VersionCondition {
@@ -1317,7 +1373,8 @@ impl Game {
         })();
         match result {
             Ok(m) => {
-                report.notification = format!("<b>{name}</b> saved succesfully");
+                // 1.28.45 spells it "successfully".
+                report.notification = if crate::assets::il::is_1_28_45() { format!("<b>{name}</b> saved successfully") } else { format!("<b>{name}</b> saved succesfully") };
                 report.metadata = Some(m);
             }
             // Debug.LogException(exception)
@@ -1465,6 +1522,17 @@ pub fn remove_contraption(meta: &ContraptionMetaData) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn version_parse_follows_system_version() {
+        assert_eq!(version_parse("1.28"), Some((1, 28, -1, -1)));
+        assert_eq!(version_parse(" 1.28.51 "), Some((1, 28, 51, -1)));
+        assert!(version_parse("1.28").unwrap() < version_parse("1.28.0").unwrap());
+        assert_eq!(version_parse("1"), None);
+        assert_eq!(version_parse("1.-2"), None);
+        assert_eq!(version_parse("1.2.3.4.5"), None);
+        assert_eq!(version_parse("1.x"), None);
+    }
 
     #[test]
     fn load_texture_and_sprite() {

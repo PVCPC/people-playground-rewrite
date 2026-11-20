@@ -600,6 +600,8 @@ pub struct DecalController {
     /// sortingLayerID and sortingOrder (originalSortingLayer) at that moment. The sprite is None for an object built from a
     /// recording (dump.rs), which keeps no SpriteRenderer sprite; such objects are never drawn.
     pub holder: Option<(Option<crate::assets::db::ObjRef>, i32, i16)>,
+    /// !decalHolder.activeSelf as 1.28.45's InvisibleOptionInContextMenu.UpdateVisibility last set it.
+    pub holder_hidden: bool,
 }
 
 /// A BloodPuff poolable (the Human PhysicalProperties' ShotImpact), from the pool PoolGenerator made for it.
@@ -754,6 +756,15 @@ impl Game {
         s.sprite_enabled = !s.Invisible || (s.VisibleInDetailView && show);
         let on = s.sprite_enabled;
         self.set_sprite_enabled(super::visual::SpriteAt::Physical(p), on);
+        // 1.28.45: every phys.DecalControllers' decalHolder.SetActive(the same value); a controller without one (no decal yet) throws.
+        if crate::assets::il::is_1_28_45() {
+            for c in &mut self.physicals[p].decal_controllers {
+                if c.holder.is_none() {
+                    super::menu::npe();
+                }
+                c.holder_hidden = !on;
+            }
+        }
     }
 }
 
@@ -787,6 +798,8 @@ pub enum Menu {
 /// A behaviour whose Start is still due.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PendingStart {
+    /// 1.28.45's new classes (v45_new.rs).
+    V45(super::v45_new::V),
     /// TrivialAnimationBehaviour.Start and ObjectGradientAnimation.Start (visual.rs).
     Visual(usize),
     /// GlowtubeBehaviour.Start
@@ -1704,6 +1717,7 @@ impl Game {
                 PendingStart::Shockwave(a) => self.shockwave_start(a),
                 PendingStart::StaticNeedle(a) => self.static_needle_start(a),
                 PendingStart::Metronome(m) => self.metronome_start(m),
+                PendingStart::V45(v) => self.v45_start(v),
                 PendingStart::Blaster(b) => self.blaster_start(b),
                 PendingStart::SmoothLine(s) => self.smooth_line_start(s),
                 PendingStart::DeterminedAnomaly(a) => self.determined_anomaly_start(a),
@@ -2165,7 +2179,7 @@ mod decal_tests {
         ph.transform.rotation = [0.0, 0.0, 0.0, 1.0];
         ph.transform.localScale = [1.0, 1.0, 1.0];
         let streak = Streak { radius: 0.03, speed: 1.0, length: 2.0, ..Default::default() };
-        ph.decal_controllers.push(DecalController { decals: vec![Decal { position: [0.0; 2], size: 1.0, sprite: 0, colour: [1.0; 4], scale: [1.0, 1.0], streaks: vec![streak] }], descriptor: 0, holder: None });
+        ph.decal_controllers.push(DecalController { decals: vec![Decal { position: [0.0; 2], size: 1.0, sprite: 0, colour: [1.0; 4], scale: [1.0, 1.0], streaks: vec![streak] }], descriptor: 0, holder: None, holder_hidden: false });
         g.physicals.push(ph);
         g.active_streaks.push([0, 0, 0, 0]);
         g.decal_streaks_update();

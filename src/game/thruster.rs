@@ -21,6 +21,8 @@ script! {
         BurnRayLength: f32 = 5.0,
         BurnRayOffset: [f32; 2] = [0.0, 0.0],
         BurnRayPerpendicular: [f32; 2] = [0.0, 1.0],
+        /// 1.28.45 (absent from 1.28.41's prefabs, so 1)
+        ChargeBoostModifier: f32 = 1.0,
     }
     links {
         /// The component's instance id.
@@ -40,6 +42,16 @@ script! {
 // ThrusterbedBehaviour.Awake: rb and physicalBehaviour are the `physical` link.
 
 impl Game {
+    /// ThrusterbedBehaviour.Boost (1.28.45): Charge * ChargeBoostModifier; 1.28.41 reads physicalBehaviour.Charge where it is used.
+    fn thrusterbed_boost(&self, i: usize) -> f32 {
+        let charge = self.physicals[self.thrusterbeds[i].Phys].Charge();
+        if crate::assets::il::is_1_28_45() {
+            (d(charge) * self.thrusterbeds[i].ChargeBoostModifier).f()
+        } else {
+            charge
+        }
+    }
+
     /// ThrusterbedBehaviour.Start
     pub fn thrusterbed_start(&mut self, i: usize) {
         self.thrusterbed_update_activated(i);
@@ -72,7 +84,7 @@ impl Game {
     /// ThrusterbedBehaviour.UpdateAudio
     pub(crate) fn thrusterbed_update_audio(&mut self, i: usize, progress: f32) {
         let (low, high) = self.thrusterbed_sources(i);
-        let charge = self.physicals[self.thrusterbeds[i].Phys].Charge();
+        let charge = self.thrusterbed_boost(i);
         let a = self.audio.get_mut(high);
         a.volume = progress * charge;
         a.min_distance = 10.0 + progress * charge;
@@ -108,7 +120,7 @@ impl Game {
     /// (noise.strengthMultiplier = progress * 2 is not drawn.)
     pub(crate) fn thrusterbed_update_particle_system(&mut self, i: usize, progress: f32) {
         let r = self.random.range(5.0, 12.0);
-        let (id, charge) = (self.thrusterbeds[i].id, self.physicals[self.thrusterbeds[i].Phys].Charge());
+        let (id, charge) = (self.thrusterbeds[i].id, self.thrusterbed_boost(i));
         let num = mathf::max(0.1, charge / 8.0);
         let k = mathf::max(1.0, charge * 5.0);
         let color = [4.0 * num * k, 4.0 * (num - charge * 0.2) * k, 4.0 * (num + charge * 0.6) * k, 4.0 * k];
@@ -144,7 +156,7 @@ impl Game {
         }
         self.thrusterbed_thrust(i, num);
         self.thrusterbed_update_audio(i, num);
-        let charge = self.physicals[p].Charge();
+        let charge = self.thrusterbed_boost(i);
         let temperature = self.physicals[p].Temperature;
         let heat = self.heat_capacity(p);
         self.physicals[p].Temperature = mathf::lerp(temperature, target + charge, 0.005 / heat);
@@ -156,7 +168,7 @@ impl Game {
     pub(crate) fn thrusterbed_thrust(&mut self, i: usize, progress: f32) {
         let s = &self.thrusterbeds[i];
         let (p, force, direction) = (s.Phys, s.ThrustingForce, s.RelativeDirection);
-        let num = mathf::max(1.0, self.physicals[p].Charge() * 2.0);
+        let num = mathf::max(1.0, self.thrusterbed_boost(i) * 2.0);
         let scalar = (d(num) * progress * force).f();
         let v = self.transform_vector(p, direction);
         let rb = self.physicals[p].rigidbody.clone();
@@ -168,7 +180,7 @@ impl Game {
         let s = &self.thrusterbeds[i];
         let (p, direction, count, width, length, offset, perpendicular, mask) =
             (s.Phys, s.RelativeDirection, s.BurnRayCount, s.BurnRayWidth, s.BurnRayLength, s.BurnRayOffset, s.BurnRayPerpendicular, s.LayersToBurn);
-        let num = (d(self.physicals[p].Charge()) * 0.2f32 * progress).f();
+        let num = (d(self.thrusterbed_boost(i)) * 0.2f32 * progress).f();
         let t = self.transform_vector(p, direction);
         let vector = [t[0], t[1]];
         let vector2 = [vector[0] * num, vector[1] * num];
@@ -199,10 +211,16 @@ impl Game {
             if hit.game_object == own {
                 continue;
             }
-            let charge = self.physicals[p].Charge();
+            let charge = self.thrusterbed_boost(i);
             if let Some(rb) = self.rigidbody_of_body(hit.body) {
-                let k = (d(-15.0f32) - d(charge) * 2.0f32).f();
-                let force = [vector[0] * progress * k, vector[1] * progress * k];
+                // 1.28.45: val * (progress * (-15f - Boost * 2f)).
+                let force = if crate::assets::il::is_1_28_45() {
+                    let k = (d(progress) * (d(-15.0f32) - d(charge) * 2.0f32)).f();
+                    [vector[0] * k, vector[1] * k]
+                } else {
+                    let k = (d(-15.0f32) - d(charge) * 2.0f32).f();
+                    [vector[0] * progress * k, vector[1] * progress * k]
+                };
                 rb.add_force(&mut self.world, force);
                 let torque = self.random.range(-0.1, 0.1);
                 rb.add_torque(&mut self.world, torque);

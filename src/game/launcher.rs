@@ -117,18 +117,26 @@ impl Game {
         let mut db = self.assets.take().expect("ProjectileLauncherBehaviour without the game's data");
         let spawned = db.prefab(source).and_then(|prefab| {
             let (inst, linked) = self.spawn(&mut db, &prefab, position, rotation, None)?;
+            let mut debris = None;
             if let Some(name) = &asset {
                 // SpawnSpawnParticles = false before its Start; AddComponent AudioSourceTimeScaleBehaviour,
-                // TexturePackApplier and SerialiseInstructions; gameObject.name.
+                // TexturePackApplier and SerialiseInstructions; gameObject.name. 1.28.45 adds a DebrisComponent first
+                // instead of the TexturePackApplier (so Clear debris removes the projectile).
                 if let Some(&q) = linked.physicals.get(&0) {
                     self.physicals[q].SpawnSpawnParticles = false;
                 }
+                debris = crate::assets::il::is_1_28_45().then_some(self.next_instance_id);
                 self.spawnable_asset_components(&prefab, &linked, name, 3);
             }
-            Ok((inst, linked))
+            Ok((inst, linked, debris))
         });
         self.assets = Some(db);
-        let (inst, linked) = spawned.unwrap_or_else(|e| panic!("ProjectileLauncherBehaviour: Instantiate: {e}"));
+        let (mut inst, linked, debris) = spawned.unwrap_or_else(|e| panic!("ProjectileLauncherBehaviour: Instantiate: {e}"));
+        if let Some(id) = debris {
+            super::destroyable::push_runtime_script(&mut inst, 0, "DebrisComponent", id);
+            // ClearDebrisBehaviour.Clear finds it.
+            self.debris_added.insert(inst.objects[0].components[0]);
+        }
         let x = &self.launchers[l];
         if x.ShouldPutProjectileInOtherLayer {
             let layer = x.LayerToPutProjectileOn;
@@ -136,6 +144,8 @@ impl Game {
         }
         // OnLaunch: only JavelinBehaviour subscribes (TransferTarget, javelin.rs); then OnLaunchEvent?.Invoke().
         self.javelin_on_launch(l, linked.javelin_missiles.get(&0).copied());
+        // 1.28.45: CrossbowBehaviour.OnLaunch (v45_new.rs).
+        self.crossbow_on_launch(l, linked.physicals.get(&0).copied());
         self.invoke_event(self.launchers[l].id, "OnLaunchEvent");
         if let Some(&q) = linked.physicals.get(&0) {
             if self.physicals[q].SimulateTemperature && self.physicals[p].SimulateTemperature {

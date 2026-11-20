@@ -661,6 +661,24 @@ mod tests {
         assert!(!c.categories.is_empty());
     }
 
+    /// Prints every SpawnableAsset the catalog hides (VisibleInCatalog false, or Locked) and the catalog's own data
+    /// items that are hidden (cargo test -- --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn probe_hidden_spawnables() {
+        let game = crate::game_assets::find_game(None).unwrap();
+        let mut db = AssetDb::open(&game).unwrap();
+        for r in db.resources_in("SpawnableAssets", 114).unwrap() {
+            let (_, mb, v) = db.mono(r).unwrap().unwrap();
+            let visible = v.get("VisibleInCatalog").and_then(Value::bool).unwrap_or(true);
+            let locked = v.get("Locked").and_then(Value::bool).unwrap_or(false);
+            let category = v.get("Category").and_then(Value::pptr).and_then(|p| db.resolve(r.file, p)).is_some();
+            if !visible || locked || !category {
+                println!("HIDDEN {}	visible {visible}	locked {locked}	category {category}	{:?}", mb.name, string(&v, "Description"));
+            }
+        }
+    }
+
     /// Prints the scene values the catalog classes read (cargo test -- --ignored --nocapture).
     #[test]
     #[ignore]

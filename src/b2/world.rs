@@ -1150,6 +1150,34 @@ impl World {
         closest
     }
 
+    /// The fixtures of a collider, in creation order.
+    pub fn collider_fixtures(&self, collider: i32) -> Vec<FixtureId> {
+        self.fixtures.iter().enumerate().filter(|(_, f)| f.as_ref().is_some_and(|f| f.collider.id == collider)).map(|(i, _)| i).collect()
+    }
+
+    /// Rigidbody2D.Distance(Collider2D).isOverlapped: b2Distance (with radii) between a fixture of the body and one of the
+    /// collider reaches zero. ponytail: Unity's own ColliderDistance2D is not ported; shapes that only touch within the polygon
+    /// skin count as overlapped here.
+    pub fn body_collider_overlapped(&self, body: BodyId, collider: i32) -> bool {
+        let others: Vec<&Fixture> = self.fixtures.iter().flatten().filter(|f| f.collider.id == collider).collect();
+        let xa = self.body(body).xf;
+        for &fa in &self.body(body).fixtures {
+            let Some(a) = self.fixtures[fa].as_ref() else { continue };
+            for b in &others {
+                let xb = self.body(b.body).xf;
+                for ca in 0..a.shape.child_count() {
+                    for cb in 0..b.shape.child_count() {
+                        let mut cache = SimplexCache::default();
+                        if !(distance(&mut cache, &a.shape.proxy(ca), &xa, &b.shape.proxy(cb), &xb, true).distance > 0.0) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// PhysicsScene2D::IgnoreCollision_Binding (180c20130): the pair is added (or removed, when it was there) and both
     /// colliders are re-filtered, lower instance id first.
     pub fn ignore_collision(&mut self, a: i32, b: i32, ignore: bool) {

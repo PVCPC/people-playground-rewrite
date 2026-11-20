@@ -960,6 +960,7 @@ impl Game {
                 v.push((g.wings[x].index, S::Wing(x)));
             }
             v.extend(g.tr.collision_scripts.iter().filter(|s| s.physical == p && s.after_physical == after).map(|s| (s.index, S::Translated(s.b))));
+            v.extend(g.v45_collision_scripts(p, after));
             v.sort_by_key(|&(i, _)| i);
             v
         };
@@ -1493,6 +1494,18 @@ impl Game {
                 [v.x, v.y]
             }
             _ => [0.0, 0.0],
+        }
+    }
+
+    /// Joint2D.reactionForce and Joint2D.reactionTorque of a FrictionJoint2D, at the fixed time step (zero without a live joint).
+    pub fn friction_joint_reaction(&self, f: usize) -> ([f32; 2], f32) {
+        let dt = self.time.fixedDeltaTime;
+        match self.fixed_joints[f].joint.filter(|_| 0.0001 <= dt).map(|id| &self.world.joints[id].as_ref().unwrap().kind) {
+            Some(JointKind::Friction(j)) => {
+                let v = j.reaction_force(1.0 / dt);
+                ([v.x, v.y], j.reaction_torque(1.0 / dt))
+            }
+            _ => ([0.0, 0.0], 0.0),
         }
     }
 

@@ -601,6 +601,30 @@ impl Assembly {
 mod tests {
     use super::*;
 
+    /// tools/progress/methods.tsv (namespace, type path, method, IL bytes) for the DLL in PPG_DLL, written to PPG_OUT:
+    /// the rewrite map's list of game functions, rebuilt after a game update.
+    #[test]
+    #[ignore]
+    fn dump_methods() {
+        let (Ok(dll), Ok(out)) = (std::env::var("PPG_DLL"), std::env::var("PPG_OUT")) else { return };
+        let a = Assembly::open(Path::new(&dll)).unwrap();
+        let mut types: Vec<(&u32, &(String, String))> = a.types.iter().map(|(k, v)| (v, k)).collect();
+        types.sort();
+        let mut text = String::new();
+        for (&t, (ns, name)) in types {
+            // A nested type is listed without its outer type's namespace, as before.
+            let ns = if name.contains('/') { "" } else { ns.as_str() };
+            let (start, end) = a.method_range(t);
+            for m in start..end {
+                if let Some(il) = a.method_il(m) {
+                    text += &format!("{ns}	{name}	{}	{}
+", a.string(METHOD_DEF, m, 3), il.len());
+                }
+            }
+        }
+        std::fs::write(out, text).unwrap();
+    }
+
     #[test]
     fn assembly_csharp_types() {
         let Ok(game) = crate::game_assets::find_game(None) else { return };

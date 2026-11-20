@@ -1718,6 +1718,24 @@ impl Game {
             p.all_colliders.sort_by(|a, b| b.cmp(a));
             p.transform_id = inst.objects[o].components[0];
             p.BulletPenetration = field(v, "BulletPenetration")?.bool().ok_or("BulletPenetration")?;
+            // 1.28.45's SelectionPriority, PreventGripping, PauseDragOverride and SlashColliders (absent from 1.28.41's prefabs).
+            if crate::assets::il::is_1_28_45() {
+                p.SelectionPriority = field(v, "SelectionPriority")?.bool().ok_or("SelectionPriority")?;
+                p.PreventGripping = field(v, "PreventGripping")?.bool().ok_or("PreventGripping")?;
+                p.PauseDragOverride = field(v, "PauseDragOverride")?.bool().ok_or("PauseDragOverride")?;
+                let slash = array(v, "SlashColliders")?.iter().map(|x| {
+                    let r = x.pptr().ok_or("SlashColliders: not a reference")?;
+                    if r.is_null() {
+                        return Ok(0);
+                    }
+                    let &(so, sc) = prefab.index.get(&ObjRef { file, path_id: r.path_id }).filter(|_| r.file == 0).ok_or("PhysicalBehaviour.SlashColliders outside the prefab")?;
+                    if !matches!(prefab.objects[so].components.get(sc), Some((_, Component::Collider2D(_)))) {
+                        return Err("PhysicalBehaviour.SlashColliders: not a Collider2D".to_string());
+                    }
+                    Ok(inst.objects[so].components[sc])
+                }).collect::<Result<Vec<i32>, String>>()?;
+                p.SlashColliders = Some(slash);
+            }
             p.Resizable = field(v, "Resizable")?.bool().ok_or("Resizable")?;
             p.ReflectsLasers = field(v, "ReflectsLasers")?.bool().ok_or("ReflectsLasers")?;
             p.AbsorbsLasers = field(v, "AbsorbsLasers")?.bool().ok_or("AbsorbsLasers")?;
@@ -7344,7 +7362,7 @@ impl Game {
         let mut table = std::collections::HashMap::new();
         for name in assets.iter().flat_map(|a| std::iter::once(a.0.clone()).chain(a.1.clone())) {
             let Some(mut asset) = find(&name) else { continue };
-            if let Some((_, to)) = asset.2.iter().find(|(e, _)| e.IsApplicable("1.28", true)) {
+            if let Some((_, to)) = asset.2.iter().find(|(e, _)| e.IsApplicable(super::contraption::current_version(), true)) {
                 asset = assets.iter().find(|a| a.0 == *to).expect("a migration target is a SpawnableAsset");
             }
             table.entry(name).or_insert_with(|| asset.2.clone());
@@ -8221,6 +8239,8 @@ impl Game {
                 c if super::syringe::is_syringe(c) => Some(Behaviour::Syringe(linked.syringes[&o])),
                 "PointLiquidTransferBehaviour" => Some(Behaviour::PointLiquid(linked.point_liquids[&o])),
                 name if super::translated::CLASSES.contains(&name) => Some(Behaviour::Translated(linked.translated[&(o, c)])),
+                // 1.28.45 (v45_new.rs): the link and Awake of its new classes.
+                name if super::v45_new::LINKED.contains(&name) && crate::assets::il::is_1_28_45() => self.v45_link(prefab, inst, linked, o, c),
                 "TrivialAnimationActivationBehaviour" => Some(Behaviour::Visual("TrivialAnimationActivationBehaviour", linked.visuals[&(o, c)])),
                 "SpriteGradientAnimation" => Some(Behaviour::Visual("SpriteGradientAnimation", linked.visuals[&(o, c)])),
                 "VertexColourBasedOnTemperatureBehaviour" => Some(Behaviour::Visual("VertexColourBasedOnTemperatureBehaviour", linked.visuals[&(o, c)])),
@@ -8706,6 +8726,10 @@ impl Game {
                 "StaticNeedleBehaviour" => PendingStart::StaticNeedle(self.static_needles.iter().position(|x| x.id == inst.objects[o].components[c]).unwrap()),
                 "ShockwaveBehaviour" => PendingStart::Shockwave(self.shockwaves.iter().position(|x| x.id == inst.objects[o].components[c]).unwrap()),
                 "MetronomeBehaviour" => PendingStart::Metronome(linked.metronomes[&o]),
+                name if super::v45_new::LINKED.contains(&name) && crate::assets::il::is_1_28_45() => match self.v45_pending_start(inst.objects[o].components[c]) {
+                    Some(start) => start,
+                    None => continue,
+                },
                 "BlasterBehaviour" => PendingStart::Blaster(linked.blasters[&o]),
                 "SmoothLineControllerBehaviour" => PendingStart::SmoothLine(self.smooth_lines.iter().position(|x| x.id == inst.objects[o].components[c]).unwrap()),
                 "DeterminedAnomaly" => PendingStart::DeterminedAnomaly(linked.determined_anomalies[&o]),

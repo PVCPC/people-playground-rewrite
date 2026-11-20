@@ -670,14 +670,28 @@ mod tests {
     use crate::assets::db::{AssetDb, ObjRef};
     use crate::tmp::{FontAsset, TmpSettings};
 
-    /// "LiberationSans SDF - Fallback" (file 5, path 1678): a dynamic asset, empty tables, a 0x0 readable atlas.
+    /// "LiberationSans SDF - Fallback" (file 5, path 1678 in 1.28.41; found by name, as the path ids move between
+    /// versions): a dynamic asset, empty tables, a 0x0 readable atlas.
     fn fallback() -> Option<(Arc<FontAsset>, TmpSettings)> {
         let game = crate::game_assets::find_game(None).ok()?;
         let mut db = AssetDb::open(&game).unwrap();
         let mut cache = HashMap::new();
-        let f = FontAsset::read(&mut db, ObjRef { file: 5, path_id: 1678 }, &mut cache).unwrap();
         let s = TmpSettings::read(&mut db, &mut cache).unwrap();
-        Some((f, s))
+        let mut todo: Vec<Arc<FontAsset>> = s.default_font.iter().chain(&s.fallback_fonts).cloned().collect();
+        let mut seen = Vec::new();
+        while let Some(f) = todo.pop() {
+            if f.name == "LiberationSans SDF - Fallback" {
+                if !crate::assets::il::is_1_28_45() {
+                    assert_eq!(f.asset, Some(ObjRef { file: 5, path_id: 1678 }));
+                }
+                return Some((f, s));
+            }
+            if !seen.contains(&f.asset) {
+                seen.push(f.asset);
+                todo.extend(f.fallbacks.iter().cloned());
+            }
+        }
+        panic!("no LiberationSans SDF - Fallback")
     }
 
     #[test]
@@ -715,9 +729,15 @@ mod tests {
 
     fn font_of(f: &FontAsset) -> Vec<u8> {
         let game = crate::game_assets::find_game(None).unwrap();
-        let db = AssetDb::open(&game).unwrap();
-        let _ = f;
-        font_data(db.data(ObjRef { file: 5, path_id: 231 })).unwrap()
+        let mut db = AssetDb::open(&game).unwrap();
+        // Its m_SourceFontFile (file 5, path 231 in 1.28.41).
+        let a = f.asset.unwrap();
+        let (_, _, v) = db.mono(a).unwrap().unwrap();
+        let src = v.get("m_SourceFontFile").and_then(crate::assets::mono::Value::pptr).and_then(|p| db.resolve(a.file, p)).unwrap();
+        if !crate::assets::il::is_1_28_45() {
+            assert_eq!(src, ObjRef { file: 5, path_id: 231 });
+        }
+        font_data(db.data(src)).unwrap()
     }
 
     #[test]
