@@ -922,8 +922,6 @@ pub(super) fn check_rewritten_at(prefab: &Prefab, o: usize, class: &str) {
     // RectangleAudioSourceBehaviour.LateUpdate: audio
     // MuteBehaviour.SetMute: audio
     // MinigunBehaviour.SoundRoutine: audio
-    // PoliceBoxBehaviour.FadeRoutine: presentation (SpriteRenderer.color fade and SetActive(false) of a render-only subtree)
-    // PoliceBoxBehaviour.OnBecameVisible: presentation (starts FadeRoutine on a render-only subtree)
     // SortingLayerChild.Awake: the visuals arm (link.rs) / OnWillRenderObject: visual.rs sorting_layer_child_will_render
     // VertexColourBasedOnTemperatureBehaviour.Update: visual.rs visual_update
     // LoopSoundBehaviour.StartLoop: audio.rs loop_sound_start / loop_sound_stop
@@ -1152,9 +1150,8 @@ pub(super) fn check_rewritten(class: &str) {
         "GearBehaviour" => {}
         // Global.AddAudioSource/RemoveAudioSource, AudioSource.volume, StatManager, SpriteRenderer.color; material
         // property blocks in OnWillRenderObject.
-        // AudioSource.Play/Stop/volume from the camera position (RectangleAudioSourceBehaviour), the radio clip (its instance
-        // id is taken in Awake), and the OnBecameVisible fade of a SpriteRenderer before SetActive(false) of a render-only
-        // subtree (PoliceBoxBehaviour).
+        // AudioSource.Play/Stop/volume from the camera position (RectangleAudioSourceBehaviour) and the radio clip (its
+        // instance id is taken in Awake). PoliceBoxBehaviour: police_box.rs (OnBecameVisible, FadeRoutine).
         // BurnableSpriteBehaviour.Awake: sprite_blocks.rs burnable_sprite_awake
         // BurnableSpriteBehaviour.OnWillRenderObject: sprite_blocks.rs burnable_sprites_will_render
         // WaterSoundBehaviour.Update and RectangleAudioSourceBehaviour.LateUpdate: `audio::AudioScript`.
@@ -4662,6 +4659,10 @@ impl Game {
                 x.From = node("From")?;
                 x.To = node("To")?;
                 self.smooth_lines.push(x);
+            }
+            if let Some((c, _, v)) = script(prefab, o, "PoliceBoxBehaviour") {
+                let sprite = self.sprite_field(&l, v, "SpriteRenderer")?;
+                self.police_boxes.push(super::police_box::PoliceBox { id: inst.objects[o].components[c], SpriteRenderer: sprite, Duration: float(v, "Duration")?, ..Default::default() });
             }
             if let Some((c, enabled, v)) = script(prefab, o, "JukeboxBehaviour") {
                 let mut x = super::jukebox::Jukebox::default();

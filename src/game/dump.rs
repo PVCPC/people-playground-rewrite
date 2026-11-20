@@ -4461,6 +4461,13 @@ pub fn loop_test(dump: &Path, rig: &HumanRig) -> Result<(), String> {
     let mut ahead = std::collections::VecDeque::new();
     let mut n = 0;
     while let Some(cur) = ahead.pop_front().or_else(|| snaps.next()) {
+        // An fn-check recording (FnProbe.Run): its "PM" snapshot is taken in the probe's coroutine after the harness set
+        // the human up (PPG_LAYER_ADD's layers and the like), and the per-case snapshots after it leave the map out. The
+        // loop frames end there; the cases are --fn-check's.
+        if cur.pt == "PM" {
+            println!("loop points {count}, all match (to the fn-check PM snapshot at frame {})", cur.snap("frame"));
+            return Ok(());
+        }
         n += 1;
         count += 1;
         // Only Time comes from the recording: the scripts' Random state carries over.

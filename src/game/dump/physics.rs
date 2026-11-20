@@ -30,6 +30,17 @@ fn object_id(objects: &mut HashMap<String, i32>, name: &str) -> i32 {
     *objects.entry(name.to_string()).or_insert(next)
 }
 
+/// A body's joint with no joint record. Recordings from before the recorder wrote SliderJoint2D records (d4e7e40a,
+/// 2026-11-13) have none, so a map lift's slider (Substructure's Lift_Cabin) can't be restored: its b2PrismaticJoint's
+/// impulses are not in the recording.
+fn unknown_joint(s: &Snapshot, j: &str) -> String {
+    if s.of("SliderJoint2D").next().is_none() {
+        format!("unknown joint {j}: the recording has no SliderJoint2D records (recorded before 2026-11-13): re-record it")
+    } else {
+        format!("unknown joint {j}")
+    }
+}
+
 fn names(text: &str) -> Vec<&str> {
     if text.is_empty() { Vec::new() } else { text.split(';').collect() }
 }
@@ -474,7 +485,7 @@ pub fn restore(s: &Snapshot, gravity: V) -> Result<Restored, String> {
         let want_contacts: Vec<ContactId> = names(e.req("contacts")?).iter().rev().map(|i| contacts[i.parse::<usize>().unwrap()]).collect();
         // The recorder writes no FrictionJoint2D (a SoftConnect's): the restore leaves it out, the bodies' states still compare.
         let unrecorded = |j: &str| j.rsplit_once('#').is_some_and(|(_, id)| s.of("Clone").any(|c| c.get("comps").is_some_and(|x| x.contains(&format!("FrictionJoint2D:{id}]")) || x.contains(&format!("FrictionJoint2D:{id};")))));
-        let want_joints: Vec<JointId> = names(e.req("joints")?).iter().rev().filter(|j| joints.contains_key(**j) || !unrecorded(j)).map(|j| joints.get(*j).copied().ok_or(format!("unknown joint {j}"))).collect::<Result<_, _>>()?;
+        let want_joints: Vec<JointId> = names(e.req("joints")?).iter().rev().filter(|j| joints.contains_key(**j) || !unrecorded(j)).map(|j| joints.get(*j).copied().ok_or_else(|| unknown_joint(s, j))).collect::<Result<_, _>>()?;
         let b = world.body_mut(id);
         let mut cs = std::mem::take(&mut b.contacts);
         let mut js = std::mem::take(&mut b.joints);

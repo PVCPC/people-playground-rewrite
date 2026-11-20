@@ -990,6 +990,7 @@ pub(crate) fn step(g: &mut Game, real: f32) -> Result<(), String> {
         g.key_triggers_will_render();
         g.centrifuges_will_render();
         g.liquid_containers_will_render();
+        g.police_boxes_will_render();
         g.determined_anomalies_will_render();
         g.physicals_will_render();
         g.reactor_a5_displays_will_render();

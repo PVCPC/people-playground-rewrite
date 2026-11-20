@@ -156,6 +156,7 @@ pub mod hover_thruster;
 pub mod hoverbox;
 pub mod winch;
 pub mod jukebox;
+pub mod police_box;
 pub mod antenna;
 pub mod coupler;
 pub mod lightning_tool;
@@ -2553,6 +2554,7 @@ pub struct Game {
     pub joint_motor_sounds: Vec<audio::JointMotorSound>,
     pub play_random_clips: Vec<reactor::PlayRandomClip>,
     pub jukeboxes: Vec<jukebox::Jukebox>,
+    pub police_boxes: Vec<police_box::PoliceBox>,
     pub antenna_receivers: Vec<antenna::AntennaReceiver>,
     pub couplers: Vec<coupler::Coupler>,
     pub lightning_entities: Vec<lightning_tool::LightningEntity>,
