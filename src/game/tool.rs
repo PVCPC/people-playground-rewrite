@@ -955,50 +955,84 @@ impl Game {
             t.currentlyHovering = None;
             return self.determine_hovering_set();
         }
+        let mouse = self.MousePosition;
+        let best = match self.prefs.ToolSelectionMode {
+            SELECTION_MASS => self.select_by_mass(mouse),
+            SELECTION_AREA => self.select_by_size(mouse),
+            SELECTION_DEPTH => self.select_by_depth(mouse),
+            _ => self.tool.as_ref().unwrap().currentlyHovering,
+        };
+        self.tool.as_mut().unwrap().currentlyHovering = best;
+        self.determine_hovering_set();
+    }
+
+    /// The physicals under the mouse for the SelectBy methods: OverlapPointNonAlloc(mousePos, buffer, SelectionLayer, -0.9, 0.9).
+    /// The loop condition re-runs the query each pass; nothing changes between passes, so one query gives the same hits.
+    fn selection_hits(&mut self, mouse: [f32; 3]) -> Vec<usize> {
         let mask = self.tool.as_ref().unwrap().SelectionLayer;
-        let hits = self.overlap_point(self.MousePosition, mask, -0.9, 0.9);
-        let mut best = None;
-        let mut least = f32::MAX;
-        let (mut depth_layer, mut depth_order) = (i32::MIN, i32::MIN);
-        // 1.28.45 (SelectByMass, SelectBySize, SelectByDepth): a SelectionPriority object goes first.
-        let v45 = crate::assets::il::is_1_28_45();
-        for ph in hits {
-            let p = &self.physicals[ph];
-            let priority = v45 && p.SelectionPriority;
-            let mut v = match self.prefs.ToolSelectionMode {
-                // PhysicalBehaviour.ObjectAreaByMass
-                SELECTION_AREA => p.rigidbody.mass(&self.world) / p.TrueInitialMass * p.ObjectArea,
-                SELECTION_MASS => p.InitialMass,
-                _ => 0.0,
-            };
-            if priority {
+        self.overlap_point(mouse, mask, -0.9, 0.9)
+    }
+
+    /// SelectionPriority's pull (1.28.45 only: 1.28.41's DetermineHovering inlines these loops without it).
+    fn selection_priority(&self, p: usize) -> bool {
+        crate::assets::il::is_1_28_45() && self.physicals[p].SelectionPriority
+    }
+
+    /// ToolControllerBehaviour.SelectByMass: the least InitialMass (less 10000000 for SelectionPriority); the first of equals wins.
+    fn select_by_mass(&mut self, mouse: [f32; 3]) -> Option<usize> {
+        let (mut best, mut least) = (None, f32::MAX);
+        for ph in self.selection_hits(mouse) {
+            let mut v = self.physicals[ph].InitialMass;
+            if self.selection_priority(ph) {
                 v -= 10000000.0;
-            }
-            if self.prefs.ToolSelectionMode == SELECTION_DEPTH {
-                // SortingLayer.GetLayerValueFromID(sortingLayerID) and sortingOrder: a higher layer wins, then a higher order.
-                let mut layer = crate::play::sorting_layer_index(self.physicals[ph].sprite_layer) as i32;
-                let mut order = self.physicals[ph].sprite.map_or(0, |s| s.2 as i32);
-                if priority {
-                    layer = layer.wrapping_add(100000);
-                    order = order.wrapping_add(100000);
-                }
-                if layer > depth_layer {
-                    depth_layer = layer;
-                    depth_order = order;
-                    best = Some(ph);
-                } else if order > depth_order {
-                    depth_order = order;
-                    best = Some(ph);
-                }
-                continue;
             }
             if v < least {
                 least = v;
                 best = Some(ph);
             }
         }
-        self.tool.as_mut().unwrap().currentlyHovering = best;
-        self.determine_hovering_set();
+        best
+    }
+
+    /// ToolControllerBehaviour.SelectBySize: the least PhysicalBehaviour.ObjectAreaByMass (rigidbody.mass / TrueInitialMass * ObjectArea),
+    /// less 10000000 for SelectionPriority.
+    fn select_by_size(&mut self, mouse: [f32; 3]) -> Option<usize> {
+        let (mut best, mut least) = (None, f32::MAX);
+        for ph in self.selection_hits(mouse) {
+            let p = &self.physicals[ph];
+            let mut v = p.rigidbody.mass(&self.world) / p.TrueInitialMass * p.ObjectArea;
+            if self.selection_priority(ph) {
+                v -= 10000000.0;
+            }
+            if v < least {
+                least = v;
+                best = Some(ph);
+            }
+        }
+        best
+    }
+
+    /// ToolControllerBehaviour.SelectByDepth: SortingLayer.GetLayerValueFromID(sortingLayerID) and sortingOrder (both +100000 for
+    /// SelectionPriority); a higher layer wins, else a higher order.
+    fn select_by_depth(&mut self, mouse: [f32; 3]) -> Option<usize> {
+        let (mut best, mut depth_layer, mut depth_order) = (None, i32::MIN, i32::MIN);
+        for ph in self.selection_hits(mouse) {
+            let mut layer = crate::play::sorting_layer_index(self.physicals[ph].sprite_layer) as i32;
+            let mut order = self.physicals[ph].sprite.map_or(0, |s| s.2 as i32);
+            if self.selection_priority(ph) {
+                layer = layer.wrapping_add(100000);
+                order = order.wrapping_add(100000);
+            }
+            if layer > depth_layer {
+                depth_layer = layer;
+                depth_order = order;
+                best = Some(ph);
+            } else if order > depth_order {
+                depth_order = order;
+                best = Some(ph);
+            }
+        }
+        best
     }
 
     /// DetermineHovering's end: SelectionController.SetHovering when CurrentlyUnderMouse is not currentlyHovering.

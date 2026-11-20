@@ -15,7 +15,7 @@ pub fn is_chemistry_liquid(class: &str) -> bool {
 }
 
 impl Game {
-    /// BeverageM04.OnEnterContainer, Blood.OnEnterContainer, Coolant.OnEnterContainer, DebugDiscolorationLiquid.OnEnterContainer, InertLiquid.OnEnterContainer, Oil.OnEnterContainer: empty.
+    /// BeverageM04.OnEnterContainer, Blood.OnEnterContainer, Coolant.OnEnterContainer, DebugDiscolorationLiquid.OnEnterContainer, InertLiquid.OnEnterContainer, Oil.OnEnterContainer, Nasumica.OnEnterContainer, Amaraevelum.OnEnterContainer, Dulcamarus.OnEnterContainer: empty.
     pub(crate) fn chemistry_liquid_on_enter_container(&mut self, liquid: usize, o: Owner) {
         match super::circulation::LIQUIDS[liquid].1 {
             "ExoticLiquid" => self.exotic_liquid_on_enter_container(),
@@ -25,7 +25,7 @@ impl Game {
         }
     }
 
-    /// BeverageM04.OnExitContainer, Blood.OnExitContainer, Coolant.OnExitContainer, DebugDiscolorationLiquid.OnExitContainer, ExoticLiquid.OnExitContainer, InertLiquid.OnExitContainer, Oil.OnExitContainer: empty.
+    /// BeverageM04.OnExitContainer, Blood.OnExitContainer, Coolant.OnExitContainer, DebugDiscolorationLiquid.OnExitContainer, ExoticLiquid.OnExitContainer, InertLiquid.OnExitContainer, Oil.OnExitContainer, Nasumica.OnExitContainer, Amaraevelum.OnExitContainer, Dulcamarus.OnExitContainer: empty.
     pub(crate) fn chemistry_liquid_on_exit_container(&mut self, liquid: usize, o: Owner) {
         match super::circulation::LIQUIDS[liquid].1 {
             "Tritium" => self.tritium_on_exit_container(liquid, o),
@@ -34,7 +34,7 @@ impl Game {
         }
     }
 
-    /// BeverageM04.OnEnterLimb, Blood.OnEnterLimb, Coolant.OnEnterLimb, InertLiquid.OnEnterLimb: empty.
+    /// BeverageM04.OnEnterLimb, Blood.OnEnterLimb, Coolant.OnEnterLimb, InertLiquid.OnEnterLimb, Nasumica.OnEnterLimb: empty.
     pub(crate) fn chemistry_liquid_on_enter_limb(&mut self, liquid: usize, l: usize) {
         match super::circulation::LIQUIDS[liquid].1 {
             // DebugDiscolorationLiquid.OnEnterLimb: limb.Color = Color.magenta.

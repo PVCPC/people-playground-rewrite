@@ -116,8 +116,12 @@ impl Extras {
 }
 
 impl Game {
-    /// Any spawn (catalog, save, paste): a portal gun's prefab (src/extras_hook/portal_gun.rs) joins the guns.
+    /// Any spawn (catalog, save, paste): an extras syringe gets its liquid; a portal gun's prefab (src/extras_hook/portal_gun.rs) joins the guns.
     pub(super) fn extras_spawned(&mut self, prefab: &crate::assets::db::Prefab, linked: &super::link::Linked) {
+        // An extras syringe (src/extras_hook/syringes.rs): its liquid, before its Start fills it.
+        if let (Some(l), Some(&s)) = (crate::extras_hook::syringes::liquid_of(prefab), linked.syringes.get(&0)) {
+            self.syringes[s].liquid = Some(l);
+        }
         if prefab.objects.first().is_none_or(|o| o.game_object.path_id != crate::extras_hook::portal_gun::ROOT) {
             return;
         }

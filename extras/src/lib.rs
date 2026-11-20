@@ -32,6 +32,66 @@ pub const ITEMS: &[Item] = &[
     },
 ];
 
+/// The extras catalog tab of every item the game's catalog hides (VisibleInCatalog false or Locked); its icon is the
+/// game category HIDDEN_ICON_FROM's.
+pub const HIDDEN_CATEGORY: &str = "Hidden items";
+pub const HIDDEN_DESCRIPTION: &str = "Items the game keeps out of its catalog, and locked ones, all available here";
+pub const HIDDEN_ICON_FROM: &str = "Misc.";
+
+/// An extras syringe: a game liquid that has no syringe of its own, in an Empty Syringe (src/extras_hook/syringes.rs).
+pub struct Syringe {
+    /// The liquid's class (src/game/circulation.rs LIQUID_CLASSES).
+    pub liquid: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    /// Only on 1.28.45 (its liquid is new there).
+    pub v45: bool,
+}
+
+/// The game's syringes' category, and the order key that puts the extras right after them (theirs is "aSyringe").
+pub const SYRINGE_CATEGORY: &str = "Chemistry";
+pub const SYRINGE_ORDER: &str = "aSyringe2";
+
+const fn syr(liquid: &'static str, name: &'static str, description: &'static str) -> Syringe {
+    Syringe { liquid, name, description, v45: false }
+}
+
+/// Every game liquid without a syringe, in the game's registry order. The descriptions follow each liquid's
+/// OnEnterLimb/OnUpdate; a mixed liquid's ends with its recipe (Global.Awake's LiquidMixInstructions).
+pub const SYRINGES: &[Syringe] = &[
+    syr("Blood", "Blood Syringe", "Human blood. Tops up the blood of someone who has lost a lot."),
+    syr("GorseBlood", "Gorse Blood Syringe", "Gorse blood. Harmless to a Gorse, but in anything else it eats the flesh and bones from the inside."),
+    syr("Oil", "Oil Syringe", "Oil. Numbs the limbs and stops the heart from pumping."),
+    syr("Nitroglycerine", "Nitroglycerine Syringe", "Highly explosive. Whatever holds it can blow up from a hard knock, fire or electricity. Hurts living beings in large doses."),
+    syr("ExoticLiquid", "Exotic Liquid Syringe", "An unstable liquid that flashes and jolts its container. Causes sudden pain and fainting. Made by mixing Water breathing serum and Tritium."),
+    syr("Tritium", "Tritium Syringe", "Glows in the dark. Repairs brain damage, but heats the body, hurts, and can kill through the head. Makes androids stronger."),
+    syr("InertLiquid", "Inert Liquid Syringe", "Does nothing on its own. Used for mixing."),
+    syr("BeverageM04", "Beverage M04 Syringe", "An energy drink: raises a human's adrenaline. Burns and sedates a Gorse, charges androids. Made by mixing Adrenaline, Mending serum and Inert liquid."),
+    syr("Coolant", "Coolant Syringe", "Cools androids down. In living beings it heats the body, makes the head unsteady and can cause brain damage."),
+    Syringe { liquid: "Nasumica", name: "Nasumica Syringe", description: "Cures zombies, cools the body and slowly reverses rotting. Made by mixing Circulation poison, Reanimation agent, Joint lock poison and Instant death poison.", v45: true },
+    Syringe { liquid: "Amaraevelum", name: "Amaraevelum Syringe", description: "Stings, then heals wounds, burns, rot and bleeding, but weakens the muscles while it lasts. Made by mixing Coolant, Exotic liquid and Mending serum.", v45: true },
+    Syringe { liquid: "Dulcamarus", name: "Dulcamarus Syringe", description: "Lets a human heal itself by draining the life of beings nearby. Crushes any other creature. Made by mixing Nasumica and Amaraevelum.", v45: true },
+    syr("OsteomorphosisAgent", "Osteomorphosis Agent Syringe", "Painfully strips the flesh from the bones. Made by mixing Acid and Mending serum."),
+    syr("ImmortalitySerum", "Immortality Serum Syringe", "Heals everything and keeps a living being nearly indestructible while it circulates. Androids may explode. Made by mixing Tritium and Mending serum."),
+    syr("PinkDormantLiquid", "Inert Pink Liquid Syringe", "The Pink Syringe's base liquid. Does nothing."),
+    syr("VestibularPoison", "Vestibular Poison Syringe", "Ruins balance: the victim stumbles and jerks. Causes bleeding in the head."),
+    syr("MusclePoison", "Muscle Poison Syringe", "Changes how the muscles depend on blood: limbs may keep their strength even after heavy blood loss."),
+    syr("NumbingPoison", "Numbing Poison Syringe", "Despite its name, it can leave limbs resistant to going numb."),
+    syr("ReflectionPoison", "Mirrorising Agent Syringe", "Makes the skin reflect lasers."),
+    syr("TransparencyPoison", "Transparency Agent Syringe", "Lets lasers pass straight through the body."),
+    syr("MassManipulationPoison", "Mass Agent Syringe", "Scrambles the weight of the limbs: they may lose their weight or fall upwards."),
+    syr("ExplosionPoison", "Explosion Poison Syringe", "Makes the limbs it reaches explode."),
+    syr("CrushingPoison", "Crushing Poison Syringe", "Crushes some of the limbs it reaches."),
+    syr("DurabilitySerum", "Durability Serum Syringe", "Makes limbs much tougher."),
+    syr("RegenerationSerum", "Regeneration Serum Syringe", "Makes limbs heal faster."),
+    syr("SizeManipulationPoison", "Distortion Poison Syringe", "Stretches and squashes the limbs a little, at random."),
+    syr("CirculationPoison", "Circulation Poison Syringe", "Scrambles the body: bleeding, the heart's pumping, the lungs and the skin all change at random."),
+    syr("CombustionAgent", "Combustion Agent Syringe", "Heats the body up. Limbs may burst into flames."),
+    syr("MuscleEnhancementSerum", "Enhancing Serum Syringe", "Makes limbs stronger, tougher and quicker to heal."),
+    syr("TissueDeconstructionAgent", "Tissue Deconstruction Agent Syringe", "Can slice limbs apart."),
+    syr("DebugDiscolorationLiquid", "Debug Discoloration Syringe", "A test liquid left in the game's code. Turns limbs bright magenta."),
+];
+
 /// The portal gun's art, drawn by `art/gen_art.py` at the game's 35 pixels per unit.
 pub mod art {
     pub const PIXELS_PER_UNIT: f32 = 35.0;

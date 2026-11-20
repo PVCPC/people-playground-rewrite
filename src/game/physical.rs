@@ -1014,6 +1014,20 @@ impl Game {
         self.physicals[p].LocalColliderGridPoints.as_deref().map_or([0.0, 0.0], lowest_point)
     }
 
+    /// PhysicalBehaviour.GetRandomPointInHull (1.28.45; nothing in the game calls it): Vector2.zero before the grid is baked, else
+    /// Vector2.Lerp between two PickRandom grid points by Random.value. An empty baked grid throws on the first PickRandom.
+    pub fn physical_random_point_in_hull(&mut self, p: usize) -> [f32; 2] {
+        let Some(n) = self.physicals[p].LocalColliderGridPoints.as_ref().map(|g| g.len()) else { return [0.0, 0.0] };
+        let pick = |g: &mut Self| match g.pick_random(n) {
+            Some(i) => g.physicals[p].LocalColliderGridPoints.as_ref().unwrap()[i],
+            None => super::menu::throw("ArgumentOutOfRangeException: Index was out of range."),
+        };
+        let a = pick(self);
+        let b = pick(self);
+        let t = self.random.value();
+        [mathf::lerp(a[0], b[0], t), mathf::lerp(a[1], b[1], t)]
+    }
+
     /// PhysicalBehaviour.Ignite(bool, Vector2)
     pub fn ignite_at(&mut self, p: usize, ignore_flammability: bool, position: [f32; 2]) {
         self.ignite_internal(p, ignore_flammability);

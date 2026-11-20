@@ -20,6 +20,7 @@ use ppg_extras as x;
 use std::collections::HashMap;
 
 pub mod portal_gun;
+pub mod syringes;
 
 const FILE: &str = "extras";
 /// Path ids of the built prefabs' objects, in their template's file (no game object uses these).
@@ -221,15 +222,60 @@ pub fn register(db: &mut AssetDb, by_name: &mut HashMap<String, ObjRef>) -> Resu
     let root = crab.objects[0].game_object;
     db.cache_prefab(root, crab);
     by_name.insert("Crab".to_string(), root);
-    portal_gun::register(db, by_name)
+    portal_gun::register(db, by_name)?;
+    syringes::register(db, by_name)
 }
 
-/// The spawn menu's extras: (name, description, category name, icon sprite).
-pub fn catalog_items(db: &mut AssetDb) -> Vec<(String, String, String, Option<ObjRef>)> {
+/// The spawn menu's extras: (name, description, category name, icon sprite, order key).
+pub fn catalog_items(db: &mut AssetDb) -> Vec<(String, String, String, Option<ObjRef>, String)> {
     let _ = crate::game::Game::get_spawnable(db, "");
     let file = db.file_index(FILE);
     let icon = |name| file.map(|file| ObjRef { file, path_id: if name == x::PORTAL_GUN { portal_gun::ICON } else { ICON } });
-    x::ITEMS.iter().map(|i| (i.name.to_string(), i.description.to_string(), i.category.to_string(), icon(i.name))).collect()
+    let mut v: Vec<_> = x::ITEMS.iter().map(|i| (i.name.to_string(), i.description.to_string(), i.category.to_string(), icon(i.name), i.name.to_string())).collect();
+    // The syringes show the Empty Syringe's picture, right after the game's syringes (keyed "aSyringe2 <n>").
+    let view = spawnables(db).into_iter().find(|h| h.name == syringes::TEMPLATE).and_then(|h| h.view);
+    for (k, s) in syringes::list().enumerate() {
+        v.push((s.name.to_string(), s.description.to_string(), x::SYRINGE_CATEGORY.to_string(), view, format!("{} {k:02}", x::SYRINGE_ORDER)));
+    }
+    v
+}
+
+/// A SpawnableAsset as the catalog reads it.
+pub struct Spawnable {
+    pub name: String,
+    pub description: String,
+    pub view: Option<ObjRef>,
+    /// CatalogBehaviour's sort key: NameToOrderBy when set, else the name.
+    pub order: String,
+    /// VisibleInCatalog false or Locked: the game's catalog never shows it (bar an unlocked Locked one).
+    pub hidden: bool,
+}
+
+/// Every SpawnableAsset, in Resources order.
+fn spawnables(db: &mut AssetDb) -> Vec<Spawnable> {
+    let mut out = Vec::new();
+    for r in db.resources_in("SpawnableAssets", 114).unwrap_or_default() {
+        let Ok(Some((_, mb, v))) = db.mono(r) else { continue };
+        let visible = v.get("VisibleInCatalog").and_then(Value::bool).unwrap_or(true);
+        let locked = v.get("Locked").and_then(Value::bool).unwrap_or(false);
+        let description = match v.get("Description") {
+            Some(Value::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        let view = v.get("ViewSprite").and_then(Value::pptr).and_then(|p| db.resolve(r.file, p));
+        let order = match v.get("NameToOrderBy") {
+            Some(Value::Str(s)) if !s.is_empty() => s.clone(),
+            _ => mb.name.clone(),
+        };
+        out.push(Spawnable { name: mb.name, description, view, order, hidden: !visible || locked });
+    }
+    out
+}
+
+/// The "Hidden items" tab: every SpawnableAsset the game's catalog hides (VisibleInCatalog false or Locked), always
+/// available here, in Resources order.
+pub fn hidden_items(db: &mut AssetDb) -> Vec<Spawnable> {
+    spawnables(db).into_iter().filter(|s| s.hidden).collect()
 }
 
 /// The crab: the Gorse's root (PersonBehaviour and the rest), the Gorse body's components on the shell, a Gorse leg's

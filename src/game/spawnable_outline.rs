@@ -36,6 +36,9 @@ impl SpawnableOutline {
 
     /// SpawnableOutlineBehaviour.SetOutline: the existing children take the rectangles in order and the surplus are deactivated; missing children are appended.
     pub fn SetOutline(&mut self, rectangles: &[RotatedRectangle]) {
+        // ContraptionOutline.op_Equality (1.28.45 first returns when CurrentOutline == outline) is Equals(right).
+        // ContraptionOutline.Equals: object.Equals on the Rectangles arrays, reference identity. Every caller passes a fresh array
+        // (LoadOutline, GenerateOutline), so the outlines are never equal and SetOutline always goes on.
         let num = rectangles.len();
         let count = self.children.len();
         let mut num2 = 0;

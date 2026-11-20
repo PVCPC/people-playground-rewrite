@@ -81,8 +81,8 @@ pub fn write(g: &mut Game, map: Option<&str>, msg: &str) -> Option<PathBuf> {
 }
 
 fn issue_body(msg: &str, panic: &str, recent: &str, path: &std::path::Path) -> String {
-    // The URL stays short enough for browsers: the place and the top of the backtrace; the file has the rest.
-    let stack: String = panic.lines().take(40).collect::<Vec<_>>().join("\n");
+    // The URL stays short enough for browsers: the place and the rewrite's own frames; the file has the rest.
+    let stack = our_frames(panic);
     let recent: String = recent.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
     let mut b = format!(
         "**What were you doing when it crashed?**\n\n\n**Can you make it happen again? How?**\n\n\n---\nVersion {} (commit {}), {}\n\nError: `{msg}`\n\n```\n{stack}\n```\n\nLast actions:\n```\n{recent}\n```\n\n**Please drag the report file into this box:** `{}`\n",
@@ -90,6 +90,24 @@ fn issue_body(msg: &str, panic: &str, recent: &str, path: &std::path::Path) -> S
     );
     b.truncate(6000);
     b
+}
+
+/// The panic's place, then only the rewrite's own frames (function and file:line), not the std/core ones around them.
+fn our_frames(panic: &str) -> String {
+    let mut out: Vec<&str> = panic.lines().take_while(|l| !l.trim_start().starts_with("0:")).filter(|l| !l.trim().is_empty()).collect();
+    let mut lines = panic.lines().peekable();
+    while let Some(l) = lines.next() {
+        if (l.contains("people_playground_bevy::") || l.contains("ppg_extras::")) && !l.contains("::crash::") && !l.contains("::play::guarded") {
+            out.push(l.trim());
+            if let Some(at) = lines.peek().filter(|n| n.trim_start().starts_with("at ")) {
+                out.push(at.trim());
+            }
+        }
+        if out.len() >= 40 {
+            break;
+        }
+    }
+    out.join("\n")
 }
 
 /// The Report button: the crash file shown in Explorer and a new GitHub issue opened with the summary filled in.
@@ -148,6 +166,13 @@ mod tests {
         assert_eq!(super::encode("a b&c"), "a%20b%26c");
     }
 
+    /// The issue keeps the place and the rewrite's frames, drops std/core.
+    #[test]
+    fn issue_keeps_our_frames() {
+        let p = "panicked at src\\game\\limb.rs:9:1:\ncalled `Option::unwrap()` on a `None` value\n   0: std::backtrace::Backtrace::create\n             at /rustc/x/backtrace.rs:331\n  14: core::option::Option::unwrap\n             at /rustc/x/option.rs:1014\n  15: people_playground_bevy::game::limb::impl$3::crush\n             at .\\src\\game\\limb.rs:9\n  16: people_playground_bevy::play::guarded<tuple$<>>\n             at .\\src\\play.rs:71\n";
+        assert_eq!(super::our_frames(p), "panicked at src\\game\\limb.rs:9:1:\ncalled `Option::unwrap()` on a `None` value\n15: people_playground_bevy::game::limb::impl$3::crush\nat .\\src\\game\\limb.rs:9");
+    }
+
     /// A stopped game's report: the error, the panic text, the actions and a scene that loads back.
     #[test]
     fn report_has_the_scene() {
@@ -172,6 +197,64 @@ mod tests {
         let bytes = unbase64(&b64);
         let states = crate::game::contraption::deserialise_states(&bytes).unwrap();
         assert_eq!(states.len(), 2, "{:?}", states.iter().map(|s| &s.SpawnableAssetName).collect::<Vec<_>>());
+    }
+
+    /// LukeFisher's crash (Discord 11-20): ten humans crushed under an I-beam driven down from above. Runs the real
+    /// stop path with a panic hook like main's and prints the report (cargo test crush -- --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn crush_humans_under_a_beam() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let mut g = crate::play::new_game(&game, "Default", None, None, 0).unwrap();
+        let mut db = g.assets.take().unwrap();
+        let names: Vec<String> = crate::ui::data::catalog(&mut db).unwrap().items.into_iter().map(|i| i.name).collect();
+        println!("BEAMS {:?}", names.iter().filter(|n| { let l = n.to_lowercase(); l.contains("beam") || l.contains("girder") || l.starts_with("i ") || l.contains("i-") }).collect::<Vec<_>>());
+        let beam = std::env::var("BEAM").unwrap_or_else(|_| "I-Beam".into());
+        for k in 0..10 {
+            let (inst, _) = g.catalog_spawn(&mut db, "Human", if std::env::var_os("PILE").is_some() { [(k % 2) as f32 * 0.3, 1.0 + k as f32 * 0.4, 0.0] } else { [-2.0 + k as f32 * 0.45, 1.0, 0.0] }, false).unwrap();
+            g.unsynced.push(inst);
+        }
+        let first = g.physicals.len();
+        let (inst, _) = g.catalog_spawn(&mut db, &beam, [0.0, 6.0, 0.0], false).unwrap();
+        g.unsynced.push(inst);
+        let parts: Vec<usize> = (first..g.physicals.len()).collect();
+        g.assets = Some(db);
+        std::panic::set_hook(Box::new(|info| super::set_panic(format!("{info}
+{}", std::backtrace::Backtrace::force_capture()))));
+        for frame in 0..3600 {
+            // Smash down hard, then lift, over and over.
+            let down: f32 = std::env::var("DOWN").ok().and_then(|v| v.parse().ok()).unwrap_or(40.0);
+            let v = if frame % 120 < 90 { -down } else { 15.0 };
+            for &q in &parts {
+                let rb = g.physicals[q].rigidbody.clone();
+                rb.set_velocity(&mut g.world, [0.0, v]);
+            }
+            if let Err(m) = crate::play::step(&mut g, 1.0 / 60.0) {
+                let _ = std::panic::take_hook();
+                let path = super::write(&mut g, Some("Default"), &m).expect("written");
+                let text = std::fs::read_to_string(&path).unwrap();
+                println!("STOPPED at frame {frame}: {m}
+REPORT {}
+{}", path.display(), text.split("Scene (").next().unwrap());
+                return;
+            }
+        }
+        println!("NO STOP in 3600 frames ({beam})");
+        if std::env::var_os("FORCE").is_some() {
+            // The same unwrap-on-None panic, raised inside the guarded step path, to see the report it makes.
+            let m = crate::play::guarded(|| -> Result<(), String> { let none: Option<u8> = None; none.unwrap(); Ok(()) }).unwrap_err();
+            let _ = std::panic::take_hook();
+            let path = super::write(&mut g, Some("Default"), &m).expect("written");
+            let text = std::fs::read_to_string(&path).unwrap();
+            println!("FORCED: {m}
+REPORT {}
+{}", path.display(), text.split("Scene (").next().unwrap());
+            println!("SCENE BYTES {}", text.split("Scene (").nth(1).map_or("none", |t| t.lines().next().unwrap_or("")));
+            println!("ISSUE URL LENGTH {}", super::LAST_REPORT.lock().unwrap().as_ref().map_or(0, |(_, b)| super::encode(b).len()));
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        let _ = std::panic::take_hook();
     }
 
     fn unbase64(s: &str) -> Vec<u8> {

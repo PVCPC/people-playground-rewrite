@@ -1937,7 +1937,8 @@ fn group_widths(size: f32, fixed: f32, children: &[(f32, f32)]) -> Vec<f32> {
 }
 
 fn catalog(root: &mut Kids, ui: &Ui, art: &UiArt, width: f32) {
-    if ui.catalog.categories.len() > 9 {
+    // extras: the "Hidden items" tab is a tenth button in the main row, not a game category for the dropdown.
+    if ui.catalog.categories.iter().filter(|c| c.name != ppg_extras::HIDDEN_CATEGORY).count() > 9 {
         unimplemented!("mod-only: CatalogDropdownBehaviour.Drop: the category dropdown for more than 9 categories, in {} containers", super::catalog::category_containers(ui.catalog.categories.len()).len());
     }
     let tile = scene::vec2("Main", &format!("{CAT}/ItemPanel"), "GridLayoutGroup", "m_CellSize")[0];

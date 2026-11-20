@@ -1150,6 +1150,33 @@ impl World {
         closest
     }
 
+    /// Rigidbody2D.ClosestPoint (PhysicsQuery2D::ClosestPoint 180bea340): b2Distance (with radii) from a zero-radius point to
+    /// each child of each fixture down the body's fixture list (newest first); a non-finite point, a body without fixtures or
+    /// a zero distance gives the point back, else the nearest pointB (strict <, so the first of equals wins).
+    pub fn body_closest_point(&self, body: BodyId, point: Vec2) -> Vec2 {
+        let finite = |v: f32| v.to_bits() & 0x7f80_0000 != 0x7f80_0000;
+        if !finite(point.x) || !finite(point.y) {
+            return point;
+        }
+        let b = self.body(body);
+        let (mut best, mut closest) = (f32::MAX, point);
+        for &f in b.fixtures.iter().rev() {
+            let Some(f) = self.fixtures[f].as_ref() else { continue };
+            for child in 0..f.shape.child_count() {
+                let mut cache = SimplexCache::default();
+                let out = distance(&mut cache, &DistanceProxy { vertices: std::slice::from_ref(&point), radius: 0.0 }, &Transform::default_identity(), &f.shape.proxy(child), &b.xf, true);
+                if out.distance <= 0.0 {
+                    return point;
+                }
+                if out.distance < best {
+                    best = out.distance;
+                    closest = out.point_b;
+                }
+            }
+        }
+        closest
+    }
+
     /// The fixtures of a collider, in creation order.
     pub fn collider_fixtures(&self, collider: i32) -> Vec<FixtureId> {
         self.fixtures.iter().enumerate().filter(|(_, f)| f.as_ref().is_some_and(|f| f.collider.id == collider)).map(|(i, _)| i).collect()

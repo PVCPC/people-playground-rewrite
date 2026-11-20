@@ -533,9 +533,19 @@ pub fn catalog(db: &mut AssetDb) -> Result<Catalog, String> {
         catalog.items.push(Item { name: mb.name, description: string(&v, "Description"), category, order, view, local: None });
     }
     // extras: new items that are not in the real game, in the existing categories they name (src/extras_hook.rs).
-    for (name, description, category, view) in crate::extras_hook::catalog_items(db) {
+    for (name, description, category, view, order) in crate::extras_hook::catalog_items(db) {
         if let Some(category) = catalog.categories.iter().position(|c| c.name == category) {
-            catalog.items.push(Item { order: name.clone(), name, description, category, view, local: None });
+            catalog.items.push(Item { order, name, description, category, view, local: None });
+        }
+    }
+    // extras: the "Hidden items" tab, last: every item the game's catalog hides, always available here.
+    let hidden = crate::extras_hook::hidden_items(db);
+    if !hidden.is_empty() {
+        let icon = catalog.categories.iter().find(|c| c.name == ppg_extras::HIDDEN_ICON_FROM).and_then(|c| c.icon);
+        catalog.categories.push(Category { name: ppg_extras::HIDDEN_CATEGORY.into(), description: ppg_extras::HIDDEN_DESCRIPTION.into(), icon });
+        let category = catalog.categories.len() - 1;
+        for h in hidden {
+            catalog.items.push(Item { order: h.order, name: h.name, description: h.description, category, view: h.view, local: None });
         }
     }
     // The categories are `catalog.categories` in order (a null or icon-less one is skipped above, CreateCategoryButtons' "non-existent category" case);

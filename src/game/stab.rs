@@ -609,7 +609,7 @@ impl Game {
         if !self.physicals[s.victim].active || self.physicals[s.victim].destroyed {
             return;
         }
-        // 1.28.45: PhysicalBehaviour.Unstabbed, PlayClipOnce(Properties.StabSound.PickRandom(), 0.6f).
+        // PhysicalBehaviour.Messages.IUnstabbed.Unstabbed: (1.28.45) PlayClipOnce(Properties.StabSound.PickRandom(), 0.6f).
         if crate::assets::il::is_1_28_45() {
             if let Some(n) = self.properties[self.physicals[s.victim].Properties].StabSound.filter(|&n| n != 0) {
                 let k = self.pick_random(n).unwrap();
@@ -774,6 +774,7 @@ impl Game {
         for b in self.physicals[victim].colliders.clone() {
             self.ignore_collision_substitute(self_collider, b, true);
         }
+        // Slash..ctor(self, victim, joint, victimColl, selfColl): the fields, and VictimLiquidContainer = victim.GetComponent<BloodContainer>().
         let container = self.wire_container(victim);
         let slash = Slash { Joint: f, Lifetime: 0.0, MyCollider: self_collider, OtherCollider: victim_collider, Victim: victim, Strength: strength, CurrentPosition: world_pos, VictimLiquidContainer: container };
         self.physicals[p].SlashConnections.push(slash);
@@ -900,9 +901,9 @@ impl Game {
             if self.physicals[victim].destroyed {
                 continue;
             }
-            // ponytail: Rigidbody2D.ClosestPoint taken as Utils.ClosestPointFix (nearest of the attached colliders' ClosestPoint).
+            // victim.rigidbody.ClosestPoint(rigidbody.position)
             let position = <Game as ShatterHost>::position(self, p);
-            let closest = <Game as ShatterHost>::closest_point_fix(self, victim, position);
+            let closest = self.rigidbody_closest_point(victim, position);
             let com = <Game as ShatterHost>::world_center_of_mass(self, p);
             let num3 = super::shatter::v2_distance(com, closest);
             let (_, e) = self.physicals[p].InitialBounds;
@@ -924,6 +925,13 @@ impl Game {
             let b = self.rigidbody_get_point(victim, closest);
             self.fixed_joint_set_connected_anchor(slash.Joint, b);
         }
+    }
+
+    /// Rigidbody2D.ClosestPoint(point) on physical `p`'s body: Physics2D auto-sync first, then the native body query.
+    pub(crate) fn rigidbody_closest_point(&mut self, p: usize, point: [f32; 2]) -> [f32; 2] {
+        self.sync_pending();
+        let v = self.world.body_closest_point(self.physicals[p].rigidbody.body, crate::b2::math::Vec2::new(point[0], point[1]));
+        [v.x, v.y]
     }
 
     /// DrippingBloodParticleController (v45-new) for a slashing physical: Start's Instantiate of Global.DrippingParticlesPrefab

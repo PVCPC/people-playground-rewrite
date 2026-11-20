@@ -5,7 +5,6 @@
 
 use super::container::Owner;
 use super::destroyable::AttachParent;
-use super::shatter::ShatterHost;
 use super::{mathf, script, Game};
 use crate::assets::db::ObjRef;
 
@@ -70,8 +69,7 @@ impl Game {
         self.liquid_leaks.iter().position(|x| x.physical == p)
     }
 
-    /// LiquidContainerLeakingBehaviour.Shot. rigidbody.ClosestPoint (PhysicsQuery2D::ClosestPoint, 180bea340) is
-    /// the nearest over the attached colliders, like Utils.ClosestPointFix.
+    /// LiquidContainerLeakingBehaviour.Shot
     pub fn liquid_leak_shot(&mut self, l: usize, normal: [f32; 2], point: [f32; 2], damage: f32) {
         self.liquid_leak_hole_at(l, point, normal, mathf::clamp(damage, 0.2, 5.0));
     }
@@ -91,7 +89,7 @@ impl Game {
     fn liquid_leak_hole_at(&mut self, l: usize, point: [f32; 2], normal: [f32; 2], intensity: f32) {
         let p = self.liquid_leaks[l].physical;
         let at = [point[0] + normal[0] * 0.1, point[1] + normal[1] * 0.1];
-        let closest = self.closest_point_fix(p, at);
+        let closest = self.rigidbody_closest_point(p, at);
         let local = Game::inverse_transform_point(self, p, [closest[0], closest[1], 0.0]);
         let dir = self.anchored_inverse_direction(p, [normal[0], normal[1], 0.0]);
         self.liquid_leak_create_hole(l, [local[0], local[1]], [dir[0], dir[1]], intensity);
