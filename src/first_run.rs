@@ -1,4 +1,4 @@
-//! First launch without any setup: the per-user folder, the installed game's version check (1.28.41 by content hash),
+//! First launch without any setup: the per-user folder, the installed game's version check (1.28.41 or 1.28.45 by content hash),
 //! a prompt in the rewrite's window when the game is not found, and the human asset cache built from the installed game (what
 //! scripts/prepare-assets.py made from an AssetRipper export, field for field).
 
@@ -10,8 +10,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-/// SHA-256 of every installed file the rewrite reads, as People Playground 1.28.41 ships them (`sha256sum` lines).
+/// SHA-256 of every installed file the rewrite reads, as People Playground 1.28.41 ships them (GAME_HASHES_45: 1.28.45) (`sha256sum` lines).
 const GAME_HASHES: &str = include_str!("game-1.28.41.sha256");
+const GAME_HASHES_45: &str = include_str!("game-1.28.45.sha256");
 
 /// %LOCALAPPDATA%/ppg-rewrite (elsewhere $XDG_DATA_HOME or ~/.local/share).
 pub fn user_dir() -> PathBuf {
@@ -48,15 +49,20 @@ fn stamp(path: &Path) -> Option<String> {
     Some(format!("{} {}", m.len(), m.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos()))
 }
 
-/// Stops unless every file in GAME_HASHES has 1.28.41's content. Hashing reads ~330 MB, so the size and time of
+/// Stops unless every file in GAME_HASHES has 1.28.45's or 1.28.41's content. Hashing reads ~330 MB, so the size and time of
 /// files that matched are kept in the user folder and only changed files are hashed again.
 pub fn check_version(game: &Path) -> Result<(), String> {
-    let wrong = || "This rewrite needs People Playground 1.28.41; your install is a different version.".to_string();
+    // Either supported version: 1.28.45 (the current Steam one) or 1.28.41.
+    check_hashes(game, GAME_HASHES_45).or_else(|_| check_hashes(game, GAME_HASHES))
+}
+
+fn check_hashes(game: &Path, list: &str) -> Result<(), String> {
+    let wrong = || "This rewrite needs People Playground 1.28.45 or 1.28.41; your install is a different version.".to_string();
     let verified_file = user_dir().join("verified.txt");
     let verified = std::fs::read_to_string(&verified_file).unwrap_or_default();
     let mut lines = Vec::new();
     let mut changed = false;
-    for entry in GAME_HASHES.lines() {
+    for entry in list.lines() {
         let (hash, relative) = entry.split_once("  ").ok_or("bad hash list")?;
         let path = game.join(relative);
         let key = format!("{}\t{}", path.display(), stamp(&path).ok_or_else(|| format!("{} (missing {relative})", wrong()))?);
@@ -709,5 +715,13 @@ mod tests {
         assert!(decode(root.join("local-cache").join(&old_texture)) == decode(out.join(&new_texture)), "texture pixels differ");
         eprintln!("built cache matches local-cache ({} bytes of human.json)", new.len());
         std::fs::remove_dir_all(out).unwrap();
+    }
+
+    /// Both hash lists name the same files in sha256sum's format, and 1.28.45's Assembly-CSharp hash is the one il.rs knows.
+    #[test]
+    fn hash_lists_cover_the_same_files() {
+        let files = |l: &str| l.lines().map(|e| { let (h, f) = e.split_once("  ").unwrap(); assert_eq!(h.len(), 64); f.to_string() }).collect::<Vec<_>>();
+        assert_eq!(files(GAME_HASHES), files(GAME_HASHES_45));
+        assert!(GAME_HASHES_45.contains("6825452f3cadfc2ba29c876f78c6ada08154bf1a52242fd26b7b3e3be3f2817f  People Playground_Data/Managed/Assembly-CSharp.dll"));
     }
 }

@@ -1154,11 +1154,25 @@ pub(crate) fn clip_from_data_samples(bytes: &[u8]) -> Vec<f32> {
 
 // ---------------------------------------------------------------- FilePicker
 
-// ponytail: Rust's alphabetic/numeric stand in for char.IsLetterOrDigit; they differ only on rare non-ASCII
-// categories (Nl/No, combining marks), and the game's filters are ASCII constants.
+/// char.IsLetterOrDigit || char.IsWhiteSpace of one UTF-16 char: the general categories Lu, Ll, Lt, Lm, Lo, Nd, and
+/// Zs, Zl, Zp with the Latin-1 white space (U+0009..U+000D, U+0085). A char past U+FFFF is two surrogates (Cs) in .NET, so
+/// neither half is kept. The categories come from unicode-general-category's tables (Unicode 16), not Mono's own; the
+/// game only ever cleans its two ASCII filter constants.
+fn letter_digit_or_space(c: char) -> bool {
+    use unicode_general_category::{get_general_category, GeneralCategory as G};
+    if (c as u32) > 0xFFFF {
+        return false;
+    }
+    matches!(c, '\u{9}'..='\u{d}' | '\u{85}')
+        || matches!(
+            get_general_category(c),
+            G::UppercaseLetter | G::LowercaseLetter | G::TitlecaseLetter | G::ModifierLetter | G::OtherLetter | G::DecimalNumber | G::SpaceSeparator | G::LineSeparator | G::ParagraphSeparator
+        )
+}
+
 /// FilePicker.CleanString: Trim, then keep letters, digits and white space.
 fn clean_string(x: &str) -> String {
-    x.trim().chars().filter(|c| c.is_alphabetic() || c.is_numeric() || c.is_whitespace()).collect()
+    x.trim().chars().filter(|&c| letter_digit_or_space(c)).collect()
 }
 
 /// FilePicker.CleanExtensions
@@ -1166,7 +1180,8 @@ fn clean_extensions(x: &[&str]) -> Vec<String> {
     x.iter().map(|&e| if e == "*" { e.to_string() } else { format!("*.{}", clean_string(&e.to_lowercase())) }).collect()
 }
 
-/// FilePicker.Windows.WindowsFileSelector.SelectFile's lpstrFilter text.
+/// FilePicker.Windows.WindowsFileSelector.SelectFile's lpstrFilter text. Each (name, extensions) pair is a
+/// FilePicker.Filter (Filter..ctor(name, params extensions) only stores the two).
 pub(crate) fn file_picker_filter_string(filters: &[(&str, &[&str])]) -> String {
     let parts: Vec<String> = filters.iter().map(|(name, ext)| clean_string(name) + "\0" + &clean_extensions(ext).join(";")).collect();
     parts.join("\0") + "\0\0"
@@ -1188,6 +1203,8 @@ fn select_file(dialog_title: &str, filters: &[(&str, &[&str])], multiselect: boo
     let mut file = vec![0u16; 1024 + 1];
     let mut file_title = vec![0u16; 512 + 1];
     let title = wide(dialog_title);
+    // OpenFileName..ctor: hwndOwner, hInstance, lCustData, lpfnHook and pvReserved IntPtr.Zero, the rest 0 or null
+    // (Default), then SelectFile's writes.
     let mut ofn = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
         lpstrFilter: filter.as_ptr(),
@@ -1302,5 +1319,7 @@ mod tests {
         assert_eq!(file_picker_filter_string(f), "WAVE files\0*.wav\0All files\0*\0\0");
         let g: &[(&str, &[&str])] = &[(" Pics! ", &["PNG", ".jpg"])];
         assert_eq!(file_picker_filter_string(g), "Pics\0*.png;*.jpg\0\0");
+        // char.IsLetterOrDigit: letters and decimal digits only (not Nl, No or marks); a supplementary char is two surrogates.
+        assert_eq!(clean_string("\u{e9}\u{2160}\u{b2}a\u{301}1\u{a0}x\u{1d400}_"), "\u{e9}a1\u{a0}x");
     }
 }

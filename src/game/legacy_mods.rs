@@ -420,8 +420,8 @@ pub type Handler = Arc<dyn Fn() + Send + Sync>;
 pub struct ModLoader {
     pub LoadedMods: Vec<ModRef>,
     pub ModScripts: RefDict<ModScript>,
-    /// The thumbnails' decoded pictures (RGBA8, width, height).
-    thumbnails: RefDict<Arc<(Vec<u8>, u32, u32)>>,
+    /// The thumbnails (ModLoader.LoadTexture's sprites).
+    thumbnails: RefDict<Picture>,
     pub alreadyInitialisedMods: Vec<ModRef>,
     pub assemblyLocations: Vec<String>,
     ModListChanged: Vec<Handler>,
@@ -611,9 +611,10 @@ impl ModLoader {
         Some(m)
     }
 
-    /// ModLoader.GetThumbnail: the cached one, else Path.Combine(MetaLocation, ThumbnailPath) loaded as a picture (none when
-    /// the file is missing, or on any failure: a bad path, a picture Texture2D.LoadImage refuses).
-    pub fn GetThumbnail(&mut self, m: &ModRef) -> Option<Arc<(Vec<u8>, u32, u32)>> {
+    /// ModLoader.GetThumbnail: the cached one, else Path.Combine(MetaLocation, ThumbnailPath) read by LoadTexture and cached
+    /// (none when the file is missing, or on any exception there, which is logged: a bad path, an unreadable file, a picture
+    /// Texture2D.LoadImage refuses).
+    pub fn GetThumbnail(&mut self, m: &ModRef) -> Option<Picture> {
         if let Some(t) = self.thumbnails.get(m) {
             return Some(t.clone());
         }
@@ -625,27 +626,23 @@ impl ModLoader {
         if !Path::new(&p).is_file() {
             return None;
         }
-        let pic = Arc::new(load_picture(&std::fs::read(&p).ok()?)?);
+        let pic = Arc::new(LoadTexture(Path::new(&p), false).ok()?);
         self.thumbnails.add(m.clone(), pic.clone()).ok()?;
         Some(pic)
     }
 }
 
-/// Texture2D.LoadImage on a PNG: RGBA8 pixels, width, height.
-// ponytail: PNG only; Texture2D.LoadImage also takes JPEG, add a decoder when a legacy mod thumbnail needs it.
-fn load_picture(data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
-    let mut d = png::Decoder::new(std::io::Cursor::new(data));
-    d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16 | png::Transformations::ALPHA);
-    let mut r = d.read_info().ok()?;
-    let mut buf = vec![0; r.output_buffer_size()?];
-    let info = r.next_frame(&mut buf).ok()?;
-    buf.truncate(info.buffer_size());
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf,
-        png::ColorType::GrayscaleAlpha => buf.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
-        _ => return None,
-    };
-    Some((rgba, info.width, info.height))
+/// A loaded mod picture (a Sprite over its Texture2D).
+pub type Picture = Arc<super::contraption::LoadedSprite>;
+
+/// ModLoader.LoadTexture(fullPath, mode = Bilinear): File.ReadAllBytes (its exception), new Texture2D(0, 0).LoadImage false
+/// throws InvalidDataException, filterMode `mode`, wrapMode Clamp, then Sprite.Create over the whole texture, pivot (0.5, 0.5),
+/// 256 pixels per unit.
+pub fn LoadTexture(full_path: &Path, point_filter: bool) -> Result<super::contraption::LoadedSprite, Exc> {
+    let data = std::fs::read(full_path).map_err(|e| io_exc(&e, !full_path.parent().is_some_and(Path::is_dir)))?;
+    let image = super::contraption::decode_png(&data).map_err(|_| Exc::new("InvalidDataException", format!("Texture at {} cannot be loaded as a PNG", full_path.display())))?;
+    let rect = [0.0, 0.0, image.width as f32, image.height as f32];
+    Ok(super::contraption::LoadedSprite { texture: super::contraption::LoadedTexture { image, point_filter }, rect, pivot: [0.5, 0.5], pixels_per_unit: 256.0 })
 }
 
 /// ModLoader.SetModActive: TrustCache.VerifyOrigin (game code only calls it), a null MetaLocation throws ArgumentException,
@@ -864,8 +861,9 @@ impl TrustCache {
     /// TrustCache..cctor: the file name is Hash128.Compute(MachineName + UserName + UserDomainName + OSVersion + ProcessorCount).
     pub fn cctor() -> TrustCache {
         let env = |k: &str| std::env::var(k).unwrap_or_default();
-        let machine = env("COMPUTERNAME");
-        let user = env("USERNAME");
+        // Mono off Windows: MachineName is gethostname's (uname's node name), UserName USERNAME else USER.
+        let machine = if cfg!(windows) { env("COMPUTERNAME") } else { uname("-n") };
+        let user = std::env::var("USERNAME").or_else(|e| if cfg!(windows) { Err(e) } else { std::env::var("USER") }).unwrap_or_default();
         let domain = std::env::var("USERDOMAIN").unwrap_or_else(|_| machine.clone());
         let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
         Self::with_key(&format!("{machine}{user}{domain}{}{cpus}", os_version()))
@@ -933,6 +931,8 @@ impl TrustCache {
         // Deserialize, then Clear and AddRange: a throw while reading leaves the set; a null set is cleared and AddRange(null)
         // throws (logged).
         if let Ok(b) = std::fs::read(base.join(&self.path)) {
+            // ponytail: decode_uint_hashset refuses -2 / -5, which read a type name and could name HashSet<uint> itself; a
+            // file the game wrote never has one (Save writes -3).
             if let Ok(set) = decode_uint_hashset(&b) {
                 self.trusted.clear();
                 self.free.clear();
@@ -943,7 +943,7 @@ impl TrustCache {
         }
         Ok(())
     }
-    /// TrustCache.Save: the set written as Ceras' HashSet<uint>.
+    /// TrustCache.Save: the set written as Ceras' HashSet<uint> into `base`, the rewrite's own data folder (never the game's).
     pub fn Save(&self, base: &Path) -> Result<(), Exc> {
         Self::VerifyOrigin(false)?;
         std::fs::write(base.join(&self.path), encode_uint_hashset(&self.trusted())).map_err(|e| io_exc(&e, true))
@@ -952,8 +952,9 @@ impl TrustCache {
 
 /// Environment.OSVersion.ToString() on Windows: "Microsoft Windows NT major.minor.build.0" (the Unity player declares
 /// Windows 10 support, so GetVersionEx reports the real version: read here from the registry).
-// Checked: the key with it hashes to the trust file the real game wrote on the developer's PC (the test below). ponytail: the
-// non-Windows form (Mono's "Unix <release>") is not written; the rewrite targets Windows as the game does.
+/// Elsewhere (the game ships for Windows only, so no game build is there to match; unchecked) Mono's Unix form:
+/// "Unix " + Environment.CreateVersionFromString(uname's release).
+// Checked: the Windows key hashes to the trust file the real game wrote on the developer's PC (the test below).
 fn os_version() -> String {
     #[cfg(windows)]
     unsafe {
@@ -975,7 +976,37 @@ fn os_version() -> String {
         format!("Microsoft Windows NT {}.{}.{build}.0", dword("CurrentMajorVersionNumber").unwrap_or(6), dword("CurrentMinorVersionNumber").unwrap_or(2))
     }
     #[cfg(not(windows))]
-    String::new()
+    format!("Unix {}", create_version_from_string(&uname("-r")))
+}
+
+/// uname's node name (`-n`) or release (`-r`), empty when it cannot run.
+#[cfg_attr(windows, allow(dead_code))]
+fn uname(flag: &str) -> String {
+    std::process::Command::new("uname").arg(flag).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+/// Environment.CreateVersionFromString (Mono): up to four digit runs, each ended by any other char, as
+/// major.minor.build.revision (missing ones 0), then Version.ToString.
+#[cfg_attr(windows, allow(dead_code))]
+fn create_version_from_string(info: &str) -> String {
+    let mut parts = [0i64; 4];
+    let mut state = 0;
+    let mut number: Option<i64> = None;
+    for c in info.chars() {
+        if state == 4 {
+            break;
+        }
+        if let Some(d) = c.to_digit(10) {
+            number = Some(number.unwrap_or(0) * 10 + d as i64);
+        } else if let Some(n) = number.take() {
+            parts[state] = n;
+            state += 1;
+        }
+    }
+    if let (Some(n), true) = (number, state < 4) {
+        parts[state] = n;
+    }
+    format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], parts[3])
 }
 
 /// CerasSerializer.Serialize(HashSet<uint>) with the default config: the root reference (-3, a new value of the static
@@ -1003,7 +1034,6 @@ pub fn encode_uint_hashset(items: &[u32]) -> Vec<u8> {
 /// -3 a new HashSet<uint> (its count, then each item, a HashSet so repeats once), -1 null (Ok(None)); -5 an inline type,
 /// -4 an external object, -2 a typed new value and an existing id (>= 0) all throw here (no type is cached and no object is
 /// known). Bytes after the set are ignored.
-// ponytail: -2 / -5 read a type name and could name HashSet<uint> itself; a file the game wrote never has one (Save writes -3).
 pub fn decode_uint_hashset(d: &[u8]) -> Result<Option<Vec<u32>>, String> {
     let mut o = 0;
     // SerializerBinary.ReadVarInt(bits 32): a 6th byte (shift 35) is malformed; reading past the end throws.
@@ -1278,8 +1308,6 @@ impl ModCompilerSockets {
 }
 
 /// ModCompilerPipes: the named-pipe compiler link (nothing makes one in 1.28).
-// ponytail: the pipe is not made at the OS level, since no compiler ever connects to it; a second one with the same name is
-// accepted, as the game's Mono does.
 #[derive(Debug, Default)]
 pub struct ModCompilerPipes {
     /// The NamedPipeServerStream (made, never connected).
@@ -1303,6 +1331,8 @@ impl ModCompilerPipes {
         self.shouldStop = false;
         kill_all_server_processes()?;
         let exe = get_full_path(base, "ppgModCompiler/PPGModCompiler.exe").map_err(path_exc)?;
+        // NamedPipeServerStream: no OS pipe is made, since nothing gets past the connection wait below (mod-only), so no
+        // compiler could ever use it.
         self.pipeServer = true;
         let dir = get_full_path(base, "ppgModCompiler").map_err(path_exc)?;
         self.pipeClient = None;
@@ -1425,7 +1455,7 @@ pub struct ModCompilerStatusBehaviour {
     /// TextMeshPro.text
     pub text: Option<String>,
     /// Thumbnail.sprite: the mod's thumbnail, None for DefaultModSprite.
-    pub thumbnail: Option<Arc<(Vec<u8>, u32, u32)>>,
+    pub thumbnail: Option<Picture>,
     /// gameObject.activeSelf
     pub active: bool,
 }
@@ -1497,7 +1527,7 @@ pub struct ModEntryBehaviour {
     pub Subtitle: String,
     pub Description: String,
     pub DescriptionColor: [f32; 4],
-    pub Thumbnail: Option<Arc<(Vec<u8>, u32, u32)>>,
+    pub Thumbnail: Option<Picture>,
     pub ActiveCheck: bool,
     pub InactiveCheck: bool,
     pub ErrorCheck: bool,
@@ -1741,15 +1771,13 @@ impl ModListBehaviour {
         Ok(())
     }
 
-    /// ModListBehaviour.ApplySearchFilter: the entries whose name or author holds the lowercased, normalised, trimmed text
-    /// shown (all for blank text, none without a ModMeta); a null name or author throws, leaving the rest as they were.
-    // ponytail: the game's ToLower is the current culture's; Rust's to_lowercase is Unicode's (they differ for a few letters,
-    // such as the Turkish I).
+    /// ModListBehaviour.ApplySearchFilter: the entries whose name or author holds the text ToLower'd, Normalize'd (NFC) and
+    /// trimmed shown (all for blank text, none without a ModMeta); a null name or author throws, leaving the rest as they were.
     pub fn ApplySearchFilter(&mut self, arg0: &str) -> Result<(), Exc> {
         use unicode_normalization::UnicodeNormalization;
-        let norm = |s: &str| s.to_lowercase().nfc().collect::<String>();
+        let norm = |s: &str| to_lower(s).nfc().collect::<String>();
         let value = norm(arg0).trim().to_string();
-        let blank = value.trim().is_empty();
+        let blank = value.is_empty();
         for e in &mut self.modEntries {
             e.active = if blank {
                 true
@@ -1796,9 +1824,77 @@ impl ModListBehaviour {
     }
 }
 
+/// String.ToLower() in the game's culture (en-US, as ui/collation.rs fixes it): Mono's TextInfo.ToLower, each UTF-16 unit by
+/// its simple lowercase mapping, so U+0130 (I with a dot) is a plain i and there is no final-sigma rule. Unchecked against
+/// the game: a letter outside the BMP (a surrogate pair) is left as it is.
+fn to_lower(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{130}' => 'i',
+            c if (c as u32) > 0xffff => c,
+            c => c.to_lowercase().next().unwrap_or(c),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_filter_lower_case_and_version_text() {
+        assert_eq!(to_lower("\u{130}STANBUL \u{3a3}ON \u{1D400}"), "istanbul \u{3c3}on \u{1D400}");
+        assert_eq!(create_version_from_string("6.5.0-28-generic"), "6.5.0.28");
+        assert_eq!(create_version_from_string("10.1"), "10.1.0.0");
+        let meta = |name: Option<&str>, author: &str| {
+            let mut m = ModMetaData::new();
+            m.Name = name.map(str::to_string);
+            m.Author = Some(author.into());
+            Some(std::sync::Arc::new(std::sync::Mutex::new(m)))
+        };
+        let mut list = ModListBehaviour::new();
+        list.modEntries = vec![ModEntryBehaviour::new(meta(Some("Cafe\u{301} Guns"), "Ann")), ModEntryBehaviour::new(meta(Some("Tools"), "\u{130}lker")), ModEntryBehaviour::new(None)];
+        let shown = |l: &ModListBehaviour| l.modEntries.iter().map(|e| e.active).collect::<Vec<_>>();
+        list.ApplySearchFilter("  ILKER ").unwrap();
+        assert_eq!(shown(&list), [false, true, false]);
+        list.ApplySearchFilter("caf\u{e9}").unwrap();
+        assert_eq!(shown(&list), [true, false, false]);
+        list.ApplySearchFilter(" ").unwrap();
+        assert_eq!(shown(&list), [true, true, true]);
+        list.modEntries.insert(1, ModEntryBehaviour::new(meta(None, "x")));
+        assert_eq!(list.ApplySearchFilter("ann"), Err(Exc::nre()));
+        assert_eq!(shown(&list), [true, true, true, true]);
+    }
+
+    /// ModLoader.GetThumbnail / LoadTexture over a thumbnail made here, and TrustCache.Save into a temp folder.
+    #[test]
+    fn thumbnails_and_trust_cache_save_in_a_temp_folder() {
+        let root = std::env::temp_dir().join(format!("ppg-legacy-thumb-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("thumb.png"), crate::game::mods::tests::test_png(3, 5)).unwrap();
+        std::fs::write(root.join("bad.png"), b"nope").unwrap();
+        let s = LoadTexture(&root.join("thumb.png"), false).unwrap();
+        assert_eq!((s.rect, s.pixels_per_unit, s.texture.point_filter), ([0.0, 0.0, 3.0, 5.0], 256.0, false));
+        assert_eq!(LoadTexture(&root.join("bad.png"), false).unwrap_err().class, "InvalidDataException");
+        assert_eq!(LoadTexture(&root.join("gone.png"), false).unwrap_err().class, "FileNotFoundException");
+        let mut loader = ModLoader::default();
+        let m: ModRef = {
+            let mut m = ModMetaData::new();
+            m.MetaLocation = Some(root.display().to_string());
+            m.ThumbnailPath = Some("thumb.png".into());
+            std::sync::Arc::new(std::sync::Mutex::new(m))
+        };
+        let t = loader.GetThumbnail(&m).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&t, &loader.GetThumbnail(&m).unwrap()));
+        m.lock().unwrap().ThumbnailPath = Some("bad.png".into());
+        let bad = m.lock().unwrap().clone();
+        assert!(loader.GetThumbnail(&std::sync::Arc::new(std::sync::Mutex::new(bad))).is_none());
+        let cache = TrustCache::cctor();
+        cache.Save(&root).unwrap();
+        assert_eq!(std::fs::read(root.join(cache.path())).unwrap(), encode_uint_hashset(&cache.trusted()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// The trust cache the real game wrote on the developer's PC (TrustCache.Save of an empty set): its bytes decode and encode back,
     /// and on that PC the rewrite's static constructor names the same file. Skipped where the game is not installed.

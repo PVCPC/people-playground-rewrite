@@ -551,8 +551,19 @@ pub fn load_thumbnail(meta: &ContraptionMetaData) -> Option<Thumbnail> {
     decode_png(&std::fs::read(path).ok()?).ok()
 }
 
-/// Texture2D.LoadImage of PNG bytes: RGBA, bottom row first like a Unity texture.
-fn decode_png(bytes: &[u8]) -> Result<Thumbnail, String> {
+/// Texture2D.LoadImage: PNG or JPEG bytes (by their signature) as RGBA, bottom row first like a Unity texture; a JPEG has
+/// no alpha (RGB24). Unchecked: the JPEG decoder is zune-jpeg, not Unity's, so a pixel may round one level apart.
+pub(crate) fn decode_png(bytes: &[u8]) -> Result<Thumbnail, String> {
+        if bytes.starts_with(&[0xff, 0xd8]) {
+            use zune_jpeg::zune_core::{colorspace::ColorSpace, options::DecoderOptions};
+            let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
+            let mut decoder = zune_jpeg::JpegDecoder::new_with_options(std::io::Cursor::new(bytes), options);
+            let top_first = decoder.decode().map_err(|e| e.to_string())?;
+            let info = decoder.info().ok_or("no JPEG header")?;
+            let (w, h) = (info.width as usize, info.height as usize);
+            let rgba = top_first.chunks(w * 4).rev().flat_map(|row| row.chunks(4).flat_map(|p| [p[0], p[1], p[2], 255])).collect();
+            return Ok(Thumbnail { width: w, height: h, rgba });
+        }
         let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
         decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
@@ -593,7 +604,7 @@ pub struct LoadedSprite {
 
 /// Utils.LoadTexture (fullPath, mode, markNonReadable): File.ReadAllBytes, whose failure is Debug.LogError and null; new
 /// Texture2D(0, 0).LoadImage(data, markNonReadable) false throws InvalidDataException; then filterMode = mode and wrapMode =
-/// Clamp. (markNonReadable only frees the CPU copy: nothing reads it back. LoadImage's JPG is not decoded: only PNG.)
+/// Clamp. (markNonReadable only frees the CPU copy: nothing reads it back.)
 pub fn load_texture(full_path: &Path, point_filter: bool) -> Option<LoadedTexture> {
     let data = match std::fs::read(full_path) {
         Ok(d) => d,
@@ -741,10 +752,14 @@ pub struct PollingDirectoryWatcher {
     directory: PathBuf,
     pattern: String,
     pub(crate) isWatching: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub OnChange: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// The OnChange delegate's invocation list (empty is null), shared with the watch thread, which reads it each pass.
+    OnChange: std::sync::Arc<std::sync::Mutex<Vec<WatcherHandler>>>,
 }
 
-/// Its fields but OnChange (a closure): whether it is set.
+/// An Action subscribed to PollingDirectoryWatcher.OnChange (compared by identity, as a delegate is).
+pub type WatcherHandler = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// Its fields; OnChange as its subscriber count.
 impl std::fmt::Debug for PollingDirectoryWatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PollingDirectoryWatcher")
@@ -752,7 +767,7 @@ impl std::fmt::Debug for PollingDirectoryWatcher {
             .field("directory", &self.directory)
             .field("pattern", &self.pattern)
             .field("isWatching", &self.isWatching)
-            .field("OnChange", &self.OnChange.as_ref().map(|_| "Fn"))
+            .field("OnChange", &self.OnChange.lock().unwrap().len())
             .finish()
     }
 }
@@ -785,7 +800,29 @@ impl PollingDirectoryWatcher {
             directory: directory.to_path_buf(),
             pattern: pattern.to_string(),
             isWatching: Default::default(),
-            OnChange: None,
+            OnChange: Default::default(),
+        }
+    }
+
+    /// PollingDirectoryWatcher.add_OnChange: Delegate.Combine, the handler appended to the invocation list.
+    pub fn add_OnChange(&self, h: WatcherHandler) {
+        self.OnChange.lock().unwrap().push(h);
+    }
+
+    /// PollingDirectoryWatcher.remove_OnChange: Delegate.Remove, the last subscription of that handler out of the list
+    /// (none: unchanged).
+    pub fn remove_OnChange(&self, h: &WatcherHandler) {
+        let mut list = self.OnChange.lock().unwrap();
+        if let Some(i) = list.iter().rposition(|x| std::sync::Arc::ptr_eq(x, h)) {
+            list.remove(i);
+        }
+    }
+
+    /// OnChange?.Invoke(): each handler in the order added.
+    pub(crate) fn invoke_on_change(&self) {
+        let list = self.OnChange.lock().unwrap().clone();
+        for f in list {
+            f();
         }
     }
 
@@ -830,9 +867,7 @@ impl PollingDirectoryWatcher {
             if let Ok(hash) = self.directory_hash() {
                 if hash != last {
                     last = hash;
-                    if let Some(f) = &self.OnChange {
-                        f();
-                    }
+                    self.invoke_on_change();
                 }
             }
         }

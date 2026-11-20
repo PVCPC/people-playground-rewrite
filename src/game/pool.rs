@@ -396,9 +396,29 @@ impl Game {
                 // Render-only clones: only their counts matter.
                 PoolRef::Splash(s) => self.splash_pools[s].items[i].destroyed = true,
                 PoolRef::BloodPuff => self.splats[self.blood_puffs[i].splat].destroyed = true,
-                PoolRef::Recorded(_) => unimplemented!("recording harness: a recorded pool's 300 s Clear before Ensure"),
+                // ObjectPoolBehaviour.Clear before PoolGenerator.Ensure: the recorded clones are not made yet (Ensure makes
+                // them), so destroying them is dropping them: a later Ensure finds an empty pool, as the game's.
+                PoolRef::Recorded(r) => self.recorded_pool_items[r].1.clear(),
                 PoolRef::Tracer => unreachable!("the BulletTracerPool is no Behaviour::ObjectPool"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recorded_pool_clear_before_ensure() {
+        // ObjectPoolBehaviour.Update's 300 s Clear on a recorded pool no Ensure made yet: its clones are dropped.
+        let mut g = Game::default();
+        g.time.deltaTime = 301.0;
+        g.recorded_pools.push(("X_pool".into(), ObjectPool { created: vec![0, 1], available: vec![1, 0], inactivityTimer: 0.0 }));
+        g.recorded_pool_items.push(("X_pool".into(), vec![([0.0; 3], false); 2], None));
+        g.object_pool_update(PoolRef::Recorded(0));
+        let p = &g.recorded_pools[0].1;
+        assert!(p.created.is_empty() && p.available.is_empty() && p.inactivityTimer == 0.0);
+        assert!(g.recorded_pool_items[0].1.is_empty());
     }
 }

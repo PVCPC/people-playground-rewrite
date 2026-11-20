@@ -7488,6 +7488,11 @@ impl Game {
                 "BeamformerBehaviour" => self.beamformer_on_disable(linked.beamformers[&d]),
                 "ThermometerBehaviour" => self.thermometer_on_disable(linked.thermometers[&d]),
                 "KeyTriggerBehaviour" => self.key_trigger_on_disable(linked.key_triggers[&d]),
+                "SpeedometerBehaviour" => {
+                    let id = inst.objects[d].components[k];
+                    let i = self.v45.speedometers.iter().position(|c| c.id == id).expect("a SpeedometerBehaviour in the arena");
+                    self.speedometer_on_disable(i);
+                }
                 // No OnDisable; TextMeshPro's only touches its mesh and the font atlas.
                 "ActivateIfTutorial" | "ActivateIfFancyEffects" | "AudioSourceTimeScaleBehaviour" | "DetachFromParentOnStart" | "DebrisComponent" | "Optout" | "MaintainScaleSignBehaviour" | "TextMeshProControlReplacer" | "TextMeshPro" => {}
                 name if super::translated::CLASSES.contains(&name) => self.tr_on_disable(linked.translated[&(d, k)]),

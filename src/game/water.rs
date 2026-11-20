@@ -453,12 +453,25 @@ impl Game {
             }
             a
         };
-        // The recorded trigger collider of a map object (by its object's name): its fixtures and collider id.
-        let recorded_trigger = |g: &Game, name: &str| {
-            let go = *g.objects.get(name).unwrap_or_else(|| unimplemented!("recording harness: the map's trigger {name} is not in the recording"));
-            let fixtures: Vec<FixtureId> = (0..g.world.fixtures.len()).filter(|&f| g.world.fixtures[f].as_ref().is_some_and(|x| x.collider.game_object == go)).collect();
-            let ids: std::collections::BTreeSet<i32> = fixtures.iter().map(|&f| g.world.fixture(f).collider.id).collect();
-            let [id] = ids.into_iter().collect::<Vec<_>>()[..] else { unimplemented!("recording harness: the map's trigger {name}: not one recorded collider") };
+        // The map clone's instance ids (Instantiate's numbering, as play gives them): `rel[o]` is object o's GameObject id
+        // less the root's; component j's is 2 * (1 + j) below its GameObject's.
+        let rel = map_id_offsets(&prefab);
+        let root_id = map_root_id(self, &prefab, &rel);
+        // Without one (no map object alone with its name has its collider recorded) the map's ids can't be known.
+        let comp_id = |o: usize, j: usize| root_id.map(|r| r + rel[o] - 2 * (1 + j as i32)).unwrap_or_else(|| unimplemented!("recording harness: no recorded map collider to number the map's instance ids from"));
+        let is_collider = |o: usize, j: usize| matches!(prefab.objects[o].components[j].1, Component::Collider2D(_));
+        // A map object's Trigger collider (component tc of object to): its fixtures and collider id. By its object's name
+        // when that object has one collider and the recording one id; else (not in the recording: off in the b2 world;
+        // or several colliders on it) by the map's numbering.
+        let recorded_trigger = |g: &Game, to: usize, tc: usize| {
+            let name = prefab.objects[to].name.replace(' ', "_");
+            let one = (0..prefab.objects[to].components.len()).filter(|&j| is_collider(to, j)).count() == 1;
+            let by_name = g.objects.get(&name).map(|&go| g.world.fixtures.iter().flatten().filter(|x| x.collider.game_object == go).map(|x| x.collider.id).collect::<std::collections::BTreeSet<i32>>());
+            let id = match by_name.map(|s| s.into_iter().collect::<Vec<_>>()).as_deref() {
+                Some(&[id]) if one => id,
+                _ => comp_id(to, tc),
+            };
+            let fixtures: Vec<FixtureId> = (0..g.world.fixtures.len()).filter(|&f| g.world.fixtures[f].as_ref().is_some_and(|x| x.collider.id == id)).collect();
             (fixtures, id)
         };
         // The script's record in the first snapshot (a recorder without map scripts has none: its unrecorded state stays
@@ -474,8 +487,10 @@ impl Game {
                 if !matches!(class, "WaterBehaviour" | "LavaBehaviour" | "RandomPrefabSpawnerBehaviour" | "TemperatureTargetRectangleBehaviour") {
                     continue;
                 }
+                // On an inactive object no Awake ran (WaterBehaviour.Awake's waters.Add, Behaviour.AddToManager): the
+                // script is not in play. No shipped map has one, and no recording activates map objects on this path.
                 if !active(o) {
-                    unimplemented!("recording harness: an inactive map {class} (no shipped map has one)");
+                    continue;
                 }
                 let file = prefab.objects[o].game_object.file;
                 let at = |name: &str| {
@@ -487,12 +502,9 @@ impl Game {
                         let mut w = Water::default();
                         super::spawn::load_values(w.fields(), v).expect("WaterBehaviour's fields");
                         let (to, tc) = at("Trigger");
-                        (w.trigger_fixtures, w.trigger) = recorded_trigger(self, &prefab.objects[to].name.replace(' ', "_"));
-                        // Instance ids count down by two in component order on one object.
-                        if to != o {
-                            unimplemented!("recording harness: a map WaterBehaviour whose Trigger is on another object (its instance id)");
-                        }
-                        w.id = w.trigger - 2 * (c as i32 - tc as i32);
+                        (w.trigger_fixtures, w.trigger) = recorded_trigger(self, to, tc);
+                        // The script's id from its Trigger's, by the map's numbering (on one object: two apart per component).
+                        w.id = w.trigger + (rel[o] - 2 * c as i32) - (rel[to] - 2 * tc as i32);
                         (w.object, w.component, w.enabled, w.active) = (o, c, enabled, true);
                         (w.chain, w.trigger_chain) = (chain(o), chain(to));
                         // Off since Start and not recorded: only a frozen water reads it.
@@ -513,8 +525,8 @@ impl Game {
                     "LavaBehaviour" => {
                         let mut lava = super::scenery::Lava::default();
                         super::spawn::load_values(lava.fields(), v).expect("LavaBehaviour's fields");
-                        let (to, _) = at("Trigger");
-                        lava.trigger_fixtures = recorded_trigger(self, &prefab.objects[to].name.replace(' ', "_")).0;
+                        let (to, tc) = at("Trigger");
+                        lava.trigger_fixtures = recorded_trigger(self, to, tc).0;
                         let filter = v.get("ContactFilter").expect("LavaBehaviour.ContactFilter");
                         let flag = |name: &str| filter.get(name).and_then(Value::bool).unwrap_or_else(|| panic!("ContactFilter.{name}"));
                         if flag("useDepth") || flag("useOutsideDepth") || flag("useNormalAngle") || flag("useOutsideNormalAngle") {
@@ -584,7 +596,13 @@ impl Game {
                 if is_physical(t) {
                     let name = prefab.objects[t].name.replace(' ', "_");
                     let mut found = (0..g.physicals.len()).filter(|&p| g.physicals[p].name == name);
-                    let (Some(p), None) = (found.next(), found.next()) else { unimplemented!("recording harness: not one recorded map physical {name}") };
+                    if let (Some(p), None) = (found.next(), found.next()) {
+                        break super::BareAnchor::Physical(p);
+                    }
+                    // Same-named physicals: the one whose PhysicalBehaviour is a component of this object, by the map's numbering.
+                    let own: Vec<i32> = (0..prefab.objects[t].components.len()).map(|j| comp_id(t, j)).collect();
+                    let mut found = (0..g.physicals.len()).filter(|&p| own.contains(&g.physicals[p].id));
+                    let (Some(p), None) = (found.next(), found.next()) else { unimplemented!("recording harness: the map physical {name} is not in the recording (re-record it)") };
                     break super::BareAnchor::Physical(p);
                 }
                 chain.push(trs(t));
@@ -610,11 +628,15 @@ impl Game {
             if ids.is_empty() {
                 continue;
             }
-            if ids.len() != candidates.iter().map(|&o| colliders(o)).sum::<usize>() {
-                unimplemented!("recording harness: the map's {name} colliders are not all recorded (an inactive one)");
-            }
-            let mut ids = ids.into_iter();
-            for o in candidates {
+            // Each candidate's colliders in component order: the recorded ids counting down, one each, when all are recorded;
+            // else (an inactive one, off in the b2 world) each by the map's numbering, the unrecorded left out.
+            let own: Vec<Vec<i32>> = if ids.len() == candidates.iter().map(|&o| colliders(o)).sum::<usize>() {
+                let mut ids = ids.into_iter();
+                candidates.iter().map(|&o| ids.by_ref().take(colliders(o)).collect()).collect()
+            } else {
+                candidates.iter().map(|&o| (0..prefab.objects[o].components.len()).filter(|&j| is_collider(o, j)).map(|j| comp_id(o, j)).filter(|c| ids.contains(c)).collect()).collect()
+            };
+            for (o, own) in candidates.into_iter().zip(own) {
                 let (anchor, chain) = anchor_chain(self, o);
                 let scripts: Vec<String> = prefab.objects[o].components.iter().filter_map(|(_, x)| if let Component::Script { class, .. } = x { Some(class.clone()) } else { None }).collect();
                 let file = prefab.objects[o].game_object.file;
@@ -622,7 +644,7 @@ impl Game {
                     Component::Script { class, fields, .. } if class == "WaterImpactBehaviour" => fields.get("Splash").and_then(Value::pptr).and_then(|pp| db.resolve(file, pp)),
                     _ => None,
                 });
-                for c in ids.by_ref().take(colliders(o)) {
+                for c in own {
                     let bare = super::BareCollider { anchor, chain: chain.clone(), scripts: scripts.clone(), water_impact, active_self: prefab.objects[o].active, root };
                     self.bare_colliders.insert(c, bare);
                 }
@@ -779,6 +801,13 @@ impl Game {
                 if self.script_enabled(id, *enabled) {
                     let i = self.javelins.iter().position(|c| c.id == id).expect("a JavelinBehaviour in the arena");
                     self.javelin_on_enable(i);
+                }
+            }
+            // SpeedometerBehaviour.OnEnable: UpdateActivation.
+            "SpeedometerBehaviour" => {
+                if self.script_enabled(id, *enabled) {
+                    let i = self.v45.speedometers.iter().position(|c| c.id == id).expect("a SpeedometerBehaviour in the arena");
+                    self.speedometer_update_activation(i);
                 }
             }
             // TorchBehaviour.OnEnable: a torch that is enabled registers the contacts its colliders have.
@@ -1021,6 +1050,12 @@ impl Game {
                     let i = self.immobility_fields.iter().position(|c| c.id == id).expect("an ImmobilityFieldBehaviour in the arena");
                     if self.immobility_fields[i].enabled {
                         self.immobility_field_on_disable(i, inst);
+                    }
+                }
+                "SpeedometerBehaviour" => {
+                    if self.script_enabled(id, *enabled) {
+                        let i = self.v45.speedometers.iter().position(|c| c.id == id).expect("a SpeedometerBehaviour in the arena");
+                        self.speedometer_on_disable(i);
                     }
                 }
                 // PinBehaviour.OnDisable: SpriteChild.gameObject.SetActive(false).
@@ -1681,5 +1716,69 @@ impl Game {
                 self.skins[l].set_acid(v);
             }
         }
+    }
+}
+
+/// Instantiate's numbering of a map clone (dump/clone.rs recording_clone, spawn.rs clone_prefab): each GameObject's id
+/// less the root's. GameObjects and their prefab components take consecutive ids 2 apart, in prefab order.
+pub(super) fn map_id_offsets(prefab: &Prefab) -> Vec<i32> {
+    let mut next = 0;
+    prefab.objects.iter().map(|ob| { let id = next; next -= 2 * (1 + ob.components.len() as i32); id }).collect()
+}
+
+/// The map root's GameObject id, from the recorded b2 world: each map object, alone with its name in the map, holding one
+/// Collider2D whose recorded fixtures carry one collider id, gives one; the most common wins (a same-named object outside
+/// the map can only mislead one). None without any.
+pub(super) fn map_root_id(g: &Game, prefab: &Prefab, rel: &[i32]) -> Option<i32> {
+    let name = |o: usize| prefab.objects[o].name.replace(' ', "_");
+    let mut count: HashMap<String, usize> = HashMap::new();
+    for o in 0..prefab.objects.len() {
+        *count.entry(name(o)).or_default() += 1;
+    }
+    let mut votes: HashMap<i32, usize> = HashMap::new();
+    for o in (0..prefab.objects.len()).filter(|&o| count[&name(o)] == 1) {
+        let cols: Vec<usize> = (0..prefab.objects[o].components.len()).filter(|&j| matches!(prefab.objects[o].components[j].1, Component::Collider2D(_))).collect();
+        let (&[j], Some(&go)) = (&cols[..], g.objects.get(&name(o))) else { continue };
+        let ids: std::collections::BTreeSet<i32> = g.world.fixtures.iter().flatten().filter(|x| x.collider.game_object == go).map(|x| x.collider.id).collect();
+        let [id] = ids.into_iter().collect::<Vec<_>>()[..] else { continue };
+        *votes.entry(id - rel[o] + 2 * (1 + j as i32)).or_default() += 1;
+    }
+    votes.into_iter().max_by_key(|&(r, n)| (n, r)).map(|(r, _)| r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recorded_map_numbering() {
+        // The numbering against a recording on the legacy path (b2 world, no Clone rows): every map object alone with its
+        // name and holding colliders has its recorded collider ids where the numbering puts them.
+        let dump = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference-probe/game/dump34map.txt");
+        let (Ok(game), Ok(header)) = (crate::game_assets::find_game(None), super::super::dump::header(&dump)) else { return };
+        if crate::assets::il::load(&game).is_ok() && crate::assets::il::is_1_28_45() {
+            return; // recorded on 1.28.41: 1.28.45's map numbers its objects differently
+        }
+        let s = super::super::dump::snapshots(&dump).unwrap().find(|s| s.pt == "FS" && s.of("b2World").next().is_some()).unwrap();
+        let r = super::super::dump::physics::restore(&s, V::new(-0.0, -9.81)).unwrap();
+        let mut g = Game::default();
+        (g.world, g.objects) = (r.world, r.objects);
+        let mut db = AssetDb::open(&game).unwrap();
+        let prefab = super::super::particle_forces::recorded_map_prefab(&mut db, &header).unwrap();
+        let rel = map_id_offsets(&prefab);
+        let root = map_root_id(&g, &prefab, &rel).expect("a numbered map");
+        let name = |o: usize| prefab.objects[o].name.replace(' ', "_");
+        let mut checked = 0;
+        for o in (0..prefab.objects.len()).filter(|&o| (0..prefab.objects.len()).filter(|&p| name(p) == name(o)).count() == 1) {
+            let Some(&go) = g.objects.get(&name(o)) else { continue };
+            let recorded: std::collections::BTreeSet<i32> = g.world.fixtures.iter().flatten().filter(|x| x.collider.game_object == go).map(|x| x.collider.id).collect();
+            let numbered: std::collections::BTreeSet<i32> = (0..prefab.objects[o].components.len()).filter(|&j| matches!(prefab.objects[o].components[j].1, Component::Collider2D(_))).map(|j| root + rel[o] - 2 * (1 + j as i32)).collect();
+            if numbered.is_empty() || recorded.is_empty() {
+                continue;
+            }
+            assert_eq!(recorded, numbered, "{}", name(o));
+            checked += 1;
+        }
+        assert!(checked >= 2, "{checked} map objects checked");
     }
 }

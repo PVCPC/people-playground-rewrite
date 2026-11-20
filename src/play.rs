@@ -993,6 +993,7 @@ pub(crate) fn step(g: &mut Game, real: f32) -> Result<(), String> {
         g.determined_anomalies_will_render();
         g.physicals_will_render();
         g.reactor_a5_displays_will_render();
+        g.v45_will_render();
         g.renderer_cull_end();
         g.end_of_frame_calls();
     }))

@@ -1883,10 +1883,14 @@ impl Game {
             // 1.28.45: CrossbowBehaviour.OnLaunch's AddComponent<InjectableBehaviour> on a bolt.
             "InjectableBehaviour" => {
                 let id = self.allocate_instance_id();
-                self.v45.injectables.push(super::v45_new::Injectable { id, phys: p, LiquidDistributions: None, FxColor: [0.0; 4], destroyed: false });
+                self.v45.injectables.push(super::v45_new::Injectable { id, phys: p, LiquidDistributions: None, FxColor: [0.0; 4], destroyed: false, ImbueParticles: None });
                 let i = self.v45.injectables.len() - 1;
                 self.injectable_attach(i, proto.Enabled);
                 self.inject_slot(Some(super::save_slots::Slot::V45(super::v45_new::V::Injectable(i))), id, proto);
+                // InjectableBehaviour.Start (enabled only), with the loaded FxColor.
+                if proto.Enabled {
+                    self.pending_starts.push(super::misc::PendingStart::V45(super::v45_new::V::Injectable(i)));
+                }
             }
             _ => unreachable!("{class} is only on a state from a prefab that has it (nothing in the rewrite adds it at runtime)"),
         }

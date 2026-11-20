@@ -173,7 +173,7 @@ impl Game {
                 Some(Value::Str(s)) => s.clone(),
                 _ => String::new(),
             };
-            Ok(list.iter().map(|t| super::tool::ToolEntry { name: text(t, "Name"), ty: text(t, "Type"), parent: text(t, "Parent") }).collect())
+            Ok(list.iter().map(|t| super::tool::ToolEntry { name: text(t, "Name"), ty: text(t, "Type"), parent: text(t, "Parent"), ..Default::default() }).collect())
         };
         Ok((read("Tools")?, read("Powers")?))
     }

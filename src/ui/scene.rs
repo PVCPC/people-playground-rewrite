@@ -329,5 +329,9 @@ mod tests {
         }
         super::rect("Main", "Canvas/Catalog/ItemPanel/Viewport/Scrollbar/Sliding Area/Handle");
         assert!(!super::texts_containing("<i>").is_empty() && super::font_asset("Menu", "Canvas/Information/Info/version info (1)").is_some());
+        // ExistInBeta's label: in the same font as the HUD's other texts (the one the rewrite draws them in).
+        const BETA: &str = "Canvas/Pre-release build text";
+        assert!(super::mono("Main", BETA, "ExistInBeta").is_some() && super::text("Main", BETA).contains("PREVIEW BUILD"));
+        assert_eq!(super::font_asset("Main", BETA), super::font_asset("Main", "Canvas/NotificationArea/Notification/TextMeshPro Text"));
     }
 }

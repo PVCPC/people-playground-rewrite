@@ -790,7 +790,7 @@ fn dll2_tool(rec: &str) -> Result<super::super::tool::ToolEntry, String> {
     let r = dll_rec(rec)?;
     let s = |k: &str| -> Result<String, String> { let v = dll_get(&r, k)?; Ok(if v == "null" { String::new() } else { v.trim_matches('"').to_string() }) };
     if dll_get(&r, "Type")? == "null" { return Err("Type null".into()) }
-    Ok(super::super::tool::ToolEntry { name: s("Name")?, ty: s("Type")?, parent: s("Parent")? })
+    Ok(super::super::tool::ToolEntry { name: s("Name")?, ty: s("Type")?, parent: s("Parent")?, ..Default::default() })
 }
 
 /// A quoted string argument with no spaces (the rows' keys), as written.

@@ -184,12 +184,14 @@ impl Default for Tool {
     }
 }
 
-/// One ToolLibrary.Tool: its Name, Type and Parent (empty for none).
+/// One ToolLibrary.Tool: its Name, Type and Parent (empty for none); a mod's (ModAPI.RegisterTool) also its Description and Icon.
 #[derive(Clone, Debug, Default)]
 pub struct ToolEntry {
     pub name: String,
     pub ty: String,
     pub parent: String,
+    pub description: String,
+    pub icon: Option<super::legacy_mods::Picture>,
 }
 
 impl ToolEntry {
@@ -220,7 +222,7 @@ mod tool_entry_tests {
 
     #[test]
     fn tools_are_equal_by_type() {
-        let t = |name: &str, ty: &str| ToolEntry { name: name.into(), ty: ty.into(), parent: String::new() };
+        let t = |name: &str, ty: &str| ToolEntry { name: name.into(), ty: ty.into(), ..Default::default() };
         let (a, b, c) = (t("Drag", "DragTool"), t("Other name", "DragTool"), t("Drag", "WireTool"));
         assert!(a.Equals(&b) && ToolEntry::op_Equality(&a, &b) && !ToolEntry::op_Inequality(&a, &b));
         assert!(ToolEntry::op_Inequality(&a, &c));

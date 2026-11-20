@@ -122,10 +122,9 @@ pub struct Speedometer {
     pub Activated: bool,
     pub TopSpeedMs: f32,
     pub speedMs: f32,
-    /// Light.enabled and TextMesh.enabled (UpdateActivation, OnDisable).
-    pub display_on: bool,
-    /// TextMesh.text as SetText last wrote it.
-    pub text: String,
+    /// Light (its SpriteRenderer) and TextMesh (a `Game::world_texts` index); None: null.
+    pub Light: Option<super::visual::SpriteAt>,
+    pub TextMesh: Option<usize>,
 }
 
 /// CrossbowBehaviour
@@ -164,6 +163,8 @@ pub struct Injectable {
     pub LiquidDistributions: Option<Vec<(String, f32)>>,
     pub FxColor: [f32; 4],
     pub destroyed: bool,
+    /// ImbueParticles: the `Game::embedded_ps` system Start found (None: null).
+    pub ImbueParticles: Option<usize>,
 }
 
 /// BuzzerBehaviour
@@ -187,6 +188,9 @@ pub struct Buzzer {
     pub clip: Option<super::audio::ClipRef>,
     /// SpriteRenderer.color (UpdateColour).
     pub color: [f32; 4],
+    /// SpriteRenderer, and the Diaphragm Transform's own SpriteRenderer (OnWillRenderObject scales it); None: null.
+    pub SpriteRenderer: Option<super::visual::SpriteAt>,
+    pub Diaphragm: Option<super::visual::SpriteAt>,
 }
 
 /// DulcamarusBehaviour.SiphonSource
@@ -276,18 +280,25 @@ pub struct V45 {
     /// Global.DrippingParticlesPrefab: each object's (ids it takes, parent), the controller's (object, component), and
     /// its Amount and DecaySpeed, and its ParticleSystem field's (GameObject, Transforms up to the clone root).
     pub drip_prefab: Option<DripPrefab>,
+    /// `Game::lines` slots of destroyed tendrils, for the next CreateLineRenderer.
+    pub free_tendrils: Vec<usize>,
 }
 
 type DripPrefab = (Vec<(usize, Option<usize>)>, (usize, usize), f32, f32, Option<(ObjRef, Vec<crate::unity::transform::Trs>)>);
 
 /// A script's PPtr field `name` as the prefab object it points at (None: null).
 fn field_object(prefab: &Prefab, o: usize, v: &Value, name: &str) -> Option<usize> {
+    field_component(prefab, o, v, name).map(|(k, _)| k)
+}
+
+/// A script's PPtr field `name` as the prefab (object, component) it points at (None: null).
+fn field_component(prefab: &Prefab, o: usize, v: &Value, name: &str) -> Option<(usize, usize)> {
     let p = v.get(name)?.pptr()?;
     if p.path_id == 0 {
         return None;
     }
     let file = prefab.objects[o].game_object.file;
-    prefab.index.get(&ObjRef { file, path_id: p.path_id }).map(|&(k, _)| k).filter(|_| p.file == 0)
+    prefab.index.get(&ObjRef { file, path_id: p.path_id }).copied().filter(|_| p.file == 0)
 }
 
 fn f(v: &Value, name: &str, default: f32) -> f32 {
@@ -391,7 +402,13 @@ impl Game {
         let b = match class.as_str() {
             "SpeedometerBehaviour" => {
                 let Phys = physical_at(field_object(prefab, o, v, "Phys")).unwrap_or_else(|| unimplemented!("mod-only: SpeedometerBehaviour.Phys null"));
-                self.v45.speedometers.push(Speedometer { id, enabled, Phys, Activated: v.get("Activated").and_then(Value::bool).unwrap_or(true), TopSpeedMs: f(v, "TopSpeedMs", 0.0), ..Default::default() });
+                let Light = field_object(prefab, o, v, "Light").map(|k| self.v45_sprite_at(inst, linked, prefab, k));
+                // TextMesh: the TextMeshPro, as link.rs's text_field finds it.
+                let TextMesh = field_component(prefab, o, v, "TextMesh").map(|(k, kc)| {
+                    let tid = inst.objects[k].components[kc];
+                    self.world_texts.iter().position(|t| t.id == tid).unwrap_or_else(|| unimplemented!("mod-only: SpeedometerBehaviour.TextMesh: not a TextMeshPro"))
+                });
+                self.v45.speedometers.push(Speedometer { id, enabled, Phys, Activated: v.get("Activated").and_then(Value::bool).unwrap_or(true), TopSpeedMs: f(v, "TopSpeedMs", 0.0), Light, TextMesh, ..Default::default() });
                 V::Speedometer(self.v45.speedometers.len() - 1)
             }
             "CrossbowBehaviour" => {
@@ -426,6 +443,8 @@ impl Game {
                 // BuzzerBehaviour.Awake: PhysicalBehaviour and SpriteRenderer default to this object's.
                 let p = physical_at(field_object(prefab, o, v, "PhysicalBehaviour")).or_else(|| linked.physicals.get(&o).copied()).unwrap_or_else(|| unimplemented!("mod-only: BuzzerBehaviour without a PhysicalBehaviour"));
                 let damagable = field_object(prefab, o, v, "DamagableBehaviour").and_then(|k| linked.machinery.get(&k).copied());
+                let SpriteRenderer = Some(self.v45_sprite_at(inst, linked, prefab, field_object(prefab, o, v, "SpriteRenderer").unwrap_or(o)));
+                let Diaphragm = field_object(prefab, o, v, "Diaphragm").map(|k| self.v45_sprite_at(inst, linked, prefab, k));
                 self.v45.buzzers.push(Buzzer {
                     id,
                     enabled,
@@ -434,6 +453,8 @@ impl Game {
                     AudioData: v.get("AudioData").and_then(|s| if let Value::Str(s) = s { Some(s.clone()) } else { None }).unwrap_or_default(),
                     Loudness: f(v, "Loudness", 1.0),
                     lastPlayedTime: f32::NEG_INFINITY,
+                    SpriteRenderer,
+                    Diaphragm,
                     ..Default::default()
                 });
                 V::Buzzer(self.v45.buzzers.len() - 1)
@@ -471,6 +492,36 @@ impl Game {
         Some(Behaviour::V45(b))
     }
 
+    /// The SpriteRenderer on prefab object `t` of the clone being linked (link.rs's sprite_at without its Linker).
+    fn v45_sprite_at(&self, inst: &super::spawn::Instance, linked: &super::link::Linked, prefab: &Prefab, t: usize) -> super::visual::SpriteAt {
+        use super::visual::SpriteAt;
+        let k = prefab.objects[t].components.iter().position(|(_, y)| matches!(y, Component::SpriteRenderer(_))).unwrap_or_else(|| unimplemented!("mod-only: {}: no SpriteRenderer", prefab.objects[t].name));
+        if let Some(&p) = linked.physicals.get(&t) {
+            return SpriteAt::Physical(p);
+        }
+        let rid = inst.objects[t].components[k];
+        SpriteAt::Renderer(self.renderers.iter().position(|r| r.id == rid).unwrap_or_else(|| unimplemented!("mod-only: {}: a SpriteRenderer without a sprite", prefab.objects[t].name)))
+    }
+
+    /// OnWillRenderObject of the new classes whose object's own sprite the camera draws (an enabled behaviour, as the
+    /// generators' and displays').
+    pub fn v45_will_render(&mut self) {
+        use super::visual::SpriteAt;
+        for s in 0..self.v45.speedometers.len() {
+            let x = &self.v45.speedometers[s];
+            if self.will_render_dispatch(x.id, x.enabled && !self.destroyed_components.contains(&x.id) && self.sprite_drawn(SpriteAt::Physical(x.Phys))) {
+                self.speedometer_set_text(s);
+            }
+        }
+        for b in 0..self.v45.buzzers.len() {
+            let x = &self.v45.buzzers[b];
+            let own = x.SpriteRenderer.unwrap_or(SpriteAt::Physical(x.PhysicalBehaviour));
+            if self.will_render_dispatch(x.id, x.enabled && !self.destroyed_components.contains(&x.id) && self.sprite_drawn(own)) {
+                self.buzzer_on_will_render_object(b);
+            }
+        }
+    }
+
     /// The Start a new class's component queues at link (None: it declares none).
     pub(super) fn v45_pending_start(&self, id: i32) -> Option<super::misc::PendingStart> {
         match self.behaviour_of.get(&id) {
@@ -484,6 +535,7 @@ impl Game {
             V::Speedometer(s) => self.speedometer_start(s),
             V::Buzzer(b) => self.buzzer_start(b),
             V::Dulcamarus(d) => self.dulcamarus_start(d),
+            V::Injectable(i) => self.injectable_start(i),
             _ => {}
         }
     }
@@ -592,10 +644,23 @@ impl Game {
         }
     }
 
-    /// SpeedometerBehaviour.UpdateActivation (also OnEnable): Light and TextMesh shown while Activated.
-    fn speedometer_update_activation(&mut self, s: usize) {
-        let x = &mut self.v45.speedometers[s];
-        x.display_on = x.Activated;
+    /// SpeedometerBehaviour.UpdateActivation (also SpeedometerBehaviour.OnEnable): TextMesh.enabled, then Light.enabled = Activated.
+    pub(super) fn speedometer_update_activation(&mut self, s: usize) {
+        let on = self.v45.speedometers[s].Activated;
+        self.speedometer_show(s, on);
+    }
+
+    /// SpeedometerBehaviour.OnDisable: presentation (drawn, not yet compared with the real game): TextMesh.enabled, then Light.enabled = false.
+    pub(super) fn speedometer_on_disable(&mut self, s: usize) {
+        self.speedometer_show(s, false);
+    }
+
+    /// `Light.enabled = TextMesh.enabled = on` (a null one throws, the TextMesh first).
+    fn speedometer_show(&mut self, s: usize, on: bool) {
+        let (light, text) = (self.v45.speedometers[s].Light, self.v45.speedometers[s].TextMesh);
+        self.text_enabled_set(Self::text_ref(text), on);
+        let light = light.unwrap_or_else(|| super::menu::throw("NullReferenceException: Object reference not set to an instance of an object"));
+        self.set_sprite_enabled(light, on);
     }
 
     /// SpeedometerBehaviour.FixedUpdate
@@ -607,17 +672,16 @@ impl Game {
         x.TopSpeedMs = mathf::max(x.TopSpeedMs, x.speedMs);
     }
 
-    // SpeedometerBehaviour.OnWillRenderObject: presentation (SetText each render; the TextMesh is not drawn here).
-    // SpeedometerBehaviour.OnDisable: presentation (Light and TextMesh off).
-    // SpeedometerBehaviour.OnEnable: UpdateActivation (run from Start; a component's later re-enable is not wired for the 1.28.45 classes).
+    // SpeedometerBehaviour.OnWillRenderObject: presentation (drawn, not yet compared with the real game): SetText (v45_will_render).
 
     /// SpeedometerBehaviour.SetText: the TextMesh's text, both speeds in the SpeedUnit preference.
     pub fn speedometer_set_text(&mut self, s: usize) {
         // UserPreferenceManager.Current.SpeedUnit
         let unit = SpeedUnit::from_index(self.prefs.SpeedUnit);
-        let x = &mut self.v45.speedometers[s];
+        let x = &self.v45.speedometers[s];
         let tag = crate::il45!(str "SpeedometerBehaviour::SetText" 0);
-        x.text = format!("{}{tag}{}", convert_speed(x.speedMs, unit), convert_speed(x.TopSpeedMs, unit));
+        let text = format!("{}{tag}{}", convert_speed(x.speedMs, unit), convert_speed(x.TopSpeedMs, unit));
+        self.text_write(x.TextMesh, &text);
     }
 
     // ---- CrossbowBehaviour and InjectableBehaviour ---------------------------------------------------------------
@@ -880,9 +944,38 @@ impl Game {
                 let amount = self.remove_liquid(o, liquid, usage).abs();
                 out.push((super::circulation::liquid_identity(liquid).to_string(), amount));
             }
-            // InjectableBehaviour.Start: presentation (ImbueParticles' startColor = FxColor, then Play; FxColor is kept, the bolt's particles are not drawn).
-            self.v45.injectables.push(Injectable { id, phys: bolt, LiquidDistributions: Some(out), FxColor: fx, destroyed: false });
+            self.v45.injectables.push(Injectable { id, phys: bolt, LiquidDistributions: Some(out), FxColor: fx, destroyed: false, ImbueParticles: None });
             self.injectable_attach(self.v45.injectables.len() - 1, true);
+            self.pending_starts.push(super::misc::PendingStart::V45(V::Injectable(self.v45.injectables.len() - 1)));
+        }
+    }
+
+    /// InjectableBehaviour.Start: presentation (drawn, not yet compared with the real game): ImbueParticles = GetComponentInChildren<ParticleSystem>() (the bolt's "imbuefx"); when there
+    /// is one, main.startColor = FxColor, then Play().
+    fn injectable_start(&mut self, i: usize) {
+        let x = &self.v45.injectables[i];
+        let Some(p) = x.phys.filter(|_| !x.destroyed) else { return };
+        let fx = x.FxColor;
+        let on = self.physicals[p].id;
+        // GetComponentInChildren: this object first, then its active children depth first; the first ParticleSystem's system.
+        let found = self.with_component_instance(on, |g, inst, o| {
+            let mut stack = vec![o];
+            while let Some(t) = stack.pop() {
+                if !inst.objects[t].active {
+                    continue;
+                }
+                let go = inst.prefab.objects[t].game_object;
+                if let Some(e) = g.embedded_ps.iter().position(|e| e.go == go && inst.objects[t].components.contains(&e.owner)) {
+                    return Some(e);
+                }
+                stack.extend((0..inst.objects.len()).rev().filter(|&c| inst.objects[c].parent == Some(t)));
+            }
+            None
+        });
+        self.v45.injectables[i].ImbueParticles = found;
+        if let Some(e) = found {
+            self.ps_calls.push((e, super::PsCall::Writes(crate::particles::PsWrites { color: Some(fx), ..Default::default() })));
+            self.ps_calls.push((e, super::PsCall::Play));
         }
     }
 
@@ -906,7 +999,10 @@ impl Game {
                     self.add_liquid(target, liquid, amount);
                 }
             }
-            // ImbueParticles.Stop() (rendering); Object.Destroy(this).
+            if let Some(e) = self.v45.injectables[i].ImbueParticles {
+                self.ps_calls.push((e, super::PsCall::Stop(self.time.timeAsDouble)));
+            }
+            // Object.Destroy(this)
             self.v45.injectables[i].destroyed = true;
         }
     }
@@ -997,7 +1093,11 @@ impl Game {
     /// BuzzerBehaviour.UpdateColour: white without data, else Color.HSVToRGB(CurrentDataId % 1000 / 1000, 1, 1).
     fn buzzer_update_colour(&mut self, b: usize) {
         let id = self.v45.buzzers[b].CurrentDataId;
-        self.v45.buzzers[b].color = if id == 0 { [1.0; 4] } else { super::menu::hsv_to_rgb([(id % 1000) as f32 / 1000.0, 1.0, 1.0]) };
+        let color = if id == 0 { [1.0; 4] } else { super::menu::hsv_to_rgb([(id % 1000) as f32 / 1000.0, 1.0, 1.0]) };
+        self.v45.buzzers[b].color = color;
+        if let Some(at) = self.v45.buzzers[b].SpriteRenderer {
+            self.set_sprite_color(at, color);
+        }
     }
 
     /// BuzzerBehaviour.ClipFromData (with BuzzerBehaviour.GetId): the clip of 8 kHz unsigned 8-bit mono `bytes` (at most
@@ -1046,6 +1146,7 @@ impl Game {
         let task = paths.clone();
         // Task.Run: FilePicker.Windows.WindowsFileSelector.SelectFile("Select file", filters, null, false).
         std::thread::spawn(move || {
+            // Filter..ctor: new FilePicker.Filter("WAVE files", "wav") and ("All files", "*") only store their name and extensions.
             let got = super::naudio::file_picker_open_file(&[("WAVE files", &["wav"]), ("All files", &["*"])], false);
             *task.lock().unwrap() = Some(got);
         });
@@ -1114,9 +1215,39 @@ impl Game {
         let num3 = mathf::clamp01(mathf::map_range(num, num2, 0.0, 1.0, x.Loudness));
         x.min_distance = mathf::lerp(num, num2, num3);
         x.max_distance = mathf::lerp(30.0, 100.0, num3);
+        // Source.rolloffMode = Logarithmic, then its minDistance and maxDistance.
+        let (id, min, max) = (x.id, x.min_distance, x.max_distance);
+        let src = self.audio.source_field(id, "Source").unwrap_or_else(|| super::menu::throw("NullReferenceException: Object reference not set to an instance of an object"));
+        let s = self.audio.get_mut(src);
+        (s.rolloff_mode, s.min_distance, s.max_distance) = (0, min, max);
     }
 
-    // BuzzerBehaviour.OnWillRenderObject: presentation (the Diaphragm's y scale from the AudioSource's output data; the rewrite does not draw it).
+    /// BuzzerBehaviour.OnWillRenderObject: presentation (drawn, not yet compared with the real game): Diaphragm.localScale is (1, 1, 1) while Source is silent, else y = 1 + the mean
+    /// absolute value of Source.GetOutputData(SampleBuffer[128], 0).
+    fn buzzer_on_will_render_object(&mut self, b: usize) {
+        fn nre<T>() -> T {
+            super::menu::throw("NullReferenceException: Object reference not set to an instance of an object")
+        }
+        let (id, diaphragm) = (self.v45.buzzers[b].id, self.v45.buzzers[b].Diaphragm);
+        let src = self.audio.source_field(id, "Source").unwrap_or_else(nre);
+        if !self.audio.is_playing(src) {
+            self.set_sprite_local_scale(diaphragm.unwrap_or_else(nre), [1.0, 1.0, 1.0]);
+            return;
+        }
+        // The 3D attenuation in the channels' volume, as audio_out mixes it.
+        let listener = self.audio_listener();
+        let s = self.audio.get(src);
+        let p = self.audio_position(s);
+        let d = ((p[0] - listener[0]).powi(2) + (p[1] - listener[1]).powi(2) + (p[2] - listener[2]).powi(2)).sqrt();
+        let gain = 1.0 + (s.rolloff(d) - 1.0) * s.spatial_blend_at(d);
+        let buffer = self.audio.get_output_data(src, 128, 0, gain);
+        let mut num = 0.0f32;
+        for v in buffer {
+            num += v.abs();
+        }
+        num *= 1.0 / 128.0;
+        self.set_sprite_local_scale(diaphragm.unwrap_or_else(nre), [1.0, num + 1.0, 1.0]);
+    }
 
     /// BuzzerBehaviour.Use: Source.PlayOneShot(clip ?? FallbackAudioClip) at most every 0.1 s, unless destroyed.
     fn buzzer_use(&mut self, b: usize) {
@@ -1201,9 +1332,9 @@ impl Game {
         let head = self.v45.dulcamarus[d].head.filter(|&h| self.limb_alive(h));
         if head.is_none_or(|h| self.physicals[self.limbs[h].PhysicalBehaviour].isDisintegrated || self.limbs[h].IsZombie) {
             // The tendrils are destroyed (their GameObjects).
-            for s in self.v45.dulcamarus[d].siphonSources.iter().flatten() {
+            for s in self.v45.dulcamarus[d].siphonSources.clone().iter().flatten() {
                 if let Some(t) = &s.LineRenderer {
-                    self.lines[t.line].visible = false;
+                    self.dulcamarus_destroy_tendril(t.line);
                 }
             }
             let x = &mut self.v45.dulcamarus[d];
@@ -1250,7 +1381,7 @@ impl Game {
             if s.Strength <= 0.0 {
                 // The LineRenderer's GameObject is destroyed; indexByLimb.Remove(Limb).
                 if let Some(t) = &s.LineRenderer {
-                    self.lines[t.line].visible = false;
+                    self.dulcamarus_destroy_tendril(t.line);
                 }
                 self.v45.dulcamarus[d].indexByLimb.remove(&s.Limb);
             } else {
@@ -1293,7 +1424,8 @@ impl Game {
                     // DulcamarusBehaviour.TryGetFreeSource: the first slot that IsDeadSource (null or Strength <= 0; a dead source's slot is emptied below).
                 } else if let Some(value) = self.v45.dulcamarus[d].siphonSources.iter().position(Option::is_none) {
                     self.v45.dulcamarus[d].indexByLimb.insert(l, value);
-                    // new SiphonSource { ... }: the Seed initialiser draws first, then the LineRenderer's coin flip.
+                    // SiphonSource..ctor: Seed = Random.value * 1000 (the field initialiser) draws first, then the object
+                    // initialiser's LineRenderer coin flip.
                     let seed = self.random.value() * 1000.0;
                     let target = self.limb_position(l);
                     let line = if self.random.value() > 0.5 { Some(self.dulcamarus_create_line_renderer(head)) } else { None };
@@ -1331,8 +1463,7 @@ impl Game {
         let mut gradient = super::visual::Gradient::default();
         gradient.set_start_color([0.0, 0.0, 0.0, 1.0]);
         gradient.set_end_color([1.0; 4]);
-        // ponytail: a dead tendril's entry stays in `lines` hidden (as other runtime lines); reuse slots if counts grow large.
-        self.lines.push(super::line::LineVisual {
+        let line = super::line::LineVisual {
             id,
             // Under the person (the container is a child of its transform): hidden once the head's object is gone (lines::shown).
             // DulcamarusBehaviour.OnDestroy: Destroy(lineRendererContainer): the same, as only the person's destruction removes the component.
@@ -1354,8 +1485,25 @@ impl Game {
             use_world_space: true,
             enabled: false,
             visible: true,
-        });
-        Tendril { id, line: self.lines.len() - 1 }
+        };
+        // A destroyed tendril's slot takes the new one (as trail_add's), else a new slot.
+        let l = match self.v45.free_tendrils.pop() {
+            Some(l) => {
+                self.lines[l] = line;
+                l
+            }
+            None => {
+                self.lines.push(line);
+                self.lines.len() - 1
+            }
+        };
+        Tendril { id, line: l }
+    }
+
+    /// Object.Destroy of a tendril's GameObject: its line stops drawing and its slot is free.
+    fn dulcamarus_destroy_tendril(&mut self, l: usize) {
+        self.lines[l].visible = false;
+        self.v45.free_tendrils.push(l);
     }
 
     /// DulcamarusBehaviour.Heal
@@ -1658,11 +1806,16 @@ mod tests {
         let s = &g.v45.speedometers[0];
         assert!(s.speedMs > 1.0 && s.TopSpeedMs >= s.speedMs, "{} {}", s.speedMs, s.TopSpeedMs);
         g.speedometer_set_text(0);
-        assert!(g.v45.speedometers[0].text.contains(" m/s\n<color=blue>"), "{}", g.v45.speedometers[0].text);
+        let t = g.v45.speedometers[0].TextMesh.expect("the TextMeshPro");
+        let light = g.v45.speedometers[0].Light.expect("the Light");
+        assert!(g.world_texts[t].text.contains(" m/s\n<color=blue>"), "{}", g.world_texts[t].text);
+        assert!(g.world_texts[t].enabled && g.sprite_drawn(light));
         assert!(g.physicals[p].menu.iter().any(|b| b.Identity == "resetTopSpeed"));
         g.activate_for_test(p);
         frames(&mut g, 1);
         assert!(!g.v45.speedometers[0].Activated);
+        // UpdateActivation: the text and the light go off with it.
+        assert!(!g.world_texts[t].enabled && !g.sprite_drawn(light));
     }
 
     /// PhysicalBehaviour.Start: a slashing item (SlashColliders) gets a DrippingParticlesPrefab clone that runs.
@@ -1688,9 +1841,20 @@ mod tests {
         let Some(mut g) = game45() else { return };
         let p = spawn(&mut g, "Buzzer", [0.0, 2.0, 0.0]);
         frames(&mut g, 10);
+        let d = g.v45.buzzers[0].Diaphragm.expect("the Diaphragm's sprite");
+        assert_eq!(g.sprite_local_scale(d), [1.0; 3]);
         g.activate_for_test(p);
         frames(&mut g, 1);
         assert!(g.v45.buzzers[0].lastPlayedTime > 0.0);
+        // OnWillRenderObject: the diaphragm swells with the buzz's output, then rests at 1 once it stops.
+        let mut most = 0.0f32;
+        for _ in 0..30 {
+            frames(&mut g, 1);
+            most = most.max(g.sprite_local_scale(d)[1]);
+        }
+        assert!(most > 1.0, "{most}");
+        frames(&mut g, 300);
+        assert_eq!(g.sprite_local_scale(d), [1.0; 3]);
     }
 
     #[test]
@@ -1708,6 +1872,8 @@ mod tests {
         g.activate_for_test(bow);
         frames(&mut g, 5);
         let x = g.v45.injectables.first().expect("the bolt's InjectableBehaviour").clone();
+        // InjectableBehaviour.Start found the bolt's imbuefx system and played it.
+        assert!(x.ImbueParticles.is_some());
         let life = liquid_of_class("LifeSerumLiquid");
         let carried: f32 = x.LiquidDistributions.as_ref().unwrap().iter().map(|&(_, a)| a).sum();
         // The syringe is infinite (refills in FixedUpdate), so compare with SyringeFluidUsage, not what is left.
@@ -1856,7 +2022,7 @@ mod tests {
         let bolt = spawn(&mut g, "Crossbow Bolt", [8.0, 2.0, 0.0]);
         frames(&mut g, 2);
         let id = g.allocate_instance_id();
-        g.v45.injectables.push(super::Injectable { id, phys: Some(bolt), LiquidDistributions: Some(vec![("LIFE SERUM".into(), 0.25)]), FxColor: [0.5, 0.25, 1.0, 1.0], destroyed: false });
+        g.v45.injectables.push(super::Injectable { id, phys: Some(bolt), LiquidDistributions: Some(vec![("LIFE SERUM".into(), 0.25)]), FxColor: [0.5, 0.25, 1.0, 1.0], destroyed: false, ImbueParticles: None });
         g.injectable_attach(g.v45.injectables.len() - 1, true);
         let humans: Vec<usize> = (human..g.physicals.len()).filter(|&p| g.limbs.iter().any(|l| l.PhysicalBehaviour == p)).collect();
         let mut picked = vec![buzzer, meter, bow, syringe, bolt];
@@ -1949,7 +2115,8 @@ mod tests {
         spawn(&mut g, "Speedometer", [0.0, 2.0, 0.0]);
         frames(&mut g, 2);
         g.speedometer_set_text(0);
-        assert!(g.v45.speedometers[0].text.ends_with(" mph"), "{}", g.v45.speedometers[0].text);
+        let t = g.v45.speedometers[0].TextMesh.unwrap();
+        assert!(g.world_texts[t].text.ends_with(" mph"), "{}", g.world_texts[t].text);
         let rows = crate::ui::tables::SETTINGS.iter().position(|s| s.field == "SpeedUnit").expect("a SpeedUnit setting");
         assert_eq!(crate::ui::tables::SETTINGS[rows].title, "Speed unit");
         let mut s = crate::ui::state::Settings::default();

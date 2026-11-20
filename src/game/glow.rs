@@ -156,7 +156,25 @@ impl Game {
         for _ in 0..3 {
             self.allocate_instance_id();
         }
-        let mut db = self.assets.take().expect("GlowInTheDarkBehaviour without the game's data");
+        // radius = Mathf.Sqrt(PhysicalBehaviour.ObjectArea) * 3f: every container owner carries one.
+        let p = self.container_physical(self.glows[g].owner);
+        let radius = mathf::sqrt(self.physicals[p].ObjectArea) * 3.0;
+        // glow: SetParent(transform), localPosition and localRotation default (SetLocalTR normalizes the zero
+        // quaternion to identity), localScale one.
+        let glow = Trs { t: [0.0; 4], q: crate::unity::transform::normalize([0.0; 4]), s: [1.0, 1.0, 1.0, 0.0] };
+        let light = self.mod_api_create_light(p, vec![glow], [0.08, 0.62, 0.28, 1.0], radius, 0.25);
+        self.glows[g].light = match self.light_sprites[light].renderer {
+            Some(SpriteAt::Renderer(r)) => Some(r),
+            _ => None,
+        };
+    }
+
+    /// ModAPI.CreateLight and ModdingApi.CreateLight (its copy): Object.Instantiate(Resources.Load<GameObject>(
+    /// "Prefabs/ModLightPrefab"), parent) (LightSprite.Awake only reads its renderer), then localPosition zero, Color,
+    /// Radius and Brightness set. `parent` is a transform under physical `p`'s, as the chain of local poses from it up to
+    /// `p`'s (empty for `p`'s own). Returns the LightSprite (`light_sprites`).
+    pub fn mod_api_create_light(&mut self, p: usize, parent: Vec<Trs>, color: [f32; 4], radius: f32, brightness: f32) -> usize {
+        let mut db = self.assets.take().expect("ModAPI.CreateLight without the game's data");
         let prefab = db.resource("Prefabs/ModLightPrefab", 1).ok().flatten().and_then(|r| db.prefab(r).ok()).unwrap_or_else(|| panic!("Resources.Load(Prefabs/ModLightPrefab) found no GameObject"));
         // The clone's ids: each object's GameObject, then its components (instantiate_native's order).
         let mut ids = Vec::new();
@@ -190,20 +208,16 @@ impl Game {
         let id = ids[0][at.1];
         let light_id = root.components.iter().position(|(_, k)| matches!(k, Component::Script { class, .. } if class == "LightSprite")).map(|c| ids[0][c]).unwrap();
         self.assets = Some(db);
-        // radius = Mathf.Sqrt(PhysicalBehaviour.ObjectArea) * 3f: every container owner carries one.
-        let p = self.container_physical(self.glows[g].owner);
-        let radius = mathf::sqrt(self.physicals[p].ObjectArea) * 3.0;
-        // glow: SetParent(transform), localPosition and localRotation default (SetLocalTR normalizes the zero
-        // quaternion to identity), localScale one. The light: Instantiate(..., parent) keeps the prefab's local
-        // rotation; localPosition zero, localScale = Vector3.one * radius.
-        let glow = Trs { t: [0.0; 4], q: crate::unity::transform::normalize([0.0; 4]), s: [1.0, 1.0, 1.0, 0.0] };
+        // The light: Instantiate(..., parent) keeps the prefab's local rotation; localPosition zero, localScale =
+        // Vector3.one * radius.
         let light = Trs { t: [0.0; 4], q: rotation, s: [radius, radius, radius, 0.0] };
-        self.glows[g].light = Some(self.renderers.len());
+        let mut chain = vec![light];
+        chain.extend(parent);
         self.renderers.push(super::Renderer {
             anchor: super::BareAnchor::Physical(p),
-            chain: vec![light, glow],
-            // LightSprite.Color = new Color(0.08f, 0.62f, 0.28f): SpriteRenderer.color.
-            sprite: (sprite, [0.08, 0.62, 0.28, 1.0], order),
+            chain,
+            // LightSprite.Color: SpriteRenderer.color.
+            sprite: (sprite, color, order),
             layer,
             game_layer,
             material,
@@ -214,11 +228,12 @@ impl Game {
             bounds,
         });
         self.renderer_sync(self.renderers.len() - 1);
-        // LightSprite.Brightness = 0.25f: SetFloat(_GlowIntensity) into Awake's (empty) block, SetPropertyBlock.
+        // LightSprite.Brightness: SetFloat(_GlowIntensity) into Awake's (empty) block, SetPropertyBlock.
         let mut block = super::props::PropBlock::default();
-        block.set_float("_GlowIntensity", 0.25);
+        block.set_float("_GlowIntensity", brightness);
         self.set_property_block(SpriteAt::Renderer(self.renderers.len() - 1), &block);
         let r = self.renderers.len() - 1;
-        self.light_sprites.push(LightSprite { id: light_id, renderer: Some(SpriteAt::Renderer(r)), color: [0.08, 0.62, 0.28, 1.0], brightness: 0.25, radius, ..Default::default() });
+        self.light_sprites.push(LightSprite { id: light_id, renderer: Some(SpriteAt::Renderer(r)), color, brightness, radius, ..Default::default() });
+        self.light_sprites.len() - 1
     }
 }

@@ -216,6 +216,25 @@ pub fn note(p: &mut Kids, text: &str, born: f64) {
     });
 }
 
+/// Main.unity's "Pre-release build text" (Canvas, top centre): ExistInBeta.Start hides it in 1.28.41 and SetActive(true)
+/// keeps it in 1.28.45. Its TextMeshProUGUI text, size, m_fontColor and rect come from the scene; centre and middle
+/// aligned, wrapped in its box.
+fn pre_release_label(root: &mut Kids) {
+    const BETA: &str = "Canvas/Pre-release build text";
+    if !crate::assets::il::is_1_28_45() || !scene::has("Main", BETA) {
+        return;
+    }
+    let r = scene::rect("Main", BETA);
+    let color = scene::color_field("Main", BETA, "TextMeshProUGUI", "m_fontColor");
+    let [w, h] = r.size_delta;
+    // Anchored at the top centre with a top centre pivot: its box hangs from the top edge, centred on anchoredPosition.
+    root.spawn((
+        Node { position_type: PositionType::Absolute, left: percent(50), top: px(-r.anchored_position[1]), margin: UiRect { left: px(r.anchored_position[0] - w * r.pivot[0]), ..default() }, width: px(w), height: px(h), justify_content: JustifyContent::Center, ..column(0.0) },
+        Pickable::IGNORE,
+    ))
+    .with_children(|t| rich_in(t, &scene::text("Main", BETA), scene::font_size("Main", BETA), Justify::Center, color));
+}
+
 /// A Status bar item StatusController.Update turns on and off: TimeScaleView, FramerateView.
 #[derive(Component, Clone, Copy, PartialEq)]
 pub enum StatusItem {
@@ -1285,6 +1304,7 @@ fn controls_page(p: &mut Kids, ui: &Ui, controls: &Controls, art: &UiArt) {
 // ---------------------------------------------------------------- the game's HUD
 
 fn hud(root: &mut Kids, ui: &Ui, settings: &Settings, controls: &Controls, art: &UiArt, stopped: Option<&str>) {
+    pre_release_label(root);
     status_bar(root, ui, art);
     if !ui.hide_panels {
         catalog(root, ui, art, catalog_width(ui, settings));
@@ -1764,7 +1784,12 @@ pub fn tmp_preferred_height(text: &str, size: f32) -> f32 {
 
 /// TextMesh Pro rich text as lines of (text, style) runs; a tag TMP does not know is text. The styles carry over a newline.
 fn rich_lines(text: &str, size: f32) -> Vec<Vec<(String, Style)>> {
-    let base = Style { bold: false, underline: false, italic: false, color: WHITE, size, line: tmp_line() };
+    rich_lines_in(text, size, WHITE)
+}
+
+/// rich_lines from a vertex colour other than white (TMP_Text.color).
+fn rich_lines_in(text: &str, size: f32, color: Color) -> Vec<Vec<(String, Style)>> {
+    let base = Style { bold: false, underline: false, italic: false, color, size, line: tmp_line() };
     let (mut stack, mut cur): (Vec<Style>, Style) = (Vec::new(), base);
     let (mut lines, mut line, mut run) = (Vec::new(), Vec::new(), String::new());
     let flush = |line: &mut Vec<(String, Style)>, run: &mut String, s: Style| {
@@ -1847,6 +1872,11 @@ pub fn italic_runs(text: &str, size: f32) -> Vec<(String, bool, f32, f32)> {
 /// Rich text as a column of lines: a line of one style wraps as one text (the paragraphs), a line of several styles is its runs side by side;
 /// an empty line is one line high. Bold thickens the glyphs (the fonts have no bold face), <u> underlines.
 fn rich(p: &mut Kids, text: &str, size: f32, justify: Justify) {
+    rich_in(p, text, size, justify, WHITE)
+}
+
+/// rich in a TMP_Text.color other than white.
+fn rich_in(p: &mut Kids, text: &str, size: f32, justify: Justify, color: Color) {
     let align = match justify {
         Justify::Right => JustifyContent::FlexEnd,
         Justify::Center => JustifyContent::Center,
@@ -1872,9 +1902,9 @@ fn rich(p: &mut Kids, text: &str, size: f32, justify: Justify) {
     };
     // TMP_Text.parseCtrlCharacters: a backslash and n or t in the text are a line break and a tab.
     // A carriage return (Environment.NewLine's \r) takes no room and breaks no line.
-    for line in rich_lines(&text.replace("\\n", "\n").replace("\\t", "\t").replace('\r', ""), size) {
+    for line in rich_lines_in(&text.replace("\\n", "\n").replace("\\t", "\t").replace('\r', ""), size, color) {
         match line.as_slice() {
-            [] => run(p, " ", Style { bold: false, underline: false, italic: false, color: WHITE, size, line: tmp_line() }, TextLayout::default()),
+            [] => run(p, " ", Style { bold: false, underline: false, italic: false, color, size, line: tmp_line() }, TextLayout::default()),
             [(s, st)] => run(p, s, *st, TextLayout { justify, ..default() }),
             runs => {
                 p.spawn((Node { justify_content: align, align_items: AlignItems::FlexEnd, ..row(0.0) }, RichLine)).with_children(|r| {

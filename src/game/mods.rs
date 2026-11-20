@@ -60,7 +60,7 @@ impl ModFolderSource {
         let mut watcher = PollingDirectoryWatcher::new(&source, "mod.json");
         watcher.Interval = Duration::from_secs(30);
         let n = needs.clone();
-        watcher.OnChange = Some(Arc::new(move || n.store(true, Ordering::SeqCst)));
+        watcher.add_OnChange(Arc::new(move || n.store(true, Ordering::SeqCst)));
         watcher.Start();
         Ok(ModFolderSource { Folder: source, needsUpdate: needs, watcher, OnChange: UnityEvent::default() })
     }
@@ -307,6 +307,13 @@ pub const STEAM_TAGS: [&str; 8] = ["Machine", "Vehicle", "Building", "Destructib
 /// DoNotReuploadSign.Magic: the UTF-8 of "🐍🇩🇴_🇳🇴🇹_🇷🇪🇺🇵🇱🇴🇦🇩💀".
 pub fn do_not_reupload_magic() -> Vec<u8> {
     "\u{1F40D}\u{1F1E9}\u{1F1F4}_\u{1F1F3}\u{1F1F4}\u{1F1F9}_\u{1F1F7}\u{1F1EA}\u{1F1FA}\u{1F1F5}\u{1F1F1}\u{1F1F4}\u{1F1E6}\u{1F1E9}\u{1F480}".as_bytes().to_vec()
+}
+
+/// DoNotReuploadSign.Mark: Magic appended to the file (FileMode.Append makes a missing one; BinaryWriter.Write(byte[]) writes
+/// the bytes alone). Nothing in 1.28 calls it.
+pub fn do_not_reupload_mark(path: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new().append(true).create(true).open(path)?.write_all(&do_not_reupload_magic())
 }
 
 /// DoNotReuploadSign.HasMark: the file ends with Magic (opening or seeking failing throws).
@@ -644,7 +651,10 @@ impl SteamWorkshopController {
         // SteamWorkshopController.b__0: (<>c__DisplayClass7_0) Task.Run of `publishResult = await editor.SubmitAsync(this)`; b__1 its WaitUntil.
         // SteamWorkshopController.b__2: the "View terms of service" button, OpenURL of the workshop legal agreement.
         // SteamWorkshopController.OpenURL: SteamFriends.OpenWebOverlay or Application.OpenURL, from the agreement dialog.
-        unimplemented!("environment: Steam: the Workshop upload needs Steamworks (SteamworksInitialiser.IsInitialised is false, so 1.28 never gets here)")
+        // The rewrite never starts Steam. Uninitialised, Utils.IsFamilyShared reads SteamApps.AppOwner, whose Internal
+        // (SteamSharedClass.Interface) is null: a NullReferenceException ends the coroutine (Unity logs it, nothing on
+        // screen), and isBusy stays true, so every later PublishContraption does nothing.
+        None
     }
 
     /// SteamWorkshopController.IsContraptionValid: the metadata, data and thumbnail files all exist.
@@ -1016,7 +1026,34 @@ pub mod mod_api {
         pub ShouldRemoveToRemoveWhenModded: bool,
         /// Global.allowedToRegisterExternalLiquids.
         pub allowedToRegisterExternalLiquids: bool,
+        /// CatalogBehaviour.Main.ModdedCatalog: the categories RegisterCategory made.
+        pub ModdedCatalog: Vec<ModCategory>,
+        /// ToolLibrary.ModdedTypes (a HashSet<Type>): the mods' tool type names, each once.
+        pub ModdedTypes: Vec<String>,
+        /// ToolLibrary.OnCollectionChange.
+        pub OnCollectionChange: super::UnityEvent,
     }
+
+    /// A Category ScriptableObject.CreateInstance made (RegisterCategory): its name, Description and Icon; HadPriorName
+    /// false and PriorName null as made.
+    #[derive(Clone, Debug, Default)]
+    pub struct ModCategory {
+        pub name: String,
+        pub Description: Option<String>,
+        pub Icon: Option<Picture>,
+        pub HadPriorName: bool,
+        pub PriorName: Option<String>,
+    }
+
+    /// A Category FindCategory returns: one of ModGlobals.MainCatalog's (the asset) or of the ModdedCatalog (its index).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum CategoryRef {
+        Main(crate::assets::db::ObjRef),
+        Modded(usize),
+    }
+
+    use super::super::contraption::LoadedTexture;
+    use super::super::legacy_mods::Picture;
 
     pub static STATE: std::sync::LazyLock<Mutex<State>> =
         std::sync::LazyLock::new(|| Mutex::new(State { ShouldRemoveToRemoveWhenModded: true, ..Default::default() }));
@@ -1162,12 +1199,242 @@ pub mod mod_api {
         Ok(String::from_utf8_lossy(b.strip_prefix(&[0xef, 0xbb, 0xbf][..]).unwrap_or(&b)).into_owned())
     }
 
-    // ModAPI.FindSpawnable, FindCategory, LoadSprite, LoadTexture, LoadSound, CreatePhysicalObject, CreateParticleEffect,
-    // CreateLight, Register<T>, RegisterTool, RegisterPower, RegisterCategory, Notify: the catalog, Resources, the engine
-    // and a mod's own types; nothing in 1.28 calls them (the legacy compile path is a stop and the LuaModLoader loads nothing).
+    /// ModAPI.FindSpawnable: find(name) (CatalogBehaviour.Main alive, `catalog_main`: its GetSpawnable, by name then by prior
+    /// name; else the first of Resources.LoadAll<SpawnableAsset>("SpawnableAssets") of that name), then, inside AfterSpawn,
+    /// Main or OnLoad, the ToSpawnInstead of its first MigrationEvent applicable to Metadata.GameVersion. A null GameVersion
+    /// there throws NullReferenceException (LegacyGameVersionUtils.GetDifference splits it). No mod adds a spawnable.
+    pub fn FindSpawnable(db: &mut crate::assets::db::AssetDb, name: &str, catalog_main: bool) -> Result<Option<crate::assets::db::ObjRef>, Exc> {
+        use crate::assets::mono::Value;
+        let io = |e: String| Exc::new("Exception", e);
+        let assets = db.resources_in("SpawnableAssets", 114).map_err(io)?;
+        let mut by_prior = None;
+        let mut found = None;
+        for &r in &assets {
+            let (_, mb, v) = db.mono(r).map_err(io)?.ok_or_else(Exc::nre)?;
+            if mb.name == name {
+                found = Some(r);
+                break;
+            }
+            if by_prior.is_none() && v.get("HasPriorName").and_then(Value::bool) == Some(true) && matches!(v.get("PriorName"), Some(Value::Str(s)) if s == name) {
+                by_prior = Some(r);
+            }
+        }
+        let Some(asset) = found.or(if catalog_main { by_prior } else { None }) else { return Ok(None) };
+        if !STATE.lock().unwrap().metaDataIsValid {
+            return Ok(Some(asset));
+        }
+        let (_, _, v) = db.mono(asset).map_err(io)?.ok_or_else(Exc::nre)?;
+        let events = v.get("MigrationEvents").and_then(Value::array).map(<[Value]>::to_vec).unwrap_or_default();
+        for e in events {
+            // MigrationEvent.IsApplicable: false without a ToSpawnInstead.
+            let Some(target) = e.get("ToSpawnInstead").and_then(Value::pptr).and_then(|p| db.resolve(asset.file, p)) else { continue };
+            let Some(Value::Str(version)) = e.get("Version") else { return Err(Exc::nre()) };
+            use super::super::contraption::MigrationCondition::*;
+            let condition = [OlderThan, OlderThanOrEqualTo, EqualTo, NewerThan, NewerThanOrEqualTo][e.get("VersionCondition").and_then(Value::i64).unwrap_or(0) as usize];
+            let event = super::super::contraption::MigrationEvent { Version: version.clone(), VersionCondition: condition };
+            let game_version = get_Metadata()?.ok_or_else(Exc::nre)?.lock().unwrap().GameVersion.clone();
+            if event.IsApplicable(game_version.as_deref().ok_or_else(Exc::nre)?, true) {
+                return Ok(Some(target));
+            }
+        }
+        Ok(Some(asset))
+    }
+
+    /// ModAPI.FindCategory: the first of ModGlobals.MainCatalog.Categories (then, when CatalogBehaviour.Main is alive,
+    /// `catalog_main`, its ModdedCatalog) named `name` or, with HadPriorName, whose PriorName is `name`; None for none. A null
+    /// MainCatalog or a null category reached throws NullReferenceException.
+    pub fn FindCategory(db: &mut crate::assets::db::AssetDb, name: &str, catalog_main: bool) -> Result<Option<CategoryRef>, Exc> {
+        use crate::assets::mono::Value;
+        let catalog = super::mod_globals::with(|g| g.MainCatalog).ok_or_else(Exc::nre)?;
+        let io = |e: String| Exc::new("Exception", e);
+        let (_, _, root) = db.mono(catalog).map_err(io)?.ok_or_else(Exc::nre)?;
+        let list = root.get("Categories").and_then(Value::array).map(<[Value]>::to_vec).unwrap_or_default();
+        for c in list {
+            let r = c.pptr().and_then(|p| db.resolve(catalog.file, p)).ok_or_else(Exc::nre)?;
+            let (_, mb, v) = db.mono(r).map_err(io)?.ok_or_else(Exc::nre)?;
+            let prior = match v.get("PriorName") {
+                Some(Value::Str(s)) => Some(s.clone()),
+                _ => None,
+            };
+            if mb.name == name || (v.get("HadPriorName").and_then(Value::bool) == Some(true) && prior.as_deref() == Some(name)) {
+                return Ok(Some(CategoryRef::Main(r)));
+            }
+        }
+        if catalog_main {
+            let s = STATE.lock().unwrap();
+            if let Some(i) = s.ModdedCatalog.iter().position(|c| c.name == name || (c.HadPriorName && c.PriorName.as_deref() == Some(name))) {
+                return Ok(Some(CategoryRef::Modded(i)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// ModAPI.RegisterCategory: with CatalogBehaviour.Main alive (`catalog_main`) and no modded category of that name, a new
+    /// Category (name, description, icon) added to its ModdedCatalog. Else the LogError text.
+    pub fn RegisterCategory(name: &str, description: Option<&str>, icon: Option<Picture>, catalog_main: bool) -> Option<&'static str> {
+        if !catalog_main {
+            return Some(crate::il!(str "ModAPI::RegisterCategory" 0));
+        }
+        let mut s = STATE.lock().unwrap();
+        if s.ModdedCatalog.iter().any(|c| c.name == name) {
+            return Some(crate::il!(str "ModAPI::RegisterCategory" 1));
+        }
+        s.ModdedCatalog.push(ModCategory { name: name.to_string(), Description: description.map(str::to_string), Icon: icon, ..Default::default() });
+        None
+    }
+
+    /// The mod file a path-dependent function reads: InvalidOperationException (`message`) outside AfterSpawn, Main and
+    /// OnLoad, then Path.Combine(Metadata.MetaLocation, path) (a null Metadata throws NullReferenceException) and the mod's
+    /// Name.
+    fn mod_file(message: &'static str, path: &str) -> Result<(String, Option<String>), Exc> {
+        if !STATE.lock().unwrap().metaDataIsValid {
+            return Err(Exc::new("InvalidOperationException", message));
+        }
+        let m = get_Metadata()?.ok_or_else(Exc::nre)?;
+        let m = m.lock().unwrap();
+        Ok((path_combine(m.MetaLocation.as_deref(), Some(path)).map_err(path_exc)?, m.Name.clone()))
+    }
+
+    /// Debug.LogErrorFormat("{0}: Failed to load ... at \"{1}\"", Metadata.Name, path).
+    fn failed(format: &str, name: Option<&str>, path: &str) -> String {
+        format.replace("{0}", name.unwrap_or("")).replace("{1}", path)
+    }
+
+    /// ModAPI.LoadSprite(path, scale = 1, pixelated = true): the ModResourceCache's Sprite for Path.Combine(MetaLocation,
+    /// path), else (a missing file is logged and null) Utils.LoadSprite with Point (pixelated) or Bilinear filtering and
+    /// scale * 35 pixels per unit, cached. A null sprite (an unreadable file) makes Cache throw NullReferenceException.
+    /// Ok holds the sprite and the LogError text.
+    pub fn LoadSprite(path: &str, scale: f32, pixelated: bool) -> Result<(Option<Picture>, Option<String>), Exc> {
+        let (full, name) = mod_file(crate::il!(str "ModAPI::LoadSprite" 0), path)?;
+        if let Some(s) = super::mod_resource_cache::TryGet::<Picture>(&full) {
+            return Ok((Some(s), None));
+        }
+        if !Path::new(&full).is_file() {
+            return Ok((None, Some(failed(crate::il!(str "ModAPI::LoadSprite" 1), name.as_deref(), path))));
+        }
+        let sprite: Picture = std::sync::Arc::new(super::super::contraption::load_sprite(Path::new(&full), pixelated, scale * 35.0).ok_or_else(Exc::nre)?);
+        super::mod_resource_cache::Cache(&full, sprite.clone()).map_err(|e| Exc::new("ArgumentException", e))?;
+        Ok((Some(sprite), None))
+    }
+
+    /// ModAPI.LoadTexture(path, pixelated = true): as LoadSprite, the Texture2D itself (Utils.LoadTexture), cached as one.
+    pub fn LoadTexture(path: &str, pixelated: bool) -> Result<(Option<std::sync::Arc<LoadedTexture>>, Option<String>), Exc> {
+        let (full, name) = mod_file(crate::il!(str "ModAPI::LoadTexture" 0), path)?;
+        if let Some(t) = super::mod_resource_cache::TryGet::<std::sync::Arc<LoadedTexture>>(&full) {
+            return Ok((Some(t), None));
+        }
+        if !Path::new(&full).is_file() {
+            return Ok((None, Some(failed(crate::il!(str "ModAPI::LoadTexture" 1), name.as_deref(), path))));
+        }
+        let texture = std::sync::Arc::new(super::super::contraption::load_texture(Path::new(&full), pixelated).ok_or_else(Exc::nre)?);
+        super::mod_resource_cache::Cache(&full, texture.clone()).map_err(|e| Exc::new("ArgumentException", e))?;
+        Ok((Some(texture), None))
+    }
+
+    /// The asset keys of the clips LoadSound makes (negative: the jukebox's are 0 up).
+    static SOUND_KEYS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+    /// ModAPI.LoadSound(path): the ModResourceCache's AudioClip for Path.Combine(MetaLocation, path), else
+    /// Utils.FileToAudioClip (a missing file throws its IO exception; a file the reader refuses, Exception with the
+    /// reader's text: unchecked against the game's message), cached.
+    pub fn LoadSound(path: &str) -> Result<crate::game::audio::ClipRef, Exc> {
+        let (full, _) = mod_file(crate::il!(str "ModAPI::LoadSound" 0), path)?;
+        if let Some(c) = super::mod_resource_cache::TryGet::<crate::game::audio::ClipRef>(&full) {
+            return Ok(c);
+        }
+        std::fs::metadata(&full).map_err(|e| io_exc(&e, dir_missing(&full)))?;
+        let key = SOUND_KEYS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        let clip = crate::game::audio::file_to_audio_clip(Path::new(&full), key).map_err(|e| Exc::new("Exception", e))?;
+        super::mod_resource_cache::Cache(&full, clip.clone()).map_err(|e| Exc::new("ArgumentException", e))?;
+        Ok(clip)
+    }
+
+    /// ModAPI.RegisterCustomTool<T>: with ToolLibrary.Instance alive (`alive`), `new Tool(name, description, icon,
+    /// typeof(T).Name, parent)` added to `coll`, T to ModdedTypes and BroadcastCollectionChange (OnCollectionChange's
+    /// listeners, called with the state unlocked); else the LogError text.
+    fn RegisterCustomTool(name: &str, description: &str, icon: Option<Picture>, type_name: &str, parent: Option<&str>, coll: &mut Vec<crate::game::tool::ToolEntry>, alive: bool) -> Option<&'static str> {
+        if !alive {
+            return Some(crate::il!(str "ModAPI::RegisterCustomTool" 0));
+        }
+        coll.push(crate::game::tool::ToolEntry { name: name.to_string(), ty: type_name.to_string(), parent: parent.unwrap_or("").to_string(), description: description.to_string(), icon });
+        let event = {
+            let mut s = STATE.lock().unwrap();
+            if !s.ModdedTypes.iter().any(|t| t == type_name) {
+                s.ModdedTypes.push(type_name.to_string());
+            }
+            std::mem::take(&mut s.OnCollectionChange)
+        };
+        event.Invoke();
+        let mut s = STATE.lock().unwrap();
+        let added = std::mem::replace(&mut s.OnCollectionChange, event);
+        s.OnCollectionChange.listeners.extend(added.listeners);
+        None
+    }
+
+    /// ModAPI.RegisterTool<T>(name, description, icon, parent = null): RegisterCustomTool into ToolLibrary.Instance.Tools (a
+    /// null Instance throws NullReferenceException first; `library` is its Tools and whether it is alive), then the log
+    /// line "<T> registered as tool". Ok holds the LogError text (if any) and the log line.
+    pub fn RegisterTool(name: &str, description: &str, icon: Option<Picture>, type_name: &str, parent: Option<&str>, library: Option<(&mut Vec<crate::game::tool::ToolEntry>, bool)>) -> Result<(Option<&'static str>, String), Exc> {
+        let (coll, alive) = library.ok_or_else(Exc::nre)?;
+        let error = RegisterCustomTool(name, description, icon, type_name, parent, coll, alive);
+        Ok((error, format!("{type_name}{}", crate::il!(str "ModAPI::RegisterTool" 0))))
+    }
+
+    /// ModAPI.RegisterPower<T>: RegisterTool's, into ToolLibrary.Instance.Powers, "<T> registered as power".
+    pub fn RegisterPower(name: &str, description: &str, icon: Option<Picture>, type_name: &str, parent: Option<&str>, library: Option<(&mut Vec<crate::game::tool::ToolEntry>, bool)>) -> Result<(Option<&'static str>, String), Exc> {
+        let (coll, alive) = library.ok_or_else(Exc::nre)?;
+        let error = RegisterCustomTool(name, description, icon, type_name, parent, coll, alive);
+        Ok((error, format!("{type_name}{}", crate::il!(str "ModAPI::RegisterPower" 0))))
+    }
+
+    /// What ModAPI.CreatePhysicalObject makes, in its order: new GameObject(name, SpriteRenderer, AudioSourceTimeScaleBehaviour,
+    /// Optout) on the Objects layer (9) with the sprite, AddComponent BoxCollider2D (fitted to the sprite) and Rigidbody2D,
+    /// a PhysicalBehaviour whose Properties are FindPhysicalProperties("Metal") with SpawnSpawnParticles false, a second
+    /// AudioSourceTimeScaleBehaviour, and empty OverrideShotSounds and OverrideImpactSounds.
+    #[derive(Clone, Debug)]
+    pub struct PhysicalObjectSpec {
+        pub name: String,
+        pub layer: i32,
+        pub sprite: Option<Picture>,
+        pub properties: Option<crate::game::physical::PhysicalProperties>,
+        pub SpawnSpawnParticles: bool,
+    }
+
+    /// ModAPI.CreatePhysicalObject(name, sprite): the object's spec (a missing "Metal" asset leaves Properties null);
+    /// `Game::mod_api_create_physical_object` puts it in the map.
+    pub fn CreatePhysicalObject(db: &mut crate::assets::db::AssetDb, name: &str, sprite: Option<Picture>) -> Result<PhysicalObjectSpec, String> {
+        Ok(PhysicalObjectSpec { name: name.to_string(), layer: 9, sprite, properties: FindPhysicalProperties(db, "Metal")?, SpawnSpawnParticles: false })
+    }
+}
+
+/// What ModAPI.CreateParticleEffect returned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ParticleEffect {
+    /// PoolGenerator.Instance.RequestPrefab's clone (the pool's own item).
+    Pooled,
+    /// Object.Instantiate's clone: its root Transform id.
+    Spawned(i32),
 }
 
 impl super::Game {
+    /// ModAPI.CreateParticleEffect(name, position): ModGlobals.LoadedParticleEffects[name] (None for an unknown name), a
+    /// prefab tagged Poolable from PoolGenerator.Instance.RequestPrefab (None when its full pool hands out nothing), any
+    /// other Object.Instantiate'd at the position with no rotation.
+    pub fn mod_api_create_particle_effect(&mut self, name: &str, position: [f32; 2]) -> Option<ParticleEffect> {
+        let prefab = mod_globals::with(|g| g.LoadedParticleEffects.get(name).copied())?;
+        let poolable = self.assets.as_ref().expect("ModAPI.CreateParticleEffect without the game's data").game_object(prefab).is_ok_and(|g| g.tag == super::water::POOLABLE_TAG);
+        if poolable {
+            return self.pool_generator_request_prefab(prefab, position).then_some(ParticleEffect::Pooled);
+        }
+        Some(ParticleEffect::Spawned(self.spawn_prefab(prefab, [position[0], position[1], 0.0])))
+    }
+
+    /// ModAPI.CreatePhysicalObject in a map: the spec's GameObject made (see `mod_api::PhysicalObjectSpec`).
+    pub fn mod_api_create_physical_object(&mut self, spec: &mod_api::PhysicalObjectSpec) -> usize {
+        let _ = spec;
+        unimplemented!("mod-only: ModAPI.CreatePhysicalObject's GameObject: a mod file's sprite in the world (the renderers and BoxCollider2D fit take the game's sprite assets only)")
+    }
+
     /// ModdingApi.Events.<event>.Invoke(component) for an event over a behaviour: the component's instance id is the
     /// sender and the argument (`mod_event_invoke`).
     pub(super) fn mod_event(&self, event: &ModApiEvent<i32>, id: i32) {
@@ -1368,7 +1635,7 @@ impl WorkshopItem {
 // CompilerServerBehaviour, ModCompilerStatusBehaviour): `super::legacy_mods`.
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1394,6 +1661,14 @@ mod tests {
         c.isBusy = true;
         assert_eq!(c.PublishContraption(&Default::default()), PublishOutcome::Busy);
         assert!(publish_button_publish().starts_with("<b>Steam is not initialised</b>"));
+        // Past the directory check without Steam: Utils.IsFamilyShared throws, the routine dies busy.
+        let dir = std::env::temp_dir().join(format!("ppg-upload-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = SteamWorkshopController { currentlyUploading: Some(super::super::contraption::ContraptionMetaData { Directory: Some(dir.clone()), ..Default::default() }), ..Default::default() };
+        assert_eq!(c.StartUploadingRoutine(), None);
+        assert!(c.isBusy && !c.progress_box);
+        assert_eq!(c.PublishContraption(&Default::default()), PublishOutcome::Busy);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
@@ -1462,6 +1737,113 @@ mod tests {
         std::fs::write(root.join("Mods/a/x.cs"), b"class X {}").unwrap();
         std::fs::write(root.join("Mods/a/y.txt"), b"skip").unwrap();
         assert_eq!(mod_hasher_compute(&root.join("Mods/a")).unwrap(), 371317 ^ super::super::contraption::xxhash(b"class X {}", 0));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A w x h RGBA PNG (the png crate), for a test mod's sprite.
+    pub(crate) fn test_png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        let mut wr = enc.write_header().unwrap();
+        wr.write_image_data(&vec![200u8; (w * h * 4) as usize]).unwrap();
+        drop(wr);
+        out
+    }
+
+    /// A mono 16-bit PCM WAV of `samples` silent samples at 22050 Hz.
+    fn test_wav(samples: u32) -> Vec<u8> {
+        let data = samples * 2;
+        let mut b = b"RIFF".to_vec();
+        b.extend((36 + data).to_le_bytes());
+        b.extend(b"WAVEfmt ");
+        b.extend(16u32.to_le_bytes());
+        b.extend(1u16.to_le_bytes());
+        b.extend(1u16.to_le_bytes());
+        b.extend(22050u32.to_le_bytes());
+        b.extend(44100u32.to_le_bytes());
+        b.extend(2u16.to_le_bytes());
+        b.extend(16u16.to_le_bytes());
+        b.extend(b"data");
+        b.extend(data.to_le_bytes());
+        b.extend(vec![0u8; data as usize]);
+        b
+    }
+
+    /// ModAPI's file, category and tool functions over a mod folder built here (a sprite, a sound, its metadata); the
+    /// DoNotReuploadSign mark and the watcher's OnChange subscriptions.
+    #[test]
+    fn mod_api_loads_a_test_mod_folder_and_registers() {
+        let root = std::env::temp_dir().join(format!("ppg-modapi-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("icon.png"), test_png(4, 2)).unwrap();
+        std::fs::write(root.join("bad.png"), b"not a picture").unwrap();
+        std::fs::write(root.join("beep.wav"), test_wav(441)).unwrap();
+        let mut meta = ModMetaData::new();
+        meta.Name = Some("Test Mod".into());
+        meta.MetaLocation = Some(root.display().to_string());
+        assert!(mod_api::LoadSprite("icon.png", 1.0, true).is_err_and(|e| e.message.contains("LoadSprite must be called")));
+        mod_api::STATE.lock().unwrap().metaDataIsValid = true;
+        mod_api::set_Metadata(Some(Arc::new(std::sync::Mutex::new(meta))));
+        let (s, err) = mod_api::LoadSprite("icon.png", 2.0, true).unwrap();
+        let s = s.unwrap();
+        assert_eq!((err, s.rect, s.pixels_per_unit, s.texture.point_filter), (None, [0.0, 0.0, 4.0, 2.0], 70.0, true));
+        assert!(Arc::ptr_eq(&s, &mod_api::LoadSprite("icon.png", 1.0, false).unwrap().0.unwrap()));
+        assert_eq!(mod_api::LoadSprite("gone.png", 1.0, true).unwrap(), (None, Some("Test Mod: Failed to load sprite at \"gone.png\"".into())));
+        let (t, _) = mod_api::LoadTexture("icon.png", false).unwrap();
+        assert_eq!((t.as_ref().map(|t| (t.image.width, t.point_filter))), Some((4, false)));
+        assert_eq!(mod_api::LoadTexture("gone.png", true).unwrap().1.unwrap(), "Test Mod: Failed to load texture at \"gone.png\"");
+        let c = mod_api::LoadSound("beep.wav").unwrap();
+        assert_eq!((c.clip.frequency, c.pcm.as_ref().unwrap().data.len()), (22050, 441));
+        assert!(Arc::ptr_eq(&c, &mod_api::LoadSound("beep.wav").unwrap()));
+        assert!(mod_api::LoadSound("gone.wav").is_err());
+        // RegisterCategory: before a map, then once, then a second of the same name.
+        assert_eq!(mod_api::RegisterCategory("Test cat", Some("d"), None, false), Some(crate::il!(str "ModAPI::RegisterCategory" 0)));
+        assert_eq!(mod_api::RegisterCategory("Test cat", Some("d"), None, true), None);
+        assert_eq!(mod_api::RegisterCategory("Test cat", None, None, true), Some(crate::il!(str "ModAPI::RegisterCategory" 1)));
+        // RegisterTool / RegisterPower: no library, a dead one, a live one (its listener told).
+        let told = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let t2 = told.clone();
+        mod_api::STATE.lock().unwrap().OnCollectionChange.AddListener(Arc::new(move || {
+            t2.fetch_add(1, Ordering::SeqCst);
+        }));
+        let mut tools = Vec::new();
+        assert!(mod_api::RegisterTool("T", "d", None, "TestTool", None, None).is_err());
+        let (e, log) = mod_api::RegisterPower("T", "d", Some(s.clone()), "TestTool", Some("P"), Some((&mut tools, false))).unwrap();
+        assert_eq!((e, log.as_str(), tools.len()), (Some(crate::il!(str "ModAPI::RegisterCustomTool" 0)), "TestTool registered as power", 0));
+        let (e, log) = mod_api::RegisterTool("T", "d", Some(s.clone()), "TestTool", Some("P"), Some((&mut tools, true))).unwrap();
+        assert_eq!((e, log.as_str(), tools[0].ty.as_str(), tools[0].parent.as_str(), told.load(Ordering::SeqCst)), (None, "TestTool registered as tool", "TestTool", "P", 1));
+        {
+            let mut st = mod_api::STATE.lock().unwrap();
+            assert!(st.ModdedTypes == ["TestTool"] && st.ModdedCatalog.len() == 1);
+            st.ModdedTypes.clear();
+            st.ModdedCatalog.clear();
+            st.OnCollectionChange = Default::default();
+            st.metaDataIsValid = false;
+        }
+        mod_api::set_Metadata(None);
+        // DoNotReuploadSign.Mark appends the mark (a new file gets one too).
+        std::fs::write(root.join("c.json"), b"{}").unwrap();
+        do_not_reupload_mark(&root.join("c.json")).unwrap();
+        do_not_reupload_mark(&root.join("new.json")).unwrap();
+        assert!(do_not_reupload_has_mark(&root.join("c.json")).unwrap() && do_not_reupload_has_mark(&root.join("new.json")).unwrap());
+        assert!(std::fs::read(root.join("c.json")).unwrap().starts_with(b"{}"));
+        // PollingDirectoryWatcher.add_OnChange / remove_OnChange: the last subscription of a handler goes.
+        let w = PollingDirectoryWatcher::new(&root, "mod.json");
+        let n = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let n2 = n.clone();
+        let h: super::super::contraption::WatcherHandler = Arc::new(move || {
+            n2.fetch_add(1, Ordering::SeqCst);
+        });
+        w.add_OnChange(h.clone());
+        w.add_OnChange(h.clone());
+        w.remove_OnChange(&h);
+        w.invoke_on_change();
+        w.remove_OnChange(&h);
+        w.remove_OnChange(&h);
+        w.invoke_on_change();
+        assert_eq!(n.load(Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 

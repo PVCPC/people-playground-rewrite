@@ -952,7 +952,7 @@ const PURE_LEGACY: &[(&str, PureCall)] = &[
     })),
     ("ModFolderSource.<.ctor>b__8_0", |c| m_folder_call(c, |_, s, _| {
         s.needsUpdate.store(false, std::sync::atomic::Ordering::SeqCst);
-        (s.watcher.OnChange.clone().ok_or("no OnChange")?)();
+        s.watcher.invoke_on_change();
         Ok(m_b(s.needsUpdate.load(std::sync::atomic::Ordering::SeqCst)))
     })),
     ("ModFolderSource.Dispose", |c| m_folder_call(c, |t, s, _| {

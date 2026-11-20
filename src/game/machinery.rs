@@ -773,6 +773,14 @@ impl Game {
             "ActivatorElectrodeBehaviour" => off!(activator_electrodes),
             "AcceleratorGunBehaviour" => off!(accelerators),
             "ActivationToggleBehaviour" => off!(activation_toggles),
+            "SpeedometerBehaviour" => match self.v45.speedometers.iter_mut().find(|x| x.id == id) {
+                Some(x) => std::mem::replace(&mut x.enabled, on),
+                None => unreachable!("{class}: not in the arena"),
+            },
+            "BuzzerBehaviour" => match self.v45.buzzers.iter_mut().find(|x| x.id == id) {
+                Some(x) => std::mem::replace(&mut x.enabled, on),
+                None => unreachable!("{class}: not in the arena"),
+            },
             _ => match on {
                 true => !self.disabled_ids.remove(&id),
                 false => !self.disabled_ids.insert(id),
@@ -831,6 +839,8 @@ impl Game {
             || self.activator_electrodes.iter().any(|x| x.id == id && !x.enabled)
             || self.accelerators.iter().any(|x| x.id == id && !x.enabled)
             || self.activation_toggles.iter().any(|x| x.id == id && !x.enabled)
+            || self.v45.speedometers.iter().any(|x| x.id == id && !x.enabled)
+            || self.v45.buzzers.iter().any(|x| x.id == id && !x.enabled)
             || self.tr_disabled(id)
     }
 }

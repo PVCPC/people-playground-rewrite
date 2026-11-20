@@ -1336,9 +1336,8 @@ Parameter name: index"));
         self.detail_views.push(id);
     }
 
-    /// ExistInBeta.Start: presentation (SetActive(false) of the "Pre-release build text" UI label under Canvas in Main.unity and Map Editor.unity,
-    /// its only holders: it hides a label and nothing reads that object's active flag).
-    /// 1.28.45 (a preview build) does SetActive(true), which leaves the active label as it is.
+    /// ExistInBeta.Start: SetActive(false) (1.28.41) or SetActive(true) (1.28.45) of the "Pre-release build text" label under
+    /// Canvas in Main.unity and Map Editor.unity, its only holders; the HUD draws it on 1.28.45 (view.rs pre_release_label).
     pub fn exist_in_beta_start(&mut self, id: i32) {
         let active = crate::assets::il::is_1_28_45();
         if !active {

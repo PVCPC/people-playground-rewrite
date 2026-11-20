@@ -329,10 +329,39 @@ impl Audio {
         if channel < 0 || channel as usize >= OUT_CHANNELS {
             return Err("ArgumentException: AudioSource.GetSpectrumData failed; invalid channel".into());
         }
-        // No m_dryGroup (never played; a loaded voice means the game's source had played): the array stays zeroed.
+        let Some(pos) = self.dry_history(id, 1.0) else { return Ok(vec![0.0; samples]) };
+        // The window is the 2 * N frames before the history position.
+        let mut from = pos as i64 - 2 * samples as i64;
+        if from < 0 {
+            from += HISTORY as i64;
+        }
+        let mut out = vec![0.0f32; samples];
+        dspfft_get_spectrum(&self.dry[&id].history, from as usize, HISTORY, &mut out, samples * 2, channel as usize, OUT_CHANNELS, window);
+        Ok(out)
+    }
+
+    /// AudioSource.GetOutputData(array, channel): the source's m_dryGroup through FMOD::ChannelGroup::getWaveData, the last
+    /// `samples` frames of channel `channel` (0 or 1) in the same DSP history buffer getSpectrum reads (its first call starts the
+    /// buffering too); zeroes without a dry group. `gain` is the 3D attenuation UpdateVolume puts into each channel's volume
+    /// (1 at spatial blend 0).
+    pub fn get_output_data(&mut self, id: i32, samples: usize, channel: usize, gain: f32) -> Vec<f32> {
+        let mut out = vec![0.0f32; samples];
+        let Some(pos) = self.dry_history(id, gain) else { return out };
+        let h = &self.dry[&id].history;
+        let mut at = (pos + HISTORY - samples % HISTORY) % HISTORY;
+        for x in out.iter_mut() {
+            *x = h[at * OUT_CHANNELS + channel];
+            at = (at + 1) % HISTORY;
+        }
+        out
+    }
+
+    /// The source's dry group history brought up to the last mixed DSP block: its position after the blocks mixed so far,
+    /// None when the source has no m_dryGroup (never played; a loaded voice means the game's source had played).
+    fn dry_history(&mut self, id: i32, gain: f32) -> Option<usize> {
         let s = self.get(id);
         if !self.dry_groups.contains(&id) && s.main.is_none() && s.one_shots.is_empty() {
-            return Ok(vec![0.0; samples]);
+            return None;
         }
         self.dry_groups.insert(id);
         let blocks = self.dsp_blocks();
@@ -343,7 +372,7 @@ impl Audio {
             let s = self.get(id);
             // UpdateVolume (180acd980): rolloff * channel volume * ambient (1) * playable (1), times the one-shot volume;
             // the rolloff is 1 at spatial blend 0 (all the jukebox's reads that matter).
-            let base = if s.mute { 0.0 } else { s.volume };
+            let base = if s.mute { 0.0 } else { s.volume * gain };
             let has_main = s.main.is_some();
             for (i, v) in s.main.iter().chain(s.one_shots.iter()).enumerate() {
                 if let Some(r) = v.mix.rec.filter(|r| r.block == last) {
@@ -373,15 +402,8 @@ impl Audio {
                 g.history[(start + f) * OUT_CHANNELS + 1] = l;
             }
         }
-        // History position after the blocks mixed so far; the window is the 2 * N frames before it.
-        let pos = (done.max(0) as u64 * DSP_BLOCK) as usize % HISTORY;
-        let mut from = pos as i64 - 2 * samples as i64;
-        if from < 0 {
-            from += HISTORY as i64;
-        }
-        let mut out = vec![0.0f32; samples];
-        dspfft_get_spectrum(&g.history, from as usize, HISTORY, &mut out, samples * 2, channel as usize, OUT_CHANNELS, window);
-        Ok(out)
+        // History position after the blocks mixed so far.
+        Some((done.max(0) as u64 * DSP_BLOCK) as usize % HISTORY)
     }
 }
 
