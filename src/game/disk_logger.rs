@@ -30,7 +30,8 @@ impl DiskLogger {
             let files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|r| r.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "log")).collect()).unwrap_or_default();
             if files.len() > MAX_LOG_FILE_COUNT {
                 let mut num = 0;
-                // OrderBy(File.GetCreationTime): a stable sort.
+                // OrderBy(File.GetCreationTime): a stable sort (1.28.41/1.28.51 pass a lambda f => File.GetCreationTime(f), 1.28.52 the
+                // method group: the same order).
                 let mut by_time: Vec<(std::time::SystemTime, &PathBuf)> = files.iter().map(|f| (std::fs::metadata(f).and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH), f)).collect();
                 by_time.sort_by_key(|(t, _)| *t);
                 for (_, item) in by_time {

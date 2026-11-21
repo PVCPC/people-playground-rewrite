@@ -49,7 +49,14 @@ pub fn gradient(g: &MinMaxGradient, t: f32, r: f32) -> u32 {
         2 => pack([0, 1, 2, 3].map(|i| (g.max_color[i] - g.min_color[i]) * r + g.min_color[i])),
         // Gradient::Evaluate (0x1801e0050) at the draw: EvaluateHDR of its mode, then the same clamp and rounding.
         4 => pack(evaluate_hdr(&g.max, r)),
-        _ => unimplemented!("mod-only: start colour between two gradients (EvaluateRandomGradient, 0x1801d1470): no game system uses it"),
+        // EvaluateRandomGradient<0,0> (0x1801d1470): both gradients at t to bytes, lerped by the byte weight cvtt(255 r) (1.28.52's
+        // muzzle Flash systems: Prefabs/MuzzleSmoke and the guns' new MuzzleSmoke Side / Fiery / Small).
+        3 => {
+            let f = crate::particle_render::cvtt(255.0 * r) as u32;
+            let m = f | f << 16;
+            crate::particle_render::lerp_bytes(pack(evaluate_hdr(&g.min, t)), pack(evaluate_hdr(&g.max, t)), m | m << 8)
+        }
+        s => unimplemented!("mod-only: start colour state {s}: no game system uses it"),
     }
 }
 

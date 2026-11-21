@@ -891,4 +891,58 @@ mod tests {
             assert!(l.components.iter().any(|(_, c)| matches!(c, Component::Collider2D(_))), "{}", l.name);
         }
     }
+
+    /// Every object in the install's serialized files, one "OBJ" line each: file, path id, class id, size, name (the
+    /// script class for a MonoBehaviour) and a hash of its bytes, and for a MonoBehaviour one of its fields read with the
+    /// installed DLL's layout; then each FirearmBehaviour's StandardParticleOverride (1.28.52's new field). For comparing two
+    /// builds' data (`-- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn object_survey() {
+        use std::hash::{Hash, Hasher};
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let mut db = AssetDb::open(&game).unwrap();
+        let h = |x: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+            let mut s = std::collections::hash_map::DefaultHasher::new();
+            x(&mut s);
+            s.finish()
+        };
+        let names: Vec<(String, usize)> = db.names.iter().map(|(n, &i)| (n.clone(), i)).collect();
+        for (fname, fi) in names {
+            let objects = db.files[fi].objects.clone();
+            for o in objects {
+                let r = ObjRef { file: fi, path_id: o.path_id };
+                let bytes = h(&|s| db.data(r).hash(s));
+                let named = [28, 213, 83, 21, 43, 74, 49, 48, 128, 90, 91, 95, 150, 152, 156, 187];
+                let (name, fields) = if o.class_id == 114 {
+                    match db.mono(r) {
+                        Ok(Some((sc, mb, v))) => {
+                            if sc.class_name == "FirearmBehaviour" {
+                                let go = db.resolve(fi, mb.game_object).and_then(|g| db.game_object(g).ok()).map(|g| g.name).unwrap_or_default();
+                                println!("SPO {fname} {} {go} {:?}", o.path_id, v.get("StandardParticleOverride"));
+                            }
+                            let mut v = v;
+                            if let Value::Struct(f) = &mut v {
+                                f.retain(|(n, _)| n != "StandardParticleOverride");
+                            }
+                            (format!("{}:{}", sc.class_name, mb.name), format!("{:x}", h(&|s| format!("{v:?}").hash(s))))
+                        }
+                        Ok(None) => ("missing-script".into(), String::new()),
+                        Err(e) => (format!("ERR {e}"), String::new()),
+                    }
+                } else if o.class_id == 198 {
+                    let ps = crate::assets::particles::ParticleSystem::read(db.data(r)).unwrap();
+                    let go = PPtr::read(&mut crate::assets::serialized::Reader::new(db.data(r))).ok().and_then(|p| db.resolve(fi, p)).and_then(|g| db.game_object(g).ok()).map(|g| g.name).unwrap_or_default();
+                    (format!("{go} color{}", ps.start_color.state), String::new())
+                } else if o.class_id == 1 {
+                    (db.game_object(r).map(|g| g.name).unwrap_or_default(), String::new())
+                } else if named.contains(&o.class_id) {
+                    (crate::assets::serialized::Reader::new(db.data(r)).string().unwrap_or_default(), String::new())
+                } else {
+                    (String::new(), String::new())
+                };
+                println!("OBJ	{fname}	{}	{}	{}	{name}	{bytes:x}	{fields}", o.path_id, o.class_id, o.byte_size);
+            }
+        }
+    }
 }

@@ -897,8 +897,9 @@ impl Game {
                     continue;
                 }
             }
-            // IL_07f3
-            if self.physicals[victim].destroyed {
+            // IL_07f3: (bool)victim && (bool)victim.rigidbody, and from 1.28.52 victim.isActiveAndEnabled (the game's object
+            // active in the hierarchy and the PhysicalBehaviour enabled).
+            if self.physicals[victim].destroyed || !(self.physicals[victim].active && self.physicals[victim].enabled) {
                 continue;
             }
             // victim.rigidbody.ClosestPoint(rigidbody.position)

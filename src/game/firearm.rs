@@ -59,6 +59,8 @@ script! {
         /// The attachments in BallisticsEmitter.BulletEntryEvent and OnFire (added and removed together), in order.
         attachments: Vec<usize> = Vec::new(),
         MuzzleFlashEffectOverride: Option<ObjRef> = None,
+        /// StandardParticleOverride (1.28.52): Awake instantiates it in place of Prefabs/MuzzleSmoke when set.
+        StandardParticleOverride: Option<ObjRef> = None,
         Cartridge: Cartridge = Cartridge::default(),
         /// LayersToHit (Awake's WaterLayer is Water | LayersToHit).
         LayersToHit: u32 = 0,
@@ -105,7 +107,8 @@ impl Game {
     }
 
     /// FirearmBehaviour.Awake without a MuzzleFlashEffectOverride: muzzleTransform = Instantiate(Prefabs/MuzzleSmoke,
-    /// transform), flash = its GetComponentInChildren<ParticleSystem>(). The systems Play(withChildren) starts (flash
+    /// transform) (1.28.52: Instantiate(StandardParticleOverride ? StandardParticleOverride : Prefabs/MuzzleSmoke, transform)),
+    /// flash = its GetComponentInChildren<ParticleSystem>(). The systems Play(withChildren) starts (flash
     /// and the ParticleSystems below it) become embedded systems that follow the clone's root.
     pub(crate) fn firearm_muzzle_smoke(&mut self, db: &mut crate::assets::db::AssetDb, f: usize) -> Result<(), String> {
         use crate::assets::db::Component;
@@ -113,7 +116,10 @@ impl Game {
         if self.firearms[f].MuzzleFlashEffectOverride.is_some() {
             return Ok(());
         }
-        let r = db.resource("Prefabs/MuzzleSmoke", 1)?.ok_or("Resources.Load(Prefabs/MuzzleSmoke) found no GameObject")?;
+        let r = match self.firearms[f].StandardParticleOverride {
+            Some(r) => r,
+            None => db.resource("Prefabs/MuzzleSmoke", 1)?.ok_or("Resources.Load(Prefabs/MuzzleSmoke) found no GameObject")?,
+        };
         let prefab = db.prefab(r)?;
         self.firearms[f].smoke_clone = Some(std::sync::Arc::new(prefab.clone()));
         let trs = |o: usize| match &prefab.objects[o].components[0].1 {

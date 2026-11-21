@@ -39,7 +39,12 @@ pub fn get_debug_info_string(sys: &SystemInfo) -> String {
     let mut s = String::new();
     s.push_str(crate::il!(str "ExportGameDebugInfoBehaviour::GetDebugInfoString" 0));
     // GameInfo.Version (Version.ToString: major.minor.build); IntPtr.Size is 8 in the 64 bit player.
-    let Version { _Major: major, _Minor: minor, _Build: build, .. } = VERSION;
+    let Version { _Major: mut major, _Minor: mut minor, _Build: mut build, .. } = VERSION;
+    if crate::assets::il::is_1_28_45() {
+        // The newer build's GameInfo..cctor: new Version(1, 28, 52).
+        let n = |k: usize| crate::assets::il::get().i4("GameInfo::.cctor", k);
+        (major, minor, build) = (n(0), n(1), n(2));
+    }
     s.push_str(&format!("## People Playground [v{major}.{minor}.{build}] [{} bit]\n", if cfg!(target_pointer_width = "64") { "64" } else { "32" }));
     s.push_str(nl);
     s.push_str(crate::il!(str "ExportGameDebugInfoBehaviour::GetDebugInfoString" 4));
@@ -200,7 +205,8 @@ mod tests {
     fn report_text() {
         let sys = SystemInfo { operating_system: "OS".into(), processor_type: "CPU".into(), graphics_device_name: "GPU".into(), system_memory_size: 32538 };
         let s = get_debug_info_string(&sys);
-        assert!(s.starts_with("# EXPORTED GAME DEBUG INFO\n## People Playground [v1.28.41] [64 bit]\n"));
+        let v = if crate::assets::il::is_1_28_45() { "1.28.52" } else { "1.28.41" };
+        assert!(s.starts_with(&format!("# EXPORTED GAME DEBUG INFO\n## People Playground [v{v}] [64 bit]\n")));
         assert!(s.contains(" - **Memory**: 32 GB\n\n"));
         assert!(s.ends_with("## All loaded mods\n\n\r\n") || s.ends_with("## All loaded mods\n\n\n"));
     }

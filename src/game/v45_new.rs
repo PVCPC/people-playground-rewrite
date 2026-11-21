@@ -650,7 +650,7 @@ impl Game {
         self.speedometer_show(s, on);
     }
 
-    /// SpeedometerBehaviour.OnDisable: presentation (drawn, not yet compared with the real game): TextMesh.enabled, then Light.enabled = false.
+    /// SpeedometerBehaviour.OnDisable: presentation (compared with real 1.28.45: reference-probe/game/v45vis_1.txt): TextMesh.enabled, then Light.enabled = false.
     pub(super) fn speedometer_on_disable(&mut self, s: usize) {
         self.speedometer_show(s, false);
     }
@@ -672,7 +672,7 @@ impl Game {
         x.TopSpeedMs = mathf::max(x.TopSpeedMs, x.speedMs);
     }
 
-    // SpeedometerBehaviour.OnWillRenderObject: presentation (drawn, not yet compared with the real game): SetText (v45_will_render).
+    // SpeedometerBehaviour.OnWillRenderObject: presentation (compared with real 1.28.45: reference-probe/game/v45vis_1.txt): SetText (v45_will_render).
 
     /// SpeedometerBehaviour.SetText: the TextMesh's text, both speeds in the SpeedUnit preference.
     pub fn speedometer_set_text(&mut self, s: usize) {
@@ -950,7 +950,7 @@ impl Game {
         }
     }
 
-    /// InjectableBehaviour.Start: presentation (drawn, not yet compared with the real game): ImbueParticles = GetComponentInChildren<ParticleSystem>() (the bolt's "imbuefx"); when there
+    /// InjectableBehaviour.Start: presentation (compared with real 1.28.45: reference-probe/game/v45vis_1.txt): ImbueParticles = GetComponentInChildren<ParticleSystem>() (the bolt's "imbuefx"); when there
     /// is one, main.startColor = FxColor, then Play().
     fn injectable_start(&mut self, i: usize) {
         let x = &self.v45.injectables[i];
@@ -1222,7 +1222,7 @@ impl Game {
         (s.rolloff_mode, s.min_distance, s.max_distance) = (0, min, max);
     }
 
-    /// BuzzerBehaviour.OnWillRenderObject: presentation (drawn, not yet compared with the real game): Diaphragm.localScale is (1, 1, 1) while Source is silent, else y = 1 + the mean
+    /// BuzzerBehaviour.OnWillRenderObject: presentation (compared with real 1.28.45: reference-probe/game/v45vis_1.txt): Diaphragm.localScale is (1, 1, 1) while Source is silent, else y = 1 + the mean
     /// absolute value of Source.GetOutputData(SampleBuffer[128], 0).
     fn buzzer_on_will_render_object(&mut self, b: usize) {
         fn nre<T>() -> T {
@@ -1802,7 +1802,27 @@ mod tests {
     fn speedometer_reads_a_fall_and_toggles() {
         let Some(mut g) = game45() else { return };
         let p = spawn(&mut g, "Speedometer", [0.0, 8.0, 0.0]);
-        frames(&mut g, 30);
+        // The real 1.28.45 fall (reference-probe/game/v45vis_1.txt): speedMs after 1, 3, 5, 7, 8, 10 fixed steps of free fall.
+        let mut seen = Vec::new();
+        for _ in 0..15 {
+            frames(&mut g, 1);
+            seen.push(g.v45.speedometers[0].speedMs.to_bits());
+        }
+        for real in [0x3e258af7u32, 0x3ef85072, 0x3f4eedb5, 0x3f90d998, 0x3fa58af7, 0x3fceedb5] {
+            assert!(seen.contains(&real), "{real:08x} not in {seen:08x?}");
+        }
+        g.speedometer_set_text(0);
+        let t0 = g.v45.speedometers[0].TextMesh.expect("the TextMeshPro");
+        let s0 = &g.v45.speedometers[0];
+        assert_eq!(g.world_texts[t0].text, format!("{:.1} m/s
+<color=blue>{:.1} m/s", s0.speedMs, s0.TopSpeedMs));
+        // OnDisable: the text and the light off; OnEnable (UpdateActivation): back on (the real log's "disabled" and "enabled" lines).
+        g.speedometer_on_disable(0);
+        let l0 = g.v45.speedometers[0].Light.expect("the Light");
+        assert!(!g.world_texts[t0].enabled && !g.sprite_drawn(l0));
+        g.speedometer_update_activation(0);
+        assert!(g.world_texts[t0].enabled && g.sprite_drawn(l0));
+        frames(&mut g, 18);
         let s = &g.v45.speedometers[0];
         assert!(s.speedMs > 1.0 && s.TopSpeedMs >= s.speedMs, "{} {}", s.speedMs, s.TopSpeedMs);
         g.speedometer_set_text(0);
@@ -1852,7 +1872,9 @@ mod tests {
             frames(&mut g, 1);
             most = most.max(g.sprite_local_scale(d)[1]);
         }
-        assert!(most > 1.0, "{most}");
+        // The real 1.28.45 buzz (reference-probe/game/v45vis_1.txt, tools/recorder V45VisProbe.cs): y peaks at 1.0329 (3f84371b),
+        // x and z stay 1. The samples follow the audio thread's timing, so only the range is compared.
+        assert!(most > 1.0 && most < 1.1, "{most}");
         frames(&mut g, 300);
         assert_eq!(g.sprite_local_scale(d), [1.0; 3]);
     }
@@ -1874,6 +1896,9 @@ mod tests {
         let x = g.v45.injectables.first().expect("the bolt's InjectableBehaviour").clone();
         // InjectableBehaviour.Start found the bolt's imbuefx system and played it.
         assert!(x.ImbueParticles.is_some());
+        // The real 1.28.45 bolt (reference-probe/game/v45vis_1.txt): FxColor (and the imbuefx startColor) is the Life Syringe's
+        // computed colour with alpha 0.02.
+        assert_eq!(x.FxColor.map(f32::to_bits), [0x3f2cade3, 0x3f800000, 0x3f487331, 0x3ca3d70a]);
         let life = liquid_of_class("LifeSerumLiquid");
         let carried: f32 = x.LiquidDistributions.as_ref().unwrap().iter().map(|&(_, a)| a).sum();
         // The syringe is infinite (refills in FixedUpdate), so compare with SyringeFluidUsage, not what is left.

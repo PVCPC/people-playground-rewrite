@@ -1075,12 +1075,12 @@ pub fn parse_build_index(input: &str) -> Result<i32, String> {
 }
 
 /// The version text the game writes and compares saves by: the literal "1.28" in 1.28.41's code, GameInfo.Version.ToString()
-/// (Major.Minor.Build, 1.28.51) from 1.28.45 on.
+/// (Major.Minor.Build, 1.28.52) from 1.28.45 (the newer build) on.
 pub fn current_version() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     V.get_or_init(|| {
         if crate::assets::il::is_1_28_45() {
-            // GameInfo..cctor: new Version(1, 28, 51).
+            // GameInfo..cctor: new Version(1, 28, 52).
             let n = |k: usize| crate::assets::il::get().i4("GameInfo::.cctor", k);
             format!("{}.{}.{}", n(0), n(1), n(2))
         } else {

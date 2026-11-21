@@ -20,10 +20,12 @@ use super::clr::{AttrArg, Assembly, FIELD, METHOD_DEF, TYPE_DEF};
 
 /// SHA-256 of People Playground 1.28.41's Assembly-CSharp.dll.
 const DLL_SHA256: &str = "36b6db3364d94e24899943994f739859663760d75a520647a9c09c4d73c69352";
-/// SHA-256 of 1.28.45's (Steam, 2026-11-17).
-const DLL_SHA256_45: &str = "6825452f3cadfc2ba29c876f78c6ada08154bf1a52242fd26b7b3e3be3f2817f";
+/// SHA-256 of the newer build's: 1.28.52 (GameInfo.Version; Steam, 2026-11-20). "1.28.45" is the rewrite's name for the newer
+/// build: it was 1.28.51 (Assembly-CSharp 6825452f..., Steam 2026-11-17) until 1.28.52 replaced it; 1.28.51 is no longer
+/// supported, as Steam updates every install.
+const DLL_SHA256_45: &str = "d9b0e6fbd8cb09b2b14877aaf43878c76f775eb78d29880438126bbe32711572";
 
-/// The installed game's version: the rewrite follows each version's code where 1.28.45 changed it.
+/// The installed game's version: the rewrite follows each version's code where 1.28.45 (now 1.28.52) changed it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GameVersion {
     V1_28_41,
@@ -37,7 +39,8 @@ pub fn version() -> GameVersion {
     *VERSION.get().unwrap_or(&GameVersion::V1_28_41)
 }
 
-/// Whether the installed game is 1.28.45: the switch for every place the update changed.
+/// Whether the installed game is the newer build (1.28.52; the rewrite's name for it is 1.28.45): the switch for every place
+/// the updates since 1.28.41 changed.
 pub fn is_1_28_45() -> bool {
     version() == GameVersion::V1_28_45
 }
@@ -81,7 +84,7 @@ pub fn load(game: &Path) -> Result<(), String> {
         GameVersion::V1_28_45
     } else {
         return Err(format!(
-            "{} is not People Playground 1.28.41's or 1.28.45's (SHA-256 {hash}). The rewrite reads the game's numbers \
+            "{} is not People Playground 1.28.41's or 1.28.52's (the current Steam build) (SHA-256 {hash}). The rewrite reads the game's numbers \
              and text from those exact builds' Assembly-CSharp.dll; install one of them.",
             path.display()
         ));

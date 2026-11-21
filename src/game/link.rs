@@ -7157,6 +7157,15 @@ impl Game {
             }
             fa.MuzzleFlashEffectOverride = Some(r);
         }
+        // 1.28.52's StandardParticleOverride (the field is not in 1.28.41's or 1.28.51's FirearmBehaviour).
+        if let Some(spo) = v.get("StandardParticleOverride").and_then(Value::pptr).filter(|p| !p.is_null()) {
+            let r = db.resolve(file, spo).ok_or("StandardParticleOverride outside the data")?;
+            let physics = db.prefab(r)?.objects.iter().any(|x| x.components.iter().any(|(_, c)| matches!(c, Component::Collider2D(_) | Component::Rigidbody2D(_))));
+            if physics {
+                unimplemented!("mod-only: FirearmBehaviour: a StandardParticleOverride with physics (its pose)");
+            }
+            fa.StandardParticleOverride = Some(r);
+        }
         fa.casing_prefab = db.resource("Prefabs/BulletCasing", 1)?;
         fa.casing_clone = fa.casing_prefab.map(|r| db.prefab(r)).transpose()?.map(std::sync::Arc::new);
         // The ids an Instantiate of a Resources prefab takes: each GameObject and its components.
@@ -7165,7 +7174,11 @@ impl Game {
             Ok(db.prefab(r)?.objects.iter().map(|x| 1 + x.components.len()).sum())
         };
         fa.casing_ids = clone_ids("Prefabs/BulletCasing")?;
-        fa.smoke_ids = if fa.MuzzleFlashEffectOverride.is_some() { 0 } else { clone_ids("Prefabs/MuzzleSmoke")? };
+        fa.smoke_ids = match (fa.MuzzleFlashEffectOverride, fa.StandardParticleOverride) {
+            (Some(_), _) => 0,
+            (None, Some(r)) => db.prefab(r)?.objects.iter().map(|x| 1 + x.components.len()).sum(),
+            (None, None) => clone_ids("Prefabs/MuzzleSmoke")?,
+        };
         Ok(fa)
     }
 
