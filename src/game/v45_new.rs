@@ -1660,6 +1660,46 @@ impl Game {
     /// PhysicalBehaviour.Start: Instantiate(Global.main.DrippingParticlesPrefab, transform, false), localPosition = 0,
     /// GetComponent<DrippingBloodParticleController>().PhysicalBehaviour = this. The clone's ids and its Update.
     pub(crate) fn dripping_blood_instantiate(&mut self, p: usize) -> usize {
+        self.drip_prefab();
+        let (objects, (o, k), amount, decay, system) = self.v45.drip_prefab.clone().unwrap();
+        // Each object's id, then its components' (the Transform first), going down by 2 (as Global.MetalScrapePrefab's).
+        let mut id = self.next_instance_id;
+        let mut controller = 0;
+        let nodes: Vec<(i32, Option<usize>)> = objects.iter().enumerate().map(|(j, &(n, up))| {
+            if j == o {
+                controller = id - 2 * (1 + k as i32);
+            }
+            let t = id - 2;
+            id -= 2 * n as i32;
+            (t, up)
+        }).collect();
+        self.add_runtime_clone(self.physicals[p].transform_id, &nodes);
+        for _ in 0..objects.iter().map(|x| x.0).sum::<usize>() {
+            self.allocate_instance_id();
+        }
+        self.v45.drips.push(DrippingBlood {
+            id: controller,
+            PhysicalBehaviour: Some(p),
+            Colour: [0.0; 4],
+            Amount: amount,
+            DecaySpeed: decay,
+            LocalDripAreas: CircularBuffer::new(8),
+            clock: super::misc::FixedIntervalDistributor::with_rate(25.0),
+            emitted: Vec::new(),
+        });
+        let d = self.v45.drips.len() - 1;
+        // The clone's ParticleSystem, drawn by the embedded systems (Emit(EmitParams) in Update).
+        if let Some((go, chain)) = system {
+            self.embedded_ps.push(super::EmbeddedPs { go, anchor: super::BareAnchor::Physical(p), chain, owner: controller, drive: super::EmbeddedDrive::Drip(d), shape_texture: None, awake: true, emission: None });
+        }
+        let b = Behaviour::V45(V::DrippingBlood(d));
+        self.behaviour_of.insert(controller, (0, b));
+        self.behaviours.add(0, b);
+        d
+    }
+
+    /// Global.main.DrippingParticlesPrefab's layout, read once.
+    fn drip_prefab(&mut self) {
         if self.v45.drip_prefab.is_none() {
             let source = self.global_prefab("DrippingParticlesPrefab");
             let db = self.assets.as_mut().expect("the game's data");
@@ -1702,41 +1742,14 @@ impl Game {
             });
             self.v45.drip_prefab = Some((objects, (o, k), amount, decay, system));
         }
-        let (objects, (o, k), amount, decay, system) = self.v45.drip_prefab.clone().unwrap();
-        // Each object's id, then its components' (the Transform first), going down by 2 (as Global.MetalScrapePrefab's).
-        let mut id = self.next_instance_id;
-        let mut controller = 0;
-        let nodes: Vec<(i32, Option<usize>)> = objects.iter().enumerate().map(|(j, &(n, up))| {
-            if j == o {
-                controller = id - 2 * (1 + k as i32);
-            }
-            let t = id - 2;
-            id -= 2 * n as i32;
-            (t, up)
-        }).collect();
-        self.add_runtime_clone(self.physicals[p].transform_id, &nodes);
-        for _ in 0..objects.iter().map(|x| x.0).sum::<usize>() {
-            self.allocate_instance_id();
-        }
-        self.v45.drips.push(DrippingBlood {
-            id: controller,
-            PhysicalBehaviour: Some(p),
-            Colour: [0.0; 4],
-            Amount: amount,
-            DecaySpeed: decay,
-            LocalDripAreas: CircularBuffer::new(8),
-            clock: super::misc::FixedIntervalDistributor::with_rate(25.0),
-            emitted: Vec::new(),
-        });
-        let d = self.v45.drips.len() - 1;
-        // The clone's ParticleSystem, drawn by the embedded systems (Emit(EmitParams) in Update).
-        if let Some((go, chain)) = system {
+    }
+
+    /// A loaded DrippingBloodParticleController's ParticleSystem (its clone's, as dripping_blood_instantiate's).
+    pub(crate) fn dripping_blood_loaded(&mut self, d: usize, p: usize, controller: i32) {
+        self.drip_prefab();
+        if let Some((go, chain)) = self.v45.drip_prefab.clone().unwrap().4 {
             self.embedded_ps.push(super::EmbeddedPs { go, anchor: super::BareAnchor::Physical(p), chain, owner: controller, drive: super::EmbeddedDrive::Drip(d), shape_texture: None, awake: true, emission: None });
         }
-        let b = Behaviour::V45(V::DrippingBlood(d));
-        self.behaviour_of.insert(controller, (0, b));
-        self.behaviours.add(0, b);
-        d
     }
 
     /// PhysicalBehaviour.FixedUpdate's slash drip: LocalDripAreas.Add(point), Colour = colour, Amount = amount.

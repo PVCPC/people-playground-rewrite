@@ -53,6 +53,9 @@ pub struct Manifold2D {
     pub normal: Vec2,
     pub points: [Vec2; 2],
     pub relative_velocity: [Vec2; 2],
+    /// A point whose relative velocity no step's first PreSolve wrote: BeginContact's manifold comes from a local
+    /// it never fills, so the game's slot holds whatever that stack held (a heap address in dump42expl); unknowable.
+    pub relative_velocity_unset: [bool; 2],
     pub separations: [f32; 2],
     pub normal_impulses: [f32; 2],
     pub tangent_impulses: [f32; 2],
@@ -274,7 +277,7 @@ impl World {
         let swapped = cb.id < ca.id;
         let (f1, f2, c1, c2, i1, i2) = if swapped { (fb, fa, cb, ca, ib, ia) } else { (fa, fb, ca, cb, ia, ib) };
         let trigger = self.fixture(f1).is_sensor || self.fixture(f2).is_sensor;
-        let manifold = Manifold2D { enabled, contact: Some(id), fixture_a: f1, fixture_b: f2, index_a: i1, index_b: i2, ..Default::default() };
+        let manifold = Manifold2D { enabled, contact: Some(id), fixture_a: f1, fixture_b: f2, index_a: i1, index_b: i2, relative_velocity_unset: [true; 2], ..Default::default() };
         let existing = self.contacts2d.index.get(&(c1.id, c2.id)).map(|&at| self.contacts2d.collisions[at]);
         let Some(rid) = existing else {
             let mut r = Collision2D {
@@ -391,6 +394,7 @@ impl World {
             m.points[i] = p;
             m.separations[i] = wm.separations[i];
             if m.simulation_id != sim {
+                m.relative_velocity_unset[i] = false;
                 m.relative_velocity[i] = Vec2::new(
                     (-(wb * (p.y - cb.y)) + vb.x) - (-((p.y - ca.y) * wa) + va.x),
                     (wb * (p.x - cb.x) + vb.y) - ((p.x - ca.x) * wa + va.y),

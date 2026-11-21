@@ -769,6 +769,7 @@ impl Game {
             });
             let d = self.v45.drips.len() - 1;
             self.physicals[p].DrippingBloodParticles = Some(d);
+            self.dripping_blood_loaded(d, p, r.id);
             let b = crate::game::Behaviour::V45(crate::game::v45_new::V::DrippingBlood(d));
             self.behaviour_of.insert(r.id, (0, b));
             self.behaviours.add(0, b);

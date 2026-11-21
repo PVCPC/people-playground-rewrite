@@ -682,6 +682,7 @@ fn collision_record(r: &Record, bodies: &HashMap<String, BodyId>, fixtures: &Has
             normal: v(4),
             points: [v(6), v(8)],
             relative_velocity: [v(10), v(12)],
+            relative_velocity_unset: [false; 2],
             separations: [fl(14), fl(15)],
             normal_impulses: [fl(16), fl(17)],
             tangent_impulses: [fl(18), fl(19)],
@@ -762,7 +763,7 @@ pub fn compare_contacts2d(r: &Restored, s: &Snapshot) -> Result<Vec<String>, Str
             let live = |j: usize| match j {
                 0..=6 => true,
                 7..=10 => (j - 7) / 2 < count,
-                11..=14 => (j - 11) / 2 < count,
+                11..=14 => (j - 11) / 2 < count && !om.relative_velocity_unset[(j - 11) / 2],
                 15..=16 => j - 15 < count,
                 17..=18 => j - 17 < count,
                 _ => j - 19 < count,
