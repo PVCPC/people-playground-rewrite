@@ -119,9 +119,21 @@ impl Game {
     // AppearWhenMouseNear.Start: parentRenderers = GetComponentsInParent<Renderer>(), the text's own MeshRenderer and the marker's SpriteRenderer.
     /// CenterOfGravity.Update for every marker, then each AppearWhenMouseNear.Update (level1's file order).
     pub fn centers_update(&mut self) {
-        let Some(tool) = self.tool.as_ref() else { return };
-        let selected: Vec<usize> = tool.rawSelection.clone();
+        if self.tool.is_none() { return }
         for i in 0..self.centers.len() {
+            self.center_update(i);
+        }
+        for i in 0..self.centers.len() {
+            let c = self.centers[i].clone();
+            let Some(l) = c.label else { continue };
+            self.appear_when_mouse_near_update(&l, c.renderer);
+        }
+    }
+
+    /// One CenterOfGravity's (CenterOfBounds') Update.
+    pub(crate) fn center_update(&mut self, i: usize) {
+        let selected: Vec<usize> = self.tool.as_ref().map_or(Vec::new(), |t| t.rawSelection.clone());
+        {
             let c = self.centers[i].clone();
             // shouldExist = SelectedObjects.Any(c => c)
             let should_exist = selected.iter().any(|&p| !self.physicals[p].destroyed);
@@ -138,11 +150,6 @@ impl Game {
                 let root = self.renderers[c.renderer].chain[0];
                 *self.world_texts[l.text].chain.last_mut().unwrap() = root;
             }
-        }
-        for i in 0..self.centers.len() {
-            let c = self.centers[i].clone();
-            let Some(l) = c.label else { continue };
-            self.appear_when_mouse_near_update(&l, c.renderer);
         }
     }
 

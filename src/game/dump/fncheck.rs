@@ -1906,16 +1906,83 @@ const CALLS: &[(&str, Call)] = &[
         let mut rb = crate::game::props::PropBlock::default();
         if empty == "0" { rb.set_color("_LiquidColour", [f(r)?, f(gr)?, f(b)?, f(a)?]); rb.set_float("_Direction", f(dir)?); }
         let at = crate::game::visual::SpriteAt::Physical(g.syringes[i].Phys);
+        // fc41 r11: the renderer's block as loaded from PI (exact linear vectors) goes back after the call: Awake only reads it,
+        // and the gamma " syb=" colour set here turns back into linear a few ulp off (GetColor's LinearToGamma is lossy).
+        let loaded = g.get_property_block(at);
         g.set_property_block(at, &rb);
         let mut junk = crate::game::props::PropBlock::default();
         junk.set_color("_LiquidColour", [0.25, 0.5, 0.75, 0.125]);
         junk.set_float("_Direction", 7.0);
         g.syringes[i].materialProperty = junk;
         g.syringe_awake(i);
+        g.set_property_block(at, &loaded);
         let mp = &g.syringes[i].materialProperty;
         let lc = match mp.get("_LiquidColour") { Some(crate::game::props::Prop::Color(v)) => *v, _ => [0.0; 4] };
         let h = |x: f32| format!("{:08x}", x.to_bits());
         Ok(format!(" st=sa:{},{},{}", mp.0.is_empty() as u8, lc.map(h).join(","), h(mp.get_float("_Direction"))))
+    }),
+    // fc41 r11: DecalControllerBehaviour.Clear (an instance method; the generated entry cleared every controller): the controller
+    // from em=, ret as BigProbeB's "dc=<dirty>:<localDecalPositions>".
+    ("DecalControllerBehaviour.Clear", |g, c| {
+        let (pid, k) = c.field("em").ok_or("no em=")?.split_once(',').ok_or("bad em=")?;
+        let pid: i32 = pid.parse().map_err(|_| "em physical")?;
+        let k: usize = k.parse().map_err(|_| "em index")?;
+        let p = g.physicals.iter().position(|x| x.id == pid).ok_or("no physical of the controller")?;
+        let d = g.physicals[p].decal_controllers.get_mut(k).ok_or(format!("no decal controller {k}"))?;
+        d.decals.clear();
+        d.holder = None;
+        Ok(format!("dc={}:", if d.holder.is_some() { "1" } else { "0" }))
+    }),
+    // fc41 r11: GlowInTheDarkBehaviour.Start on the flask FnTiny gave one (a runtime AddComponent ours does not load): the glow
+    // joins ours by the PI Clone that lists it, owned by that Clone's FlaskBehaviour.
+    ("GlowInTheDarkBehaviour.Start", |g, c| {
+        let key = format!("GlowInTheDarkBehaviour:{}", c.id);
+        let comps = c.s.of("Clone").filter_map(|r| r.get("comps")).find(|v| v.split([';', '[', ']']).any(|e| e == key)).ok_or("no Clone lists the glow")?;
+        let fid: i32 = comps.split([';', '[', ']']).find_map(|e| e.strip_prefix("FlaskBehaviour:")).ok_or("no FlaskBehaviour beside the glow")?.parse().map_err(|_| "flask id")?;
+        let f = g.flasks.iter().position(|x| x.id == fid).ok_or_else(|| format!("no flasks entry #{fid} (ours: {:?}; clone {})", g.flasks.iter().map(|x| x.id).collect::<Vec<_>>(), comps.get(..60).unwrap_or(comps)))?;
+        if !g.glows.iter().any(|x| x.id == c.id) {
+            g.glows.push(super::super::glow::GlowInTheDark { id: c.id, owner: Owner::Flask(f), light: None });
+        }
+        let i = g.glows.iter().position(|x| x.id == c.id).ok_or("no glows entry")?;
+        g.glow_start(i);
+        VOID
+    }),
+    // fc41 r11: FirearmAttachmentPointBehaviour.DisconnectAttachment: FnTiny cleared ignoreConnect first (" dap=0"); st as FnTiny's
+    // "da:<ignoreConnect>,<FirearmAttachment set>". Not compared: detailViewBlob.enabled (ours draws no blob) and ConnectDelay's start.
+    ("FirearmAttachmentPointBehaviour.DisconnectAttachment", |g, c| {
+        let pt = g.attachment_points.iter().position(|p| p.id == c.id).ok_or("no attachment_points entry")?;
+        if c.s.of("FnCase").next().and_then(|r| r.get("dap")) == Some("0") { g.attachment_points[pt].ignoreConnect = false }
+        g.attachment_point_disconnect(pt);
+        let p = &g.attachment_points[pt];
+        Ok(format!(" st=da:{},{}", p.ignoreConnect as u8, p.FirearmAttachment.is_some() as u8))
+    }),
+    // fc41 r11: CenterOfGravity.Update (CenterOfBounds' too): FnTiny's seeded pre state (" cgp=enabled,x,y,scale"), which of
+    // the two (" cgb="), and the selection (" cgs=<ids:>|-") into ours' marker and tool; st as FnTiny's "cg:".
+    ("CenterOfGravity.Update", |g, c| {
+        let case = c.s.of("FnCase").next().ok_or("no FnCase")?;
+        let f = |v: &str| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string());
+        let cgp: Vec<&str> = case.get("cgp").ok_or("no cgp=")?.split(',').collect();
+        let [en, x, y, s] = cgp[..] else { return Err("cgp= values".into()) };
+        let bounds = case.get("cgb") == Some("1");
+        let i = g.centers.iter().position(|m| m.bounds == bounds).ok_or("no centers entry")?;
+        let sel: Vec<usize> = match case.get("cgs").ok_or("no cgs=")? {
+            "-" => Vec::new(),
+            v => v.split(':').map(|x| x.parse::<i32>().map_err(|e| e.to_string()).and_then(|id| phys_by_id(g, id))).collect::<Result<_, _>>()?,
+        };
+        match g.tool.as_mut() {
+            Some(t) => t.rawSelection = sel,
+            None => g.tool = Some(super::super::tool::Tool { rawSelection: sel, ..Default::default() }),
+        }
+        let r = g.centers[i].renderer;
+        g.renderers[r].enabled = en == "1";
+        let (x, y, s) = (f(x)?, f(y)?, f(s)?);
+        g.renderers[r].chain[0].t[0] = x;
+        g.renderers[r].chain[0].t[1] = y;
+        g.renderers[r].chain[0].s = [s, s, s, 0.0];
+        g.center_update(i);
+        let h = |x: f32| format!("{:08x}", x.to_bits());
+        let ch = g.renderers[r].chain[0];
+        Ok(format!(" st=cg:{},{},{},{}", g.renderers[r].enabled as u8, h(ch.t[0]), h(ch.t[1]), h(ch.s[0])))
     }),
     // fc41 r10: ShockwaveBehaviour.Update; FnTiny sets the private t first and writes it with startSize (" swt=t,startSize").
     ("ShockwaveBehaviour.Update", |g, c| {
@@ -1924,6 +1991,11 @@ const CALLS: &[(&str, Call)] = &[
             let f: Vec<f32> = v.split(',').map(|x| u32::from_str_radix(x, 16).map(f32::from_bits).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
             let [t, start] = f[..] else { return Err(format!("swt: {} values", f.len())) };
             (g.shockwaves[i].t, g.shockwaves[i].startSize) = (t, start);
+        }
+        // fc41 r11: the case's (fuzzed) Duration and SizeMultiplier from its ItemScript record.
+        if let Some(r) = c.s.of("ItemScript").find(|r| r.id == c.id) {
+            let f = |k: &str| r.get(k).and_then(|v| u32::from_str_radix(v, 16).ok()).map(f32::from_bits).ok_or(format!("ItemScript {k}"));
+            (g.shockwaves[i].Duration, g.shockwaves[i].SizeMultiplier) = (f("Duration")?, f("SizeMultiplier")?);
         }
         g.shockwave_update(i);
         VOID

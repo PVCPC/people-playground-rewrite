@@ -1022,7 +1022,8 @@ Parameter name: index"));
         if !self.audio.sources.contains_key(&source) {
             return;
         }
-        let clip = k.and_then(|k| self.audio.clips(id, "Near")[k].clone());
+        // fc41 r11: an all-null Near (PulseExplosion's four nulls) is not registered (register_clip_fields): PickRandom's null.
+        let clip = k.and_then(|k| self.audio.clips(id, "Near").get(k).cloned().flatten());
         self.audio.set_clip(source, clip);
         self.audio.play_delayed(source, delay);
     }
