@@ -1197,6 +1197,16 @@ fn chainsaw_with_connections(g: &mut Game, c: &Case) -> Result<usize, String> {
     Ok(i)
 }
 /// fc41 r4: the self's PI softConnections (any saw: Chainsaw, EnergySword, SharpOnAllSides), joints rebuilt to `saw`; with
+/// fc41 r5: a PyroPowerTool's entity (its Awake's pyroEntity) from the self's record when ours loaded none (not the current tool).
+fn pyro_from_record(g: &mut Game, c: &Case) -> Result<(), String> {
+    if g.pyro_tool.is_some() {
+        return Ok(());
+    }
+    let Some(id) = c.s.of("PyroPowerTool").find(|r| r.id == c.sid).and_then(|r| r.get("pyroEntity")).and_then(reference) else { return Ok(()) };
+    let entity = g.pyro_entities.iter().position(|x| x.id == id).ok_or_else(|| format!("pyroEntity #{id} not loaded"))?;
+    g.pyro_tool = Some(crate::game::pyro_tool::PyroTool { entity });
+    Ok(())
+}
 /// an " stpre=sc:" (FnTiny.R4Of) each joint's maxForce from it.
 fn pi_soft_connections(g: &mut Game, c: &Case, saw: usize) -> Result<crate::game::soft_connect::SoftConnections, String> {
     let r = c.s.of("ItemScript").find(|r| r.id == c.sid).ok_or("no saw record")?;
@@ -1943,7 +1953,9 @@ const CALLS: &[(&str, Call)] = &[
     ("NixieTubeBehaviour.SetValue", |g, c| { let w = c.with(2)?; let n: i32 = w.p_int(1)?; let k = g.counters.iter().position(|x| x.nixie == c.sid).ok_or("no counter with this NixieTubeBehaviour")?; g.nixie_set_value(k, n); VOID }),
     // batch3 r4: a PyroPowerTool the recorder added (AddComponent: Awake made its entity, which the record does not carry) is
     // current only after OnToolChosen, i.e. while it is the ToolController's CurrentTool; otherwise pyroEntity.IsCurrentTool is false.
-    ("PyroPowerTool.Update", |g, c| { c.with(1)?; if g.pyro_tool.is_none() { let cur = c.s.of("ToolControllerBehaviour").next().and_then(|r| r.get("CurrentTool")).and_then(reference); if cur == Some(c.sid) { return Err("the current PyroPowerTool's entity is not in the record".into()); } return VOID; } g.pyro_tool_update(); VOID }),
+    // fc41 r5: OnToolUnchosen on the self's entity (the record's pyroEntity; ours loads pyro_tool only for the current tool).
+    ("PyroPowerTool.OnToolUnchosen", |g, c| { pyro_from_record(g, c)?; g.pyro_tool_unchoose(); VOID }),
+    ("PyroPowerTool.Update", |g, c| { c.with(1)?; pyro_from_record(g, c)?; if g.pyro_tool.is_none() { let cur = c.s.of("ToolControllerBehaviour").next().and_then(|r| r.get("CurrentTool")).and_then(reference); if cur == Some(c.sid) { return Err("the current PyroPowerTool's entity is not in the record".into()); } return VOID; } g.pyro_tool_update(); VOID }),
     // batch3 r4: the case's own RectangleAudioSourceBehaviour (the gen entry ran every one).
     ("RectangleAudioSourceBehaviour.LateUpdate", |g, c| { c.with(1)?; g.rectangle_audio_late_update_of(Some(c.sid)); VOID }),
     // batch3 r1: PistonBehaviour.Start again on a started piston (Slider is already the adopted SliderJoint2D).
@@ -3048,6 +3060,17 @@ const CALLS: &[(&str, Call)] = &[
         g.chainsaws[i].softConnections = pi_soft_connections(g, c, saw)?;
         g.chainsaw_process(i, c.arg(0)?, c.arg(1)?);
         let conns = g.chainsaws[i].softConnections.clone();
+        Ok(soft_state(g, &conns))
+    }),
+    // fc41 r5: OnDestroy on the seeded soft connections (Destroy calls of each joint compared).
+    ("ChainsawBehaviour.OnDestroy", |g, c| { let i = chainsaw_with_connections(g, c)?; g.chainsaw_destroy(i); let conns = g.chainsaws[i].softConnections.clone(); Ok(soft_state(g, &conns)) }),
+    ("EnergySwordBehaviour.OnDestroy", |g, c| {
+        let i = g.energy_swords.iter().position(|x| x.id == c.sid).ok_or("no energy_swords entry")?;
+        let saw = g.energy_swords[i].physical;
+        g.energy_swords[i].softConnections = pi_soft_connections(g, c, saw)?;
+        let blur = g.with_component_instance(c.sid, |g, inst, _| inst.objects[g.energy_swords[i].MotionBlur].components[0]);
+        g.energy_sword_destroy(i, blur);
+        let conns = g.energy_swords[i].softConnections.clone();
         Ok(soft_state(g, &conns))
     }),
     ("ChainsawBehaviour.OnAfterDeserialise", |g, c| {
@@ -4786,7 +4809,11 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                             if let (Some(theirs), Some(pre)) = (ignored_pairs(&s), ignored_pairs(&pi)) {
                                 let ours = &g.world.ignored;
                                 let changed: std::collections::BTreeSet<(i32, i32)> = theirs.symmetric_difference(&pre).chain(ours.symmetric_difference(&ours_pre_ignored)).copied().collect();
-                                for k in changed.into_iter().filter(|k| theirs.contains(k) != ours.contains(k)) {
+                                // fc41 r5: checker limit: the recorder lists pairs of FindObjectsOfType<Collider2D> (active objects only), so a pair
+                                // with an inactive collider (EnergySword's BladeObject while off) is never in the game's list. Such a pair is
+                                // left out when both stacks hold it (the stack counts are compared on their own).
+                                let blind = |k: &(i32, i32)| !theirs.contains(k) && g.ignore_stack.get(k).is_some_and(|n| *n > 0) && s.of("IgnoreStack").next().and_then(|r| r.get("pairs")).is_some_and(|v| v.trim_matches(['[', ']']).split(';').any(|x| x.rsplit_once(':').is_some_and(|(p, n)| p == format!("{},{}", k.0, k.1) && n != "0")));
+                                for k in changed.into_iter().filter(|k| theirs.contains(k) != ours.contains(k) && !blind(k)) {
                                     d.push(format!("IgnoreCollision {},{}: game {} ours {}", k.0, k.1, bit(theirs.contains(&k)), bit(ours.contains(&k))));
                                 }
                             }

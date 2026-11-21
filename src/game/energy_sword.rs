@@ -113,7 +113,10 @@ impl Game {
             self.soft_connect(&mut conns, p, blade, v, coll, 2.0, false, &mut |g| {
                 if g.energy_swords[i].impactSoundHeat <= f32::from_bits(1) {
                     // LoopSource.PlayOneShot(ImpactSound.PickRandom(), 1.5f)
-                    g.pick_random(g.energy_swords[i].ImpactSound); // an empty array picks null: PlayOneShot(null) only logs "PlayOneShot was called with a null AudioClip."
+                    // fc41 r5: the clip is played (1.28.52's sword has ImpactSound clips); an empty array picks null, which only logs.
+                    let (id, src) = (g.energy_swords[i].id, g.energy_swords[i].LoopSource);
+                    let clip = g.pick_clip(id, "ImpactSound", g.energy_swords[i].ImpactSound);
+                    g.audio.play_one_shot(src, clip.as_ref(), 1.5);
                     g.energy_swords[i].impactSoundHeat = 0.5;
                 }
                 g.energy_sword_hit_point(i, coll)
@@ -289,7 +292,10 @@ impl Game {
                 self.soft_connect(&mut conns, p, blade, v, coll, strength, false, &mut |g| {
                     if g.energy_swords[i].impactSoundHeat <= f32::from_bits(1) {
                         // LoopSource.PlayOneShot(ImpactSound.PickRandom(), 1.5f)
-                        g.pick_random(g.energy_swords[i].ImpactSound); // an empty array picks null: PlayOneShot(null) only logs "PlayOneShot was called with a null AudioClip."
+                        // fc41 r5: the clip is played (1.28.52's sword has ImpactSound clips); an empty array picks null, which only logs.
+                        let (id, src) = (g.energy_swords[i].id, g.energy_swords[i].LoopSource);
+                        let clip = g.pick_clip(id, "ImpactSound", g.energy_swords[i].ImpactSound);
+                        g.audio.play_one_shot(src, clip.as_ref(), 1.5);
                         g.energy_swords[i].impactSoundHeat = 0.5;
                     }
                     g.energy_sword_hit_point(i, coll)

@@ -1360,7 +1360,12 @@ impl Game {
         let on = !self.script_disabled(id);
         // A class keeping its own flag whose arena lacks this script (set_own_enabled's unreachable!): ours keeps none. The probe
         // writes the value it reads, so it changes nothing.
+        // fc41 r5: the probe's panic is expected (load_item_scripts runs after each clone's link, so a clone still waiting for its
+        // link is probed early; the call after its link sets the flag): no panic message for it.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
         let probe = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { self.set_own_enabled(class, id, on); }));
+        std::panic::set_hook(hook);
         probe.is_ok().then_some(on)
     }
 
