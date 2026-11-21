@@ -438,8 +438,12 @@ impl Game {
         }
     }
 
-    /// ObjectPoolBehaviour.Return
-    pub(crate) fn tracer_return(&mut self) {
+    /// ObjectPoolBehaviour.Return(poolable): `is_clone` is createdObjects.Contains(poolable) (and poolable alive); otherwise
+    /// Debug.LogError("Invalid object being returned to the pool"), console only. SetActive(false) is the caller's.
+    pub(crate) fn tracer_return(&mut self, is_clone: bool) {
+        if !is_clone {
+            return;
+        }
         self.tracer_pool.available += 1;
     }
 
@@ -472,7 +476,7 @@ impl Game {
             let n = s.emitter.tracers.take().unwrap_or_else(|| super::menu::npe());
             s.instance = false;
             for _ in 0..n {
-                self.tracer_return();
+                self.tracer_return(true);
             }
         }
     }
@@ -493,7 +497,7 @@ impl Game {
             // `foreach (... in tracers)`: a second Dispose finds it null.
             let n = e.tracers.take().unwrap_or_else(|| super::menu::npe());
             for _ in 0..n {
-                self.tracer_return();
+                self.tracer_return(true);
             }
         }
     }
@@ -555,7 +559,7 @@ impl Game {
         }
         if b.tracer {
             *self.emitter_mut(b.shooter).tracers.as_mut().unwrap_or_else(|| super::menu::npe()) -= 1;
-            self.tracer_return();
+            self.tracer_return(true);
         }
     }
 

@@ -60,11 +60,12 @@ impl Game {
     /// HoverThrusterBehaviour.UpdateActivation: IdleLoop plays, and the Effects emission, Light and GlowSprite are on,
     /// while Activated. Start and OnEnable run it too.
     pub fn hover_thruster_update_activation(&mut self, h: usize) {
-        // gapC r11: Effects.emission.enabled, Light.enabled (a LightSprite) and GlowSprite.enabled = Activated.
+        // gapC r11: Effects.emission.enabled, Light.enabled and GlowSprite.enabled = Activated. v52h r12: Light is a
+        // SpriteRenderer field (`((Renderer)Light).enabled`), not the LightSprite script on its object.
         let (id, on) = (self.hover_thrusters[h].id, self.hover_thrusters[h].Activated);
         self.ps_set_emission(id, "Effects", on);
-        if let Some(l) = self.field_component(id, "Light") {
-            self.set_item_enabled("LightSprite", l, on);
+        if let Some(at) = self.field_component(id, "Light").and_then(|s| self.item_sprite(s)) {
+            self.set_sprite_enabled(at, on);
         }
         if let Some(at) = self.field_component(id, "GlowSprite").and_then(|s| self.item_sprite(s)) {
             self.set_sprite_enabled(at, on);
@@ -166,6 +167,8 @@ script! {
         points: Vec<[f32; 3]> = Vec::new(),
         /// Layers.m_Bits
         mask: u32 = 0,
+        /// calibratedHoverHeights: Awake's HoverHeight + HoverPoints[i].localPosition.y (a later HoverHeight leaves it).
+        calibrated: Vec<f32> = Vec::new(),
         /// The private isOnGround.
         isOnGround: bool = false,
         /// Fan: the CosmeticRotationBehaviour's instance id (0 when null).
@@ -271,17 +274,18 @@ impl Game {
         }
     }
 
-    /// HovercarBehaviour.Hover. calibratedHoverHeights is fixed at Awake (HoverHeight + each point's localPosition.y).
+    /// HovercarBehaviour.Hover: each point's ray is calibratedHoverHeights[i] * 2 long (IndexOutOfRangeException past its end).
     pub(crate) fn hovercar_hover(&mut self, h: usize) {
         let s = &self.hovercars[h];
-        let (p, mask, factor, keep, force, park, height) = (s.physical, s.mask, s.FactorPower, s.VelocityRetention, s.ForceMultiplier, s.ParkForceMultiplier, s.HoverHeight);
+        let (p, mask, factor, keep, force, park) = (s.physical, s.mask, s.FactorPower, s.VelocityRetention, s.ForceMultiplier, s.ParkForceMultiplier);
+        let calibrated = s.calibrated.clone();
         let points = s.points.clone();
         let own = s.own.clone();
         let up = self.xf_up(&own);
         let vector = [-up[0], -up[1]];
         self.hovercars[h].isOnGround = false;
-        for local in &points {
-            let num = (d(height) + local[1]).f();
+        for (i, local) in points.iter().enumerate() {
+            let num = *calibrated.get(i).unwrap_or_else(|| crate::game::menu::throw("IndexOutOfRangeException: Index was outside the bounds of the array."));
             let pos = self.xf_transform_point(&own, *local);
             let Some(hit) = self.raycast(V::new(pos[0], pos[1]), vector, (d(num) * 2.0f32).f(), mask, f32::NEG_INFINITY, f32::INFINITY) else {
                 continue;
@@ -321,5 +325,5 @@ impl Game {
     // HoverThrusterBehaviour.Awake: calibratedHoverHeights is only a scratch array; Hover computes each height itself.
     // HoverThrusterBehaviour.OnEnable: hover_thruster_update_activation.
     // HovercarBehaviour.Start: the "reverseCar" button is menu.rs (Menu::Hovercar, HovercarReverse); its IdleLoop.Play and AccLoop.Play are hovercar_play_loops.
-    // HovercarBehaviour.Awake: calibratedHoverHeights (HoverHeight + each point's localPosition.y) is computed per hover in hovercar_hover.
+    // HovercarBehaviour.Awake: calibratedHoverHeights (HoverHeight + each point's localPosition.y) is `calibrated`, set by link.rs.
 }

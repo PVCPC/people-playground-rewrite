@@ -846,7 +846,7 @@ impl Game {
             let flask = clone.req("comps")?.split(['[', ';', ']']).find_map(|t| t.strip_prefix("FlaskBehaviour:")).and_then(|t| t.parse::<i32>().ok());
             let Some(f) = flask.and_then(|id| self.flasks.iter().position(|x| x.id == id)) else { continue };
             let Some(glow_go) = r.get("glow").and_then(super::reference) else { continue };
-            self.glows.push(crate::game::glow::GlowInTheDark { id: r.id, owner: crate::game::container::Owner::Flask(f), light: None });
+            self.glows.push(crate::game::glow::GlowInTheDark { id: r.id, owner: crate::game::container::Owner::Flask(f), light: None, glow_go: 0, light_go: 0 });
             let next = self.next_instance_id;
             self.next_instance_id = glow_go;
             self.glow_start(self.glows.len() - 1);

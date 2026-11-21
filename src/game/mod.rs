@@ -725,6 +725,24 @@ impl Field for Option<usize> {
         Err(format!("Option<usize> has no serialized form: {v:?}"))
     }
 }
+/// A C# string that may be null: the dumps' bare `null`.
+impl Field for Option<String> {
+    fn parse(&mut self, text: &str) -> Result<(), String> {
+        *self = (text != "null").then(|| text.to_string());
+        Ok(())
+    }
+    fn show(&self) -> String {
+        self.clone().unwrap_or_else(|| "null".into())
+    }
+    fn set(&mut self, v: &crate::assets::mono::Value) -> Result<(), String> {
+        *self = match v {
+            crate::assets::mono::Value::Str(s) => Some(s.clone()),
+            _ => return Err(format!("not a string: {v:?}")),
+        };
+        Ok(())
+    }
+}
+
 impl Field for Option<f32> {
     fn parse(&mut self, text: &str) -> Result<(), String> {
         *self = if text == "null" { None } else { Some(bits(text)?) };
@@ -855,6 +873,16 @@ pub struct Time {
     pub fixedUnscaledTimeAsDouble: f64,
     /// TimeManager +0x4c: the fixed step's unscaledDeltaTime.
     pub fixedUnscaledDeltaTime: f32,
+    /// TimeManager's level-load offset: Time.timeSinceLevelLoad = (float)(the active time + it). 0 while the level starts
+    /// at time 0; a recording's Time record (" tsll=", fc41 r20 on) gives it.
+    pub levelLoadOffset: f64,
+}
+
+impl Time {
+    /// Time.timeSinceLevelLoad.
+    pub fn time_since_level_load(&self) -> f32 {
+        (self.timeAsDouble + self.levelLoadOffset) as f32
+    }
 }
 
 /// UnityEngine.Bounds in the xy plane.
@@ -2874,7 +2902,7 @@ pub struct Game {
     /// The fn-check load's object references (`@name#id` in a script link): recorded instance id -> the rewrite's value it loaded as.
     pub ref_pairs: std::collections::HashMap<i32, String>,
     /// gapB r15: the self's reference caches fncheck reset before an Awake/Start (class, id, field), compared after it.
-    pub ref_reset: Vec<(String, i32, &'static str)>,
+    pub ref_reset: Vec<(String, i32, &'static str, String)>,
     /// Object.Destroy calls whose clone was checked out, as (id, a lone component), run when it returns.
     pub destroy_disable_pending: Vec<(i32, bool)>,
     /// text_set_rotation_identity's local rotations for a clone being awoken, (text component id, q), written by awake_behaviours.

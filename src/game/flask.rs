@@ -7,6 +7,40 @@ use super::circulation::LIQUIDS;
 use super::container::{BloodContainer, Owner};
 use super::{d, mathf, script, Game};
 
+/// A SerialisableDistribution (FlaskBehaviour.StartLiquid): LiquidID and Amount, as a recording writes it,
+/// `SerialisableDistribution(LiquidID="<id>" Amount=<float bits>)`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Distribution {
+    pub LiquidID: String,
+    pub Amount: f32,
+}
+
+impl super::Field for Distribution {
+    fn parse(&mut self, text: &str) -> Result<(), String> {
+        let bad = || format!("bad SerialisableDistribution {text}");
+        let inner = text.strip_prefix("SerialisableDistribution(").and_then(|x| x.strip_suffix(')')).ok_or_else(bad)?;
+        let (id, rest) = inner.strip_prefix("LiquidID=\"").and_then(|x| x.split_once("\" Amount=")).ok_or_else(bad)?;
+        self.Amount = u32::from_str_radix(rest, 16).map(f32::from_bits).map_err(|_| bad())?;
+        self.LiquidID = id.to_string();
+        Ok(())
+    }
+    fn show(&self) -> String {
+        format!("SerialisableDistribution(LiquidID=\"{}\" Amount={:08x})", self.LiquidID, self.Amount.to_bits())
+    }
+    fn set(&mut self, _v: &crate::assets::mono::Value) -> Result<(), String> {
+        Err("SerialisableDistribution from game data: link.rs reads its LiquidID and Amount".into())
+    }
+}
+
+#[test]
+fn distribution_round_trip() {
+    use super::Field;
+    let mut d = Distribution::default();
+    d.parse("SerialisableDistribution(LiquidID=\"TRITIUM\" Amount=3f000000)").unwrap();
+    assert_eq!((d.LiquidID.as_str(), d.Amount), ("TRITIUM", 0.5));
+    assert_eq!(d.show(), "SerialisableDistribution(LiquidID=\"TRITIUM\" Amount=3f000000)");
+}
+
 script! {
     Flask {
         Capacity: f32 = 2.8,
@@ -19,8 +53,7 @@ script! {
         /// Limits.y: GasTankBehaviour's 20 or FlaskBehaviour's Capacity; AllowsOverflow is false.
         limit: f32 = 20.0,
         /// StartLiquid
-        StartLiquid: String = String::new(),
-        StartAmount: f32 = 0.0,
+        StartLiquid: Distribution = Distribution::default(),
         /// LiquidContainer, the LiquidContainerController whose fill Update sets.
         LiquidContainer: Option<usize> = None,
         /// GetComponent<PhysicalBehaviour>()
@@ -131,9 +164,9 @@ impl Game {
     /// FlaskBehaviour.Start
     pub fn flask_start(&mut self, f: usize) {
         let s = &self.flasks[f];
-        if s.NewlySpawned && s.StartAmount > mathf::EPSILON {
-            let id = s.StartLiquid.clone();
-            let amount = s.StartAmount;
+        if s.NewlySpawned && s.StartLiquid.Amount > mathf::EPSILON {
+            let id = s.StartLiquid.LiquidID.clone();
+            let amount = s.StartLiquid.Amount;
             match LIQUIDS.iter().position(|(n, _)| *n == id) {
                 Some(liquid) => {
                     self.add_liquid(Owner::Flask(f), liquid, amount);

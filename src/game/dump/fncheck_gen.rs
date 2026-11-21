@@ -597,7 +597,6 @@ const GEN: &[(&str, Call)] = &[
     ("ObjectPoolBehaviour.GetInactivePoolSize", |g, c| { let c = c.with(0)?; Ok(Enc::enc(g.blood_puff_pool.as_mut().ok_or("no blood_puff_pool")?.get_inactive_pool_size())) }),
     ("ObjectPoolBehaviour.GetPoolSize", |g, c| { let c = c.with(0)?; Ok(Enc::enc(g.blood_puff_pool.as_mut().ok_or("no blood_puff_pool")?.get_pool_size())) }),
     ("ObjectPoolBehaviour.Request", |g, c| { let c = c.with(0)?; Ok(Enc::enc(g.tracer_request())) }),
-    ("ObjectPoolBehaviour.Return", |g, c| { let c = c.with(0)?; g.tracer_return(); VOID }),
     ("ObjectPoolBehaviour.Update", |g, c| { let c = c.with(0)?; g.tracer_pool_update(); VOID }),
     ("ObjectState.IsComponentToSerialise", |g, c| { let c = c.with(1)?; let a0 = &c.p_string(0)?; Ok(Enc::enc(super::super::Game::is_component_to_serialise(a0))) }),
     ("ObjectState.IsSerialisableComponent", |g, c| { let c = c.with(1)?; let a0 = &c.p_string(0)?; Ok(Enc::enc(super::super::Game::is_component_to_serialise(a0))) }),

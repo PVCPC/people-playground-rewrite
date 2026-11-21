@@ -15,6 +15,10 @@ pub struct GlowInTheDark {
     pub owner: Owner,
     /// Start's lightSprite: the ModLightPrefab SpriteRenderer's `Game::renderers` entry.
     pub light: Option<usize>,
+    /// Start's `glow` GameObject and the ModLightPrefab clone's root GameObject under it (`lightSprite.gameObject`): their
+    /// instance ids, 0 before Start.
+    pub glow_go: i32,
+    pub light_go: i32,
 }
 
 script! {
@@ -76,7 +80,7 @@ impl Game {
             return;
         }
         let id = self.allocate_instance_id();
-        self.glows.push(GlowInTheDark { id, owner: o, light: None });
+        self.glows.push(GlowInTheDark { id, owner: o, light: None, glow_go: 0, light_go: 0 });
         self.pending_starts.push(super::misc::PendingStart::Glow(self.glows.len() - 1));
     }
 
@@ -130,8 +134,48 @@ impl Game {
                 self.renderers[r].visible = false;
                 self.renderer_sync(r);
             }
+            self.glow_on_destroy(g);
         }
         true
+    }
+
+    /// GlowInTheDarkBehaviour.OnDestroy's body (v52h r12): Object.Destroy(lightSprite.gameObject) if lightSprite, then
+    /// Object.Destroy(glow) if glow, each queued for the end of the frame (DestroyObjectDelayed at
+    /// min(fixedTimeAsDouble, timeAsDouble)); run_object_destroy takes them (glow_object_destroyed).
+    pub fn glow_on_destroy(&mut self, g: usize) {
+        let at = self.time.fixedTimeAsDouble.min(self.time.timeAsDouble);
+        for go in [self.glows[g].light_go, self.glows[g].glow_go] {
+            if go != 0 && !self.destroyed_components.contains(&go) && !self.object_destroys.iter().any(|&(_, i)| i == go) {
+                self.object_destroys.push((at, go));
+            }
+        }
+        // Destroy with no delay (DestroyObjectFromScripting, destroy_disable_behaviours): the Behaviours of the object and
+        // its direct children are disabled on the spot: the LightSprite on the light's root (the glow object's child).
+        self.glow_light_sprite_off(g);
+    }
+
+    /// The glow's LightSprite disabled: by its id (a recording's LightSprite record loads a second entry, renderer by id).
+    fn glow_light_sprite_off(&mut self, g: usize) {
+        let Some(r) = self.glows[g].light else { return };
+        let Some(id) = self.light_sprites.iter().find(|l| l.renderer == Some(SpriteAt::Renderer(r))).map(|l| l.id) else { return };
+        for l in self.light_sprites.iter_mut().filter(|l| l.id == id) {
+            l.enabled = false;
+        }
+    }
+
+    /// A glow's own GameObject destroyed (`go` its glow object or its light's): it and its light go (the light is the
+    /// glow object's child): the LightSprite is gone and its SpriteRenderer draws no more.
+    pub(crate) fn glow_object_destroyed(&mut self, g: usize, go: i32) {
+        self.object_destroys.retain(|&(_, i)| i != go);
+        self.destroyed_components.insert(go);
+        if go == self.glows[g].glow_go {
+            self.destroyed_components.insert(self.glows[g].light_go);
+        }
+        if let Some(r) = self.glows[g].light {
+            self.renderers[r].visible = false;
+            self.renderer_sync(r);
+        }
+        self.glow_light_sprite_off(g);
     }
 
     /// Tritium.OnExitContainer: Object.Destroy of its GlowInTheDarkBehaviour (OnDestroy removes the light).
@@ -153,9 +197,12 @@ impl Game {
         if self.destroyed_components.contains(&self.glows[g].id) {
             return;
         }
-        for _ in 0..3 {
+        // new GameObject(name, typeof(Optout)): its GameObject's, Transform's and Optout's ids; the light's clone takes the next.
+        self.glows[g].glow_go = self.allocate_instance_id();
+        for _ in 0..2 {
             self.allocate_instance_id();
         }
+        self.glows[g].light_go = self.next_instance_id;
         // radius = Mathf.Sqrt(PhysicalBehaviour.ObjectArea) * 3f: every container owner carries one.
         let p = self.container_physical(self.glows[g].owner);
         let radius = mathf::sqrt(self.physicals[p].ObjectArea) * 3.0;

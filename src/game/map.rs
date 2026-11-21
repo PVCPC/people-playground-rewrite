@@ -236,6 +236,8 @@ impl Game {
     /// MapLightBehaviour.Awake: spriteRenderer = GetComponent<SpriteRenderer>(), propertyBlock = new, and with SetPropertyBlock
     /// spriteRenderer.GetPropertyBlock(propertyBlock) (a null renderer throws).
     pub(crate) fn map_light_awake(&mut self, l: usize) {
+        // propertyBlock = new MaterialPropertyBlock() first, SetPropertyBlock or not (v52h r12).
+        self.map_lights[l].propertyBlock = Default::default();
         if self.map_lights[l].SetPropertyBlock {
             let r = self.map_lights[l].spriteRenderer.unwrap_or_else(|| super::menu::throw("NullReferenceException: MapLightBehaviour without a SpriteRenderer"));
             self.map_lights[l].propertyBlock = self.get_property_block(r);

@@ -1172,7 +1172,9 @@ impl Game {
             load_fields(gr.fields(), r)?;
             gr.id = r.id;
             gr.PhysicalBehaviour = phys_ids[&reference(r.req("PhysicalBehaviour")?).unwrap()];
-            gr.CurrentlyHolding = reference(r.req("CurrentlyHolding")?).map(|id| phys_ids[&id]);
+            // v52h r12: an item held (a Flask) is not a PhysicalBehaviour record: its physical by id once the items are
+            // in (the end of from_snapshot).
+            gr.CurrentlyHolding = reference(r.req("CurrentlyHolding")?).and_then(|id| phys_ids.get(&id).copied());
             let l = limb_by_name(&r.name).ok_or("grip without limb")?;
             g.limbs[l].GripBehaviour = Some(g.grips.len());
             g.grips.push(gr);
@@ -1754,7 +1756,7 @@ impl Game {
         }
         g.recorded_active.sort_by_key(|x| x.0);
         if let Some(w) = g.recorded_active.windows(2).find(|w| w[0].0 == w[1].0) {
-            return Err(format!("psm {} listed twice", w[0].0));
+            return Err(format!("psm {} listed twice ({:?}, {:?})", w[0].0, w[0].1, w[1].1));
         }
         if let Some(r) = s.of("AudioClipsNotLoaded").next() {
             g.audio.not_loaded = list(r.req("clips")?).into_iter().map(|c| c.rsplit_once('#').map_or(c, |(n, _)| n).to_string()).collect();
@@ -1774,6 +1776,10 @@ impl Game {
             load_fields(m.fields(), r)?;
             m.switches = array_len(r.req("Switches")?);
             m.hasAudio = r.req("audio")? == "1";
+            // v52h r12: the recorded SetPropertyBlock (a case seed's 0); older recordings: the link's.
+            if let Some(v) = r.get("SetPropertyBlock") {
+                m.SetPropertyBlock = v == "1";
+            }
             m.wake = match r.req("wake")? {
                 "none" => None,
                 w => Some(f64::from_bits(u64::from_str_radix(w, 16).map_err(|e| e.to_string())?)),
@@ -2261,6 +2267,12 @@ impl Game {
             let recorded = materials.get(&g.physicals[p].rigidbody.component).copied();
             g.physicals[p].rigidbody_has_material = recorded.unwrap_or_else(|| g.properties[g.physicals[p].Properties].friction.is_some());
         }
+        // v52h r12: a grip holding an item: the item's physical, by id, now the item pass loaded it.
+        for (gi, r) in s.of("GripBehaviour").enumerate() {
+            if g.grips[gi].CurrentlyHolding.is_none() && let Some(id) = r.get("CurrentlyHolding").and_then(reference) {
+                g.grips[gi].CurrentlyHolding = Some(g.physicals.iter().position(|p| p.id == id).ok_or_else(|| format!("GripBehaviour {} holding #{id}: no such physical", r.name))?);
+            }
+        }
         Ok(g)
     }
 
@@ -2637,7 +2649,13 @@ impl Game {
             unscaledTimeAsDouble: 0.0,
             fixedUnscaledTimeAsDouble: 0.0,
             fixedUnscaledDeltaTime: 0.0,
+            levelLoadOffset: 0.0,
         };
+        // fc41 r20: Time.timeSinceLevelLoad (" tsll=", float bits) as the offset from timeAsDouble; older recordings: 0.
+        if let Some(w) = s.of("Time").next().and_then(|r| r.get("tsll")) {
+            let t = f32::from_bits(u32::from_str_radix(w, 16).unwrap()) as f64;
+            self.time.levelLoadOffset = t - self.time.timeAsDouble;
+        }
         // Older recordings lack it: the Default map prefab sets Ambient_temperature 20.
         self.AmbientTemperature = s.snap.iter().find(|(k, _)| k == "ambient").map_or(20.0, |(_, v)| f(v));
         // Older recordings lack it: the Default map's BoundingBoxBehaviour.
@@ -3836,6 +3854,13 @@ pub fn compare(g: &mut Game, s: &Snapshot) -> Vec<String> {
         let gone = |id: &&str| !s.of("HingeJoint2D").any(|r| r.id.to_string() == **id);
         if listed.len() != ours.len() || !listed.iter().zip(&ours).all(|(t, o)| t == o || (o == "?" && gone(t))) {
             out.push(format!("JointBreakLimits: game {theirs} ours [{}]", ours.join(";")));
+        }
+    }
+    // v52h r12: each grip's PhysicalBehaviour (GripBehaviour.Awake's GetComponent; a seeded case has another limb's first).
+    for (x, r) in g.grips.iter().zip(s.of("GripBehaviour")) {
+        let theirs = r.get("PhysicalBehaviour").and_then(reference);
+        if theirs.is_some() && theirs != Some(g.physicals[x.PhysicalBehaviour].id) {
+            out.push(format!("Grip {}.PhysicalBehaviour: game {theirs:?} ours {}", r.name, g.physicals[x.PhysicalBehaviour].id));
         }
     }
     let mut particles = Vec::new();

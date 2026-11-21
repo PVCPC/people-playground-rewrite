@@ -1279,8 +1279,7 @@ pub(super) fn check_rewritten(class: &str) {
         // FixedUpdate, Update, Use and OnDisable are rewritten (hover_thruster.rs); Awake sizes a scratch array, and
         // Start is the context menu (menu.rs) and UpdateActivation (presentation), OnEnable UpdateActivation.
         "HoverThrusterBehaviour" => {}
-        // FixedUpdate and Use are rewritten (hover_thruster.rs; calibratedHoverHeights is computed per hover). Awake
-        // fills that array; Start is the context menu (menu.rs) and audio, Update, OnEnable and OnDisable the fan and audio.
+        // FixedUpdate and Use are rewritten (hover_thruster.rs). Awake fills calibratedHoverHeights (`calibrated`, above); Start is the context menu (menu.rs) and audio, Update, OnEnable and OnDisable the fan and audio.
         "HovercarBehaviour" => {}
         // Start, FixedUpdate, Use, OnEnable and OnDisable are rewritten (winch.rs); Awake's useMotor = true finds it on
         // (link), Update turns the wheel sprite, and the lights, gizmo and audio are presentation.
@@ -4035,8 +4034,7 @@ impl Game {
                 x.id = inst.objects[o].components[c];
                 x.LiquidContainer = l.in_arena(field(v, "LiquidContainer")?, &liquid_containers, "LiquidContainerController")?;
                 let start = field(v, "StartLiquid")?;
-                x.StartLiquid = string(start, "LiquidID")?;
-                x.StartAmount = float(start, "Amount")?;
+                x.StartLiquid = super::flask::Distribution { LiquidID: string(start, "LiquidID")?, Amount: float(start, "Amount")? };
                 x.Phys = l.arenas.physical.get(&o).copied();
                 flasks.insert(o, self.flasks.len());
                 self.flasks.push(x);
@@ -4270,6 +4268,8 @@ impl Game {
                 }
                 x.mask = field(field(v, "Layers")?, "m_Bits")?.i64().ok_or("HovercarBehaviour.Layers.m_Bits")? as u32;
                 x.points = hover_points(prefab, inst, file, o, v, "HovercarBehaviour")?;
+                // Awake: calibratedHoverHeights[i] = HoverHeight + HoverPoints[i].localPosition.y.
+                x.calibrated = x.points.iter().map(|p| x.HoverHeight + p[1]).collect();
                 self.hovercars.push(x);
                 hovercars.insert(o, self.hovercars.len() - 1);
             }
@@ -4827,7 +4827,7 @@ impl Game {
                 x.TextMeshPro = self.text_field(&l, v, "TextMeshPro")?;
                 x.Light = self.sprite_field(&l, v, "Light")?;
                 x.Channel = match field(v, "Channel")? {
-                    crate::assets::mono::Value::Str(s) => s.clone(),
+                    crate::assets::mono::Value::Str(s) => Some(s.clone()),
                     _ => return Err("TransmitterBehaviour.Channel".into()),
                 };
                 // Transmit's SendMessage reaches every component of a transmitter's own GameObject.

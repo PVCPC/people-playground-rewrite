@@ -19,7 +19,7 @@ script! {
         phys: usize = 0,
         /// Start's `physicalBehaviour = GetComponent<PhysicalBehaviour>()` (the C# reference cache: `phys` once Start ran).
         physicalBehaviour: Option<usize> = None,
-        Channel: String = String::from("0"),
+        Channel: Option<String> = Some(String::from("0")),
         /// channelSound
         sound: Option<super::audio::ClipRef> = None,
         /// Awake ran: a member of the static `transmitters` set until OnDestroy.
@@ -38,8 +38,8 @@ impl Game {
     }
 
     /// TransmitterBehaviour.GetChannel
-    pub fn transmitter_get_channel(&self, t: usize) -> &str {
-        &self.transmitters[t].Channel
+    pub fn transmitter_get_channel(&self, t: usize) -> Option<&str> {
+        self.transmitters[t].Channel.as_deref()
     }
 
     /// TransmitterBehaviour.OnEnable: `TextMeshPro.enabled = true`.
@@ -108,9 +108,12 @@ impl Game {
 
     /// TransmitterBehaviour.SetChannel and TransmitterBehaviour.LoadOrCreateFor: Channel, the text (presentation) and LoadOrCreateFor, which caches one
     /// AudioClip per channel (its first 8 UTF-16 units) in a static dictionary; AudioClip.Create takes an instance id.
-    pub(crate) fn transmitter_set_channel(&mut self, t: usize, channel: String) {
-        self.text_write(self.transmitters[t].TextMeshPro, &channel);
+    /// A null channel (a save's, fc41_42_gen's fuzz): TMP_Text.text = null shows "", then LoadOrCreateFor's
+    /// `channel.Length` throws.
+    pub(crate) fn transmitter_set_channel(&mut self, t: usize, channel: Option<String>) {
+        self.text_write(self.transmitters[t].TextMeshPro, channel.as_deref().unwrap_or(""));
         self.transmitters[t].Channel = channel.clone();
+        let channel = channel.unwrap_or_else(|| crate::game::menu::npe());
         let clip = self.transmitter_load_or_create_for(&channel);
         self.transmitters[t].sound = Some(clip);
     }

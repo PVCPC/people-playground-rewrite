@@ -588,8 +588,8 @@ impl Game {
             super::mods::mod_event_invoke(&super::mods::mod_api::OnDeath, id, &id);
             super::stats::increment_integer(super::stats::BODY_COUNT, 1);
             super::stats::with_stats(|s| s.increment("BODY_COUNT", 1.0));
-            // Global.LastKillTime = Time.timeSinceLevelLoad (Time.time: the level starts at 0).
-            super::stats::set_last_kill_time(self.time.time);
+            // Global.LastKillTime = Time.timeSinceLevelLoad.
+            super::stats::set_last_kill_time(self.time.time_since_level_load());
             let head = self.people[person].Head;
             if head.is_some_and(|h| self.limbs[h].IsZombie)
                 && !self.people[person].HasAlreadyBeenDeadOnce

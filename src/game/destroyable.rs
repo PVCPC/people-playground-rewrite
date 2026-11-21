@@ -469,6 +469,11 @@ impl Game {
         if let Some((l, end)) = self.phase_link_end_object(id) {
             return self.phase_link_end_destroy(l, end);
         }
+        // v52h r12: a GlowInTheDarkBehaviour's glow object or its light (no clone kept: GlowInTheDarkBehaviour.OnDestroy's).
+        if let Some(g) = self.glows.iter().position(|x| id != 0 && (x.glow_go == id || x.light_go == id)) {
+            self.glow_object_destroyed(g, id);
+            return;
+        }
         // A SetupSpawnPrefab SpawnParticles(Clone) (its Transform `id`, no clone object kept): its GameObject and
         // components go, and it leaves its parent's children; its DeleteAfterTime drops out at its next Update.
         if let Some(parent) = self.delete_afters.iter().find(|d| d.added_to == Some(id)).and_then(|d| d.parent) {

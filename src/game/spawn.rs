@@ -1284,11 +1284,12 @@ impl Game {
             1 => BodyType::Kinematic,
             _ => BodyType::Static,
         });
-        // RigidbodyMovementState2D::ResetLinearMoveState and ResetAngularMoveState (180c232bf), then previous and
-        // current become the body pose with no interpolation.
+        // RigidbodyMovementState2D::ResetLinearMoveState and ResetAngularMoveState (180c232bf), then previous and body
+        // become the current pose (the Transform's, interpolated) with no interpolation (v52h r12: fn-check
+        // FreezeStackController.RequestFreeze on an interpolating body: all three the PI current, not its body pose).
         self.rigidbody_reset_move_states(owner);
         let m = &mut self.owner_rigidbody_mut(owner).movement;
-        (m.previous, m.current, m.interpolating) = (m.body, m.body, false);
+        (m.previous, m.body, m.interpolating) = (m.current, m.current, false);
         self.rigidbody2d_recalculate_contacts(inst, &prefab, body);
         let driven_by = self.rigidbody2d_driven_by(inst, &prefab, o, body_type);
         self.set_driven_by(owner, driven_by);

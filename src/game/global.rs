@@ -18,11 +18,11 @@ impl Game {
     /// Global.Update
     pub fn global_update(&mut self) {
         // SteamworksInitialiser.IsInitialised (the local store, unless `steam_off`): an hour without a kill while the player
-        // was active (isActivePlayer: inactivity under 300 s) counts PACIFIST once; Time.timeSinceLevelLoad is Time.time.
+        // was active (isActivePlayer: inactivity under 300 s) counts PACIFIST once (Time.timeSinceLevelLoad).
         if super::stats::STEAMWORKS_INITIALISED && !self.steam_off && !self.alreadyUnlockedPacifist {
             if self.inactivity >= 300.0 {
-                super::stats::set_last_kill_time(self.time.time);
-            } else if self.time.time - super::stats::last_kill_time() > 3600.0 {
+                super::stats::set_last_kill_time(self.time.time_since_level_load());
+            } else if self.time.time_since_level_load() - super::stats::last_kill_time() > 3600.0 {
                 super::stats::increment_integer(super::stats::PACIFIST, 1);
                 self.alreadyUnlockedPacifist = true;
             }

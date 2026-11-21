@@ -261,6 +261,8 @@ impl Case<'_> {
                 _ => g.lightnings.iter().position(|l| l.id == id).map(|i| ("WeatherLightningBehaviour".into(), i))
                     .or_else(|| g.eggs.iter().position(|x| x.id == id).map(|i| ("EggBehaviour".into(), i)))
                     .or_else(|| g.loop_sounds.iter().position(|x| x.id == id).map(|i| ("LoopSoundBehaviour".into(), i)))
+                    // fc41 r20: Reactor A5's JointMotorSoundBehaviours.
+                    .or_else(|| g.joint_motor_sounds.iter().position(|x| x.id == id).map(|i| ("JointMotorSoundBehaviour".into(), i)))
                     .ok_or_else(|| format!("no record #{id}")),
             };
         };
@@ -2144,7 +2146,7 @@ const CALLS: &[(&str, Call)] = &[
         let fid: i32 = comps.split([';', '[', ']']).find_map(|e| e.strip_prefix("FlaskBehaviour:")).ok_or("no FlaskBehaviour beside the glow")?.parse().map_err(|_| "flask id")?;
         let f = g.flasks.iter().position(|x| x.id == fid).ok_or_else(|| format!("no flasks entry #{fid} (ours: {:?}; clone {})", g.flasks.iter().map(|x| x.id).collect::<Vec<_>>(), comps.get(..60).unwrap_or(comps)))?;
         if !g.glows.iter().any(|x| x.id == c.id) {
-            g.glows.push(super::super::glow::GlowInTheDark { id: c.id, owner: Owner::Flask(f), light: None });
+            g.glows.push(super::super::glow::GlowInTheDark { id: c.id, owner: Owner::Flask(f), light: None, glow_go: 0, light_go: 0 });
         }
         let i = g.glows.iter().position(|x| x.id == c.id).ok_or("no glows entry")?;
         g.glow_start(i);
@@ -2551,6 +2553,30 @@ const CALLS: &[(&str, Call)] = &[
     ("FirearmAttachmentBehaviour.Connect", |g, c| { let a = g.firearm_attachments.iter().position(|x| x.id == c.sid).ok_or("no firearm_attachments entry")?; g.firearm_attachment_connect(a); VOID }),
     // Use(propagation): the signal's Target, the attachment's own GameObject (its physical) or another (never equal).
     ("FirearmAttachmentBehaviour.Use", |g, c| { let a = g.firearm_attachments.iter().position(|x| x.id == c.sid).ok_or("no firearm_attachments entry")?; let (_, _, t) = signal_arg(c.args.first().copied().unwrap_or("signal"))?; let own = t != 0 && c.s.of("Clone").any(|r| r.id == t && r.get("comps").is_some_and(|v| super::list(v).iter().any(|x| x.rsplit_once(':').is_some_and(|y| y.1 == c.sid.to_string())))); let target = if own { g.firearm_attachments[a].physical } else if t != 0 { Some(usize::MAX) } else { None }; g.firearm_attachment_use(a, target); VOID }),
+    // fc41 r20: the message itself (the generated entry called its GetPhysicalBehaviour helper and returned its value).
+    ("StickyGrenadeBehaviour.OnCollisionEnter2D", |g, c| { let a0 = c.with(1)?.p_collision(0)?; let s = g.sticky_grenades.iter().position(|x| x.id == c.sid).ok_or("no StickyGrenadeBehaviour")?; g.sticky_grenade_collision_enter(s, &a0); VOID }),
+    // fc41 r20: ObjectPoolBehaviour.Return(poolable) on the BulletTracerPool. `!poolable || !createdObjects.Contains(poolable)`:
+    // Debug.LogError (console only) and nothing else. Ours counts the tracer clones without their ids: with none created
+    // the argument can't be one; with some, the case is not checked (an error, never a pass).
+    ("ObjectPoolBehaviour.Return", |g, c| {
+        c.with(1)?;
+        if g.tracer_pool.created != 0 {
+            return Err("checker limit: a tracer pool with clones (ours keeps no clone ids)".into());
+        }
+        g.tracer_return(false);
+        VOID
+    }),
+    // fc41 r20: the case's calibratedHoverHeights (its ItemScript record, `[h;h;..]` float bits): Awake's, not the fuzzed HoverHeight's.
+    ("HovercarBehaviour.FixedUpdate", |g, c| {
+        let i = g.hovercars.iter().position(|x| x.id == c.id).ok_or("no hovercars entry")?;
+        let id = c.id.to_string();
+        let rec = c.s.of("ItemScript").find(|r| r.id.to_string() == id && r.get("class") == Some("HovercarBehaviour")).ok_or("no HovercarBehaviour record")?;
+        let v = rec.req("calibratedHoverHeights")?;
+        let v = v.strip_prefix('[').and_then(|x| x.strip_suffix(']')).ok_or("calibratedHoverHeights: not an array")?;
+        g.hovercars[i].calibrated = if v.is_empty() { Vec::new() } else { v.split(';').map(|w| u32::from_str_radix(w, 16).map(f32::from_bits).map_err(|e| e.to_string())).collect::<Result<_, _>>()? };
+        g.hovercar_fixed_update(i);
+        VOID
+    }),
     ("StickyGrenadeBehaviour.OnEMPHit", |g, c| { let s = g.sticky_grenades.iter().position(|x| x.id == c.sid).ok_or("no StickyGrenadeBehaviour")?; g.sticky_grenade_on_emp_hit(s); VOID }),
     // batch4 r6: GetPhysicalBehaviour(collision, out phys): the bool, out= the collision and the phys.
     ("StickyGrenadeBehaviour.GetPhysicalBehaviour", |g, c| { if c.args.len() != 2 { return Err(format!("arity: 2 args, the game passed {}", c.args.len())) } let col = c.with(2)?.p_collision(0)?; let p = g.sticky_get_physical_behaviour(&col); Ok(format!("{} out={};{}", bit(p.is_some()), c.args[0], p.map_or("null".to_string(), |i| i.to_string()))) }),
@@ -3293,7 +3319,24 @@ const CALLS: &[(&str, Call)] = &[
         VOID
     }),
     // The ExplosionCreator statics (ExplosionParameters as Dump.Format writes it).
-    ("ExplosionCreator.CreateFragmentationExplosion", |g, c| { c.with(1)?; let ex = explosion_arg(c.args[0])?; g.create_fragmentation_explosion(ex); VOID }),
+    // v52h r12: GlowInTheDarkBehaviour.OnDestroy called on a live component (the probe's call): its body only.
+    ("GlowInTheDarkBehaviour.OnDestroy", |g, c| { c.with(0)?; if let Some(i) = g.glows.iter().position(|x| x.id == c.sid) { g.glow_on_destroy(i); } VOID }),
+    // (none: its glow and lightSprite destroyed or never made (`glow=destroyed`), both ifs false.)
+    // v52h r12: ResizeHandles.Awake: camera = Camera.main, which the rewrite keeps as the Game's camera (no state of its own).
+    ("ResizeHandles.Awake", |_, c| { c.with(0)?; VOID }),
+    // v52h r12: and the [Obsolete] overload (rayCount, position, range, fragmentForce, particleAndSound, big, dismemberChance): its
+    // ExplosionParameters initialiser (LargeExplosionParticles = big: EffectSize Large or Medium; BallisticShrapnelCount 0).
+    ("ExplosionCreator.CreateFragmentationExplosion", |g, c| {
+        let ex = if c.args.len() == 7 {
+            let w = c.with(7)?;
+            super::super::explosion::ExplosionParameters::new_big(w.p_int(0)?, w.p_arr::<3>(1)?, w.p_f32(2)?, w.p_f32(3)?, w.p_bool(4)?, w.p_bool(5)?, w.p_f32(6)?, 0)
+        } else {
+            c.with(1)?;
+            explosion_arg(c.args[0])?
+        };
+        g.create_fragmentation_explosion(ex);
+        VOID
+    }),
     // CreateExplosionWithWater(isUnderWater, waterSurfaceLevel, ex, doSplash) (the obsolete overload: the level is unused) or (isUnderWater, ex, doSplash).
     ("ExplosionCreator.CreateExplosionWithWater", |g, c| {
         let ex = explosion_arg(c.args.iter().find(|a| a.starts_with("ExplosionParameters(")).ok_or("no ExplosionParameters arg")?)?;
@@ -4437,7 +4480,7 @@ fn glow_pre_on(g: &mut Game, c: &Case, o: Owner, arg: &str) {
     let id = comps.split([';', '[', ']']).find_map(|e| e.strip_prefix("GlowInTheDarkBehaviour:")).and_then(|v| v.parse::<i32>().ok());
     g.glows.retain(|x| x.owner != o || Some(x.id) == id);
     if let Some(id) = id && !g.glows.iter().any(|x| x.id == id) {
-        g.glows.push(super::super::glow::GlowInTheDark { id, owner: o, light: None });
+        g.glows.push(super::super::glow::GlowInTheDark { id, owner: o, light: None, glow_go: 0, light_go: 0 });
     }
 }
 
@@ -4483,7 +4526,8 @@ fn with_map(s: &Snapshot, pm: Option<&Snapshot>) -> Snapshot {
     let Some(pm) = pm else { return s.clone() };
     let have: std::collections::HashSet<(&str, i32)> = s.records.iter().map(|r| (r.ty.as_str(), r.id)).collect();
     // A human's limbs in the PM are the human's at that time: after a respawn they are gone (the case has the new one's).
-    let human = |r: &&super::Record| r.ty == "PhysicalBehaviour" && r.get("Properties").is_some_and(|v| v.starts_with("@Human#"));
+    // v52h r12: and the human's Clone records (a bleed's BleedingParticle(Clone) since destroyed kept its psm slot: "psm 0 listed twice").
+    let human = |r: &&super::Record| (r.ty == "PhysicalBehaviour" && r.get("Properties").is_some_and(|v| v.starts_with("@Human#"))) || (r.ty == "Clone" && r.get("root") == Some("Human"));
     // A case with map lights of its own has the live map's: the PM's are an earlier map's (MapLoaderBehaviour.Awake reloads it).
     let own_lights = s.of("MapLightBehaviour").next().is_some();
     let pick = |types: &[&str]| pm.records.iter().filter(|r| types.contains(&r.ty.as_str()) && !have.contains(&(r.ty.as_str(), r.id)) && !human(r) && !(own_lights && r.ty == "MapLightBehaviour")).cloned().collect::<Vec<_>>();
@@ -4564,12 +4608,18 @@ fn mutated(name: &str) -> bool {
 }
 
 /// gapB r15: each reference cache the case reset (Game::ref_reset) against the PO: null in both, or set in both.
+/// fc41 r20: not when the game's call threw and left the field at its PI value (it threw before filling it; the reset
+/// is only the checker's, and the return compare covers the throw).
 fn ref_reset_diffs(g: &mut Game, s: &Snapshot) -> Vec<String> {
     let reset = std::mem::take(&mut g.ref_reset);
     let mut out = Vec::new();
+    let threw = s.of("FnResult").next().and_then(|r| r.get("ret")).is_some_and(|v| v.contains("exc:"));
     crate::game::REF_LIVE.with(|l| l.set(true));
-    for (class, id, name) in &reset {
+    for (class, id, name, pre) in &reset {
         let Some(theirs) = super::clone::script_records(s).find(|(_, r)| r.id == *id).and_then(|(_, r)| r.get(name)) else { continue };
+        if threw && theirs == pre {
+            continue;
+        }
         let Some((_, links)) = super::fnitems::item_fields(g, class, *id) else { continue };
         let Some(ours) = links.into_iter().find(|(n, _)| n == name).map(|(_, f)| f.show()) else { continue };
         if (theirs == "null") != (ours == "null") {
@@ -4931,8 +4981,8 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                                 let mut reset = Vec::new();
                                 if let Some((_, links)) = super::fnitems::item_fields(&mut g, class, case.sid) {
                                     for (name, field) in links {
-                                        if names.contains(&name) && r.get(name).is_some() && field.parse("null").is_ok() {
-                                            reset.push((class.to_string(), case.sid, name));
+                                        if let Some(pre) = r.get(name).filter(|_| names.contains(&name)) && field.parse("null").is_ok() {
+                                            reset.push((class.to_string(), case.sid, name, pre.to_string()));
                                         }
                                     }
                                 }

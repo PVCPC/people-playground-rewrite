@@ -93,9 +93,9 @@ impl Game {
         self.use_wire_send(w, b, continuous);
     }
 
-    /// UseWireBehaviour.SendGlow: _Timestamp = Time.timeSinceLevelLoad (Time.time) into the line's property block.
+    /// UseWireBehaviour.SendGlow: _Timestamp = Time.timeSinceLevelLoad into the line's property block.
     pub fn use_wire_send_glow(&mut self, w: usize) {
-        self.blood_wires[w].glow_timestamp = Some(self.time.time);
+        self.blood_wires[w].glow_timestamp = Some(self.time.time_since_level_load());
     }
 
     /// UseWireBehaviour.SendUseMessage and UseWireBehaviour.SendUseContinuousMessage, as StartCoroutine'd: ActivityIntensity++, WaitForSeconds(delay), then
@@ -166,10 +166,9 @@ impl Game {
         }
     }
 
-    /// UseWireBehaviour.ShowTooManyPropagationsWarning (static lastWarningTime, LAST_WARNING_TIME until the first warning; Time.timeSinceLevelLoad is Time.time
-    /// here, the same differences within one level): UISoundBehaviour.Main.Warning() past 10 s, then the notification.
+    /// UseWireBehaviour.ShowTooManyPropagationsWarning (static lastWarningTime, LAST_WARNING_TIME until the first warning; Time.timeSinceLevelLoad): UISoundBehaviour.Main.Warning() past 10 s, then the notification.
     pub(crate) fn too_many_propagations_warning(&mut self) {
-        let now = self.time.time;
+        let now = self.time.time_since_level_load();
         let last = self.signals.last_warning.unwrap_or(LAST_WARNING_TIME);
         if now - last > 1.0 {
             if now - last > 10.0 {

@@ -1038,7 +1038,7 @@ impl Game {
                 return;
             }
             DisplayText(d) => return self.entry = Some(EntryBox { number: false, title: crate::il!(str "DisplayBehaviour::<Start>b__11_0" 0).into(), placeholder: crate::il!(str "DisplayBehaviour::<Start>b__11_0" 1).into(), text: self.displays[d].Value.clone(), targets }),
-            RadioChannel(t) => return self.entry = Some(EntryBox { number: false, title: crate::il!(str "TransmitterBehaviour::<Start>b__9_0" 0).into(), placeholder: crate::il!(str "TransmitterBehaviour::<Start>b__9_0" 1).into(), text: self.transmitters[t].Channel.clone(), targets }),
+            RadioChannel(t) => return self.entry = Some(EntryBox { number: false, title: crate::il!(str "TransmitterBehaviour::<Start>b__9_0" 0).into(), placeholder: crate::il!(str "TransmitterBehaviour::<Start>b__9_0" 1).into(), text: self.transmitters[t].Channel.clone().unwrap_or_default(), targets }),
             KeyDescription(k) => {
                 // $"...{KeyCode}...": the enum's name.
                 let code = self.key_triggers[k].KeyCode;
@@ -1066,7 +1066,7 @@ impl Game {
                     continue;
                 }
                 RadioChannel(i) => {
-                    self.transmitter_set_channel(i, b.text.clone());
+                    self.transmitter_set_channel(i, Some(b.text.clone()));
                     continue;
                 }
                 KeyDescription(k) => {
