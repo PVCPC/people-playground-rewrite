@@ -33,7 +33,7 @@ script! {
         t: f32 = 0.0,
         t2: f32 = 0.0,
         /// The history of 20 samples.
-        history: [f32; 20] = [0.0; 20],
+        history: super::FloatArray<20> = super::FloatArray([0.0; 20]),
         /// The 20 line vertices.
         vertices: [[f32; 3]; 20] = [[0.0; 3]; 20],
         /// LineRenderer: its `Game::lines` entry.

@@ -38,7 +38,7 @@ impl Game {
     pub(crate) fn chemistry_liquid_on_enter_limb(&mut self, liquid: usize, l: usize) {
         match super::circulation::LIQUIDS[liquid].1 {
             // DebugDiscolorationLiquid.OnEnterLimb: limb.Color = Color.magenta.
-            "DebugDiscolorationLiquid" => self.limbs[l].Color = [1.0, 0.0, 1.0, 1.0],
+            "DebugDiscolorationLiquid" => self.limb_set_color(l, [1.0, 0.0, 1.0, 1.0]),
             "ExoticLiquid" => self.exotic_liquid_on_enter_limb(l),
             "Tritium" => self.tritium_on_enter_limb(l),
             // Nitroglycerine.OnEnterLimb: limb.Person.Wince(12f).

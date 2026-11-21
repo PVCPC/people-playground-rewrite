@@ -156,6 +156,11 @@ impl Case<'_> {
     fn b(&self, i: usize) -> bool {
         self.args[i] == "1"
     }
+    /// Arg i, a string (Fmt writes it quoted).
+    fn arg_str(&self, i: usize) -> Result<&str, String> {
+        let a = self.args.get(i).ok_or(format!("no arg {i}"))?;
+        a.strip_prefix('"').and_then(|a| a.strip_suffix('"')).ok_or_else(|| format!("arg {i} is not a string: {a}"))
+    }
     fn n<T: std::str::FromStr>(&self, i: usize) -> Result<T, String> {
         self.args[i].parse().map_err(|_| format!("arg {i}: {}", self.args[i]))
     }
@@ -518,6 +523,34 @@ fn arg_field<'a>(a: &'a str, k: &str) -> Option<&'a str> {
     super::split_top(inner, ' ').into_iter().find_map(|kv| kv.strip_prefix(k)?.strip_prefix('='))
 }
 
+/// fc41: PersonBehaviour.SetShaderColour and its callers: every limb's four material colours the rewrite keeps (FnTiny.StateOf
+/// " stpre=pc:" / " st=pc:", per limb in Limbs order `r,g,b,a|..` in _BruiseColor, _SecondBruiseColor, _ThirdBruiseColor, _Zombie
+/// order) loaded into Skin colours before the call and given back after it.
+fn person_colour(g: &mut Game, c: &Case, call: impl FnOnce(&mut Game, usize) -> Result<(), String>) -> Result<String, String> {
+    let p = c.index("PersonBehaviour")?;
+    let limbs = g.people[p].Limbs.clone();
+    let (pre, rt) = st_pre(c).and_then(|s| s.strip_prefix("pc:")).ok_or("no pc: stpre")?.split_once("#rt:").ok_or("no #rt: table")?;
+    // Unity's Material.GetColor in a linear-colour-space project: SetColor(b / 255) reads back as rt[b] (FnTiny.GammaRoundTrip).
+    let rt: Vec<f32> = rt.split(',').map(|x| u32::from_str_radix(x, 16).map(f32::from_bits).map_err(|_| format!("bad rt {x}"))).collect::<Result<_, _>>()?;
+    if rt.len() != 256 { return Err(format!("#rt: has {} values", rt.len())) }
+    let pre: Vec<&str> = pre.split(';').collect();
+    if pre.len() != limbs.len() { return Err(format!("pc: stpre has {} limbs, ours {}", pre.len(), limbs.len())) }
+    let mut before = Vec::new();
+    for (&l, s) in limbs.iter().zip(&pre) {
+        for (slot, v) in s.split('|').enumerate() {
+            let v: [f32; 4] = floats(v);
+            *g.skins[l].colours.get_mut(slot).ok_or("pc: more than four colours")? = Some(v);
+        }
+        before.push(g.skins[l].colours);
+    }
+    call(g, p)?;
+    // A colour the call set is stored as given and read back through the round trip; an untouched one is what was loaded.
+    let read_back = |x: f32| -> f32 { let b = (x * 255.0).round(); if (0.0..=255.0).contains(&b) && b / 255.0 == x { rt[b as usize] } else { x } };
+    let hex = |v: Option<[f32; 4]>| v.map_or("null".into(), |v| v.map(|x| format!("{:08x}", x.to_bits())).join(","));
+    let out: Vec<String> = limbs.iter().zip(&before).map(|(&l, was)| g.skins[l].colours.iter().zip(was).map(|(v, w)| hex(if v != w { v.map(|[r, gr, bl, a]| [read_back(r), read_back(gr), read_back(bl), a]) } else { *v })).collect::<Vec<_>>().join("|")).collect();
+    Ok(format!(" st=pc:{}", out.join(";")))
+}
+
 /// gapC r28: the FnCase's " stpre=" (FnTiny.StatePre: the private state after the seed, before the call).
 fn st_pre<'a>(c: &Case<'a>) -> Option<&'a str> {
     c.s.of("FnCase").next().and_then(|r| r.get("stpre"))
@@ -569,6 +602,7 @@ impl<A: Enc, B: Enc> Enc for (A, B) { fn enc(self) -> String { format!("{},{}", 
 impl<T: Enc> Enc for Result<T, String> { fn enc(self) -> String { self.map_or_else(|e| format!("exc:{e}"), Enc::enc) } }
 
 mod fnbiga;
+pub(super) mod fnv52;
 include!("fncheck_gen.rs");
 include!("fncheck_dll.rs");
 include!("fncheck_dll2.rs");
@@ -3093,7 +3127,17 @@ const CALLS: &[(&str, Call)] = &[
         g.propagate_impact_damage(c.limb()?, c.f(0), c.v(1), c.v(2), c.n(3)?, origin);
         VOID
     }),
-    ("LimbBehaviour.set_Color", |g, c| { g.limb_set_color(c.limb()?, c.v(0)); VOID }),
+    // fc41: the private color and the SpriteRenderer colour, before (" stpre=lc:") and after (" st=lc:") the call (FnTiny.StateOf).
+    ("LimbBehaviour.set_Color", |g, c| {
+        let l = c.limb()?;
+        let p = g.limbs[l].PhysicalBehaviour;
+        let (color, sprite) = st_pre(c).and_then(|s| s.strip_prefix("lc:")?.split_once('|')).ok_or("no lc: stpre")?;
+        g.limbs[l].Color = floats(color);
+        g.physicals[p].sprite.as_mut().ok_or("a limb without a SpriteRenderer")?.1 = floats(sprite);
+        g.limb_set_color(l, c.v(0));
+        let hex = |v: [f32; 4]| v.map(|x| format!("{:08x}", x.to_bits())).join(",");
+        Ok(format!(" st=lc:{}|{}", hex(g.limbs[l].Color), hex(g.physicals[p].sprite.as_ref().ok_or("a limb without a SpriteRenderer")?.1)))
+    }),
     ("LimbBehaviour.BreakBone", |g, c| { g.break_bone(c.limb()?); VOID }),
     ("LimbBehaviour.BreakBoneInternal", |g, c| { g.break_bone_internal(c.limb()?); VOID }),
     ("LimbBehaviour.HealBone", |g, c| { g.limb_heal_bone(c.limb()?); VOID }),
@@ -3148,11 +3192,12 @@ const CALLS: &[(&str, Call)] = &[
     ("PersonBehaviour.AllLimbLoopChecks", |g, c| { g.all_limb_loop_checks(c.index("PersonBehaviour")?); VOID }),
     ("PersonBehaviour.AddPain", |g, c| { g.add_pain(c.index("PersonBehaviour")?, c.f(0)); VOID }),
     ("PersonBehaviour.Wince", |g, c| { g.person_wince(c.index("PersonBehaviour")?, c.f(0)); VOID }),
-    ("PersonBehaviour.SetBruiseColor", |g, c| { g.person_set_bruise_color(c.index("PersonBehaviour")?, c.n(0)?, c.n(1)?, c.n(2)?); VOID }),
-    ("PersonBehaviour.SetSecondBruiseColor", |g, c| { g.person_set_second_bruise_color(c.index("PersonBehaviour")?, c.n(0)?, c.n(1)?, c.n(2)?); VOID }),
-    ("PersonBehaviour.SetThirdBruiseColor", |g, c| { g.person_set_third_bruise_color(c.index("PersonBehaviour")?, c.n(0)?, c.n(1)?, c.n(2)?); VOID }),
+    ("PersonBehaviour.SetBruiseColor", |g, c| person_colour(g, c, |g, p| { g.person_set_bruise_color(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
+    ("PersonBehaviour.SetSecondBruiseColor", |g, c| person_colour(g, c, |g, p| { g.person_set_second_bruise_color(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
+    ("PersonBehaviour.SetThirdBruiseColor", |g, c| person_colour(g, c, |g, p| { g.person_set_third_bruise_color(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
     ("PersonBehaviour.SetBloodColour", |g, c| { g.person_set_blood_colour(c.index("PersonBehaviour")?, c.n(0)?, c.n(1)?, c.n(2)?); VOID }),
-    ("PersonBehaviour.SetRottenColour", |g, c| { g.person_set_rotten_colour(c.index("PersonBehaviour")?, c.n(0)?, c.n(1)?, c.n(2)?); VOID }),
+    ("PersonBehaviour.SetRottenColour", |g, c| person_colour(g, c, |g, p| { g.person_set_rotten_colour(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
+    ("PersonBehaviour.SetShaderColour", |g, c| person_colour(g, c, |g, p| { g.person_set_shader_colour(p, c.arg_str(0)?, c.n(1)?, c.n(2)?, c.n(3)?); Ok(()) })),
     ("PhysicalBehaviour.ManagedUpdate", |g, c| { g.physical_update(c.phys(g)?); VOID }),
     ("PhysicalBehaviour.ManagedLateUpdate", |g, c| { g.physical_late_update(c.phys(g)?); VOID }),
     ("PhysicalBehaviour.ManagedFixedUpdate", |g, c| { g.physical_fixed_update(c.phys(g)?); VOID }),
@@ -3944,7 +3989,7 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                 let case_name = r.name.clone();
                 // A skipped tool call leaves the ToolController line as it was: the mutant's tline= is the FnCase's tpre= line.
                 let mut_ret = r.get("tpre").and_then(|t| t.split_once('|')).map_or(String::new(), |(_, l)| format!(" tline={l}"));
-                let run = match super::fnbigb::drained(&r).or_else(|| CALLS.iter().chain(super::fnbigb::BIGB_CALLS).chain(super::fnitems::ITEM_CALLS).chain(fnbiga::CALLS).chain(GEN.iter()).find(|(n, _)| *n == r.name)) {
+                let run = match super::fnbigb::drained(&r).or_else(|| CALLS.iter().chain(super::fnbigb::BIGB_CALLS).chain(super::fnitems::ITEM_CALLS).chain(fnbiga::CALLS).chain(fnv52::CALLS).chain(GEN.iter()).find(|(n, _)| *n == r.name)) {
                     None => Err("no rewrite function listed".to_string()),
                     // A panic (an unimplemented! path, a failed expect) is this case's failure, not the whole run's.
                     Some((_, call)) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

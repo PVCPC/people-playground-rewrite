@@ -635,6 +635,72 @@ impl Field for Vec<[f32; 3]> {
         Ok(())
     }
 }
+/// fc41: a fixed-length float[] the rewrite keeps (HeartMonitorBehaviour.history), as the recorder writes it: `[a;b;...]`
+/// (float bits). `[f32; N]` itself is a vector (`x,y,z`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloatArray<const N: usize>(pub [f32; N]);
+impl<const N: usize> std::ops::Deref for FloatArray<N> {
+    type Target = [f32; N];
+    fn deref(&self) -> &[f32; N] {
+        &self.0
+    }
+}
+impl<const N: usize> std::ops::DerefMut for FloatArray<N> {
+    fn deref_mut(&mut self) -> &mut [f32; N] {
+        &mut self.0
+    }
+}
+impl<const N: usize> Field for FloatArray<N> {
+    fn parse(&mut self, text: &str) -> Result<(), String> {
+        let parts: Vec<&str> = text.trim_matches(['[', ']']).split(';').collect();
+        if parts.len() != N {
+            return Err(format!("expected {N} values: {text}"));
+        }
+        for (v, p) in self.0.iter_mut().zip(parts) {
+            *v = bits(p)?;
+        }
+        Ok(())
+    }
+    fn show(&self) -> String {
+        format!("[{}]", self.0.iter().map(Field::show).collect::<Vec<_>>().join(";"))
+    }
+    fn set(&mut self, v: &crate::assets::mono::Value) -> Result<(), String> {
+        let crate::assets::mono::Value::Array(items) = v else { return Err(format!("not an array: {v:?}")) };
+        if items.len() != N {
+            return Err(format!("expected {N} items: {v:?}"));
+        }
+        for (x, m) in self.0.iter_mut().zip(items) {
+            x.set(m)?;
+        }
+        Ok(())
+    }
+}
+/// fc41: a fixed-length Vector3[] the rewrite keeps (HeartMonitorBehaviour.vertices): `[x,y,z;...]` as `Vec<[f32; 3]>`.
+impl<const N: usize> Field for [[f32; 3]; N] {
+    fn parse(&mut self, text: &str) -> Result<(), String> {
+        let parts: Vec<&str> = text.trim_matches(['[', ']']).split(';').collect();
+        if parts.len() != N {
+            return Err(format!("expected {N} vectors: {text}"));
+        }
+        for (v, p) in self.iter_mut().zip(parts) {
+            v.parse(p)?;
+        }
+        Ok(())
+    }
+    fn show(&self) -> String {
+        format!("[{}]", self.iter().map(Field::show).collect::<Vec<_>>().join(";"))
+    }
+    fn set(&mut self, v: &crate::assets::mono::Value) -> Result<(), String> {
+        let crate::assets::mono::Value::Array(items) = v else { return Err(format!("not an array: {v:?}")) };
+        if items.len() != N {
+            return Err(format!("expected {N} items: {v:?}"));
+        }
+        for (x, m) in self.iter_mut().zip(items) {
+            x.set(m)?;
+        }
+        Ok(())
+    }
+}
 thread_local! {
     /// gapB r15: on while fncheck resets or compares an Awake/Start's reference caches (dump/ref_cache.rs); off, an
     /// `Option<usize>` link is inert (shows "null", takes only "null", changes nothing) so every other load and compare skips it.

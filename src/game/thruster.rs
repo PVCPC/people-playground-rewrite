@@ -43,7 +43,7 @@ script! {
 
 impl Game {
     /// ThrusterbedBehaviour.Boost (1.28.45): Charge * ChargeBoostModifier; 1.28.41 reads physicalBehaviour.Charge where it is used.
-    fn thrusterbed_boost(&self, i: usize) -> f32 {
+    pub(crate) fn thrusterbed_boost(&self, i: usize) -> f32 {
         let charge = self.physicals[self.thrusterbeds[i].Phys].Charge();
         if crate::assets::il::is_1_28_45() {
             (d(charge) * self.thrusterbeds[i].ChargeBoostModifier).f()

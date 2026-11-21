@@ -2146,8 +2146,12 @@ mod decal_tests {
         let mut h = Game::default();
         assert_eq!(g.splat_vector_to_random([2.0, 5.0]), h.random.range(2.0, 5.0));
         g.limbs.push(Default::default());
+        g.physicals.push(Default::default());
+        g.physicals[0].sprite = Some((Default::default(), [1.0; 4], 0));
         g.limb_set_color(0, [0.1, 0.2, 0.3, 1.0]);
         assert_eq!(g.limbs[0].Color, [0.1, 0.2, 0.3, 1.0]);
+        // set_Color also sets the limb's SpriteRenderer colour (fc41).
+        assert_eq!(g.physicals[0].sprite.unwrap().1, [0.1, 0.2, 0.3, 1.0]);
     }
     use crate::assets::db::AssetDb;
 

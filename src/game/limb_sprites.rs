@@ -196,9 +196,12 @@ impl Game {
         }
     }
 
-    /// PersonBehaviour.SetShaderColour: the colour (r, g, b over 255, alpha 1) on every limb's material property `slot`
-    /// (0 _BruiseColor, 1 _SecondBruiseColor, 2 _ThirdBruiseColor, 3 _Zombie).
-    pub(crate) fn person_set_shader_colour(&mut self, person: usize, slot: usize, red: u8, green: u8, blue: u8) {
+    /// PersonBehaviour.SetShaderColour: the colour (r, g, b over 255, alpha 1) on every limb's material property `id`. The
+    /// rewrite keeps four (Skin colours: 0 _BruiseColor, 1 _SecondBruiseColor, 2 _ThirdBruiseColor, 3 _Zombie); _BloodColor is
+    /// written over by SkinMaterialHandler.OnWillRenderObject before every draw, and any other id names a property no limb
+    /// shader reads, so neither leaves anything.
+    pub(crate) fn person_set_shader_colour(&mut self, person: usize, id: &str, red: u8, green: u8, blue: u8) {
+        let Some(slot) = ["_BruiseColor", "_SecondBruiseColor", "_ThirdBruiseColor", "_Zombie"].iter().position(|p| *p == id) else { return };
         let value = [red as f32 / 255.0, green as f32 / 255.0, blue as f32 / 255.0, 1.0];
         for l in self.people[person].Limbs.clone() {
             self.skins[l].colours[slot] = Some(value);
@@ -207,17 +210,17 @@ impl Game {
 
     /// PersonBehaviour.SetBruiseColor
     pub fn person_set_bruise_color(&mut self, person: usize, red: u8, green: u8, blue: u8) {
-        self.person_set_shader_colour(person, 0, red, green, blue);
+        self.person_set_shader_colour(person, "_BruiseColor", red, green, blue);
     }
 
     /// PersonBehaviour.SetSecondBruiseColor
     pub fn person_set_second_bruise_color(&mut self, person: usize, red: u8, green: u8, blue: u8) {
-        self.person_set_shader_colour(person, 1, red, green, blue);
+        self.person_set_shader_colour(person, "_SecondBruiseColor", red, green, blue);
     }
 
     /// PersonBehaviour.SetThirdBruiseColor
     pub fn person_set_third_bruise_color(&mut self, person: usize, red: u8, green: u8, blue: u8) {
-        self.person_set_shader_colour(person, 2, red, green, blue);
+        self.person_set_shader_colour(person, "_ThirdBruiseColor", red, green, blue);
     }
 
     /// PersonBehaviour.SetBloodColour: sets `_BloodColor`, which SkinMaterialHandler.OnWillRenderObject writes over every frame
@@ -226,7 +229,7 @@ impl Game {
 
     /// PersonBehaviour.SetRottenColour
     pub fn person_set_rotten_colour(&mut self, person: usize, red: u8, green: u8, blue: u8) {
-        self.person_set_shader_colour(person, 3, red, green, blue);
+        self.person_set_shader_colour(person, "_Zombie", red, green, blue);
     }
 }
 

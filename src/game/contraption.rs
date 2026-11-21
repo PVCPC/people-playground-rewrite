@@ -1616,12 +1616,26 @@ pub(crate) mod tests {
         for f in files {
             let bytes = std::fs::read(&f).unwrap();
             let states = deserialise_states(&bytes).unwrap();
-            assert!(!states.is_empty(), "{f:?}");
+            // An empty contraption is valid: the real 1.28.52 game wrote one as the 3 bytes 02 02 01 (a Contraption whose
+            // ObjectStates is an empty array), and its LoadContraption takes it without the "corrupted" dialog, spawning nothing.
+            if states.is_empty() {
+                assert_eq!(serialise_states(&states).unwrap(), bytes, "{f:?}: the game's empty contraption");
+                continue;
+            }
             // Like the game, a type the binder can't resolve is written back as "" (see ceras::tests::real_files_round_trip): the write-back is a fixed point.
             let back = serialise_states(&states).unwrap();
             let again = serialise_states(&deserialise_states(&back).unwrap()).unwrap();
             assert!(again == back, "{f:?}: {} bytes written, {} read", again.len(), back.len());
         }
+    }
+
+    /// The real 1.28.52 game's empty contraption file (02 02 01, written by a SaveContraption of no states): no states,
+    /// and written back byte for byte.
+    #[test]
+    fn empty_contraption_file_is_valid() {
+        let states = deserialise_states(&[2, 2, 1]).unwrap();
+        assert!(states.is_empty());
+        assert_eq!(serialise_states(&states).unwrap(), vec![2, 2, 1]);
     }
 
     /// Save, then load from the folder: the same states, the metadata, the delete button.

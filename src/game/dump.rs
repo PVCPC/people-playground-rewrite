@@ -2030,6 +2030,12 @@ impl Game {
             let j = r.get("joint").and_then(reference).and_then(|id| g.adopted_joints.get(&id).copied());
             if let Some(x) = g.sticky_grenades.iter_mut().find(|x| x.id == r.id) { x.joint = j; }
         }
+        // fnv52: each CrossbowBehaviour's syringeJoint (its recorded FixedJoint2D's adopted entry) and AttachedSyringe.
+        for r in s.of("ItemScript").filter(|r| r.get("class") == Some("CrossbowBehaviour")) {
+            let j = r.get("syringeJoint").and_then(reference).and_then(|id| g.adopted_joints.get(&id).copied());
+            let a = r.get("AttachedSyringe").and_then(reference).and_then(|id| g.syringes.iter().position(|x| x.id == id));
+            if let Some(x) = g.v45.crossbows.iter_mut().find(|x| x.id == r.id) { (x.syringeJoint, x.AttachedSyringe) = (j, a); }
+        }
         // gapB r20: IgnoreCollisionStackController's stack as recorded (`IgnoreStack pairs=[a,b:n;..]`) over the count guessed
         // from the pairs (2) and what the load's own requests added: a pair the stack and the recorded ignore set both lack
         // (a re-run NoCollide.Start's, taken off by the recorder's seed) is not ignored either.
@@ -2048,7 +2054,15 @@ impl Game {
                 }
             }
             let gone: Vec<(i32, i32)> = g.ignore_stack.keys().copied().filter(|k| !st.contains_key(k) && !rec.contains(k)).collect();
+            // The un-ignore is a load fix-up, not a game event: its refilter's wake must not reset the recorded sleep state
+            // (b2Body sleepTime, awake) the snapshot already holds.
+            let sleep: Vec<_> = g.world.bodies.iter().map(|b| b.as_ref().map(|b| (b.flags, b.sleep_time))).collect();
             for (a, b) in gone { g.world.ignore_collision(a, b, false); }
+            for (b, s) in g.world.bodies.iter_mut().zip(sleep) {
+                if let (Some(b), Some(s)) = (b.as_mut(), s) {
+                    (b.flags, b.sleep_time) = s;
+                }
+            }
             g.ignore_stack = st;
         }
         // fnmaped r20: the runtime clones under the loaded physicals (their Start's, not run again): BubbleParticlePrefab
@@ -3789,6 +3803,7 @@ pub fn compare(g: &mut Game, s: &Snapshot) -> Vec<String> {
             // CreateJoint the same on the grenade.)
             let coupler = g.couplers.iter().flat_map(|c| c.connections.iter().map(|x| x.joint));
             let sticky = g.sticky_grenades.iter().filter_map(|x| x.joint);
+            let sticky = sticky.chain(g.v45.crossbows.iter().filter_map(|x| x.syringeJoint));
             ours.extend(g.grips.iter().filter_map(|x| x.joint).chain(g.loose_fixed_joints.iter().copied()).chain(coupler).chain(sticky).filter(|&f| !g.fixed_joints[f].destroyed));
             ours.sort_unstable();
             ours.dedup();

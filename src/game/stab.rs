@@ -840,7 +840,7 @@ impl Game {
     }
 
     /// PhysicalBehaviour.TransferPropertiesForPenetration (1.28.45)
-    fn transfer_properties_for_penetration(&mut self, p: usize, other: usize) {
+    pub(crate) fn transfer_properties_for_penetration(&mut self, p: usize, other: usize) {
         if self.physicals[p].SimulateTemperature && self.physicals[other].SimulateTemperature {
             self.average_temperature(other, p, 0.3);
         }

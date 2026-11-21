@@ -897,6 +897,7 @@ pub(super) fn item_fields<'a>(g: &'a mut super::super::Game, class: &str, id: i3
             Some(&super::super::save_slots::Slot::EditableTints(i)) => Some((vec![("Tint", &mut g.editable_tints[i] as &mut dyn super::super::Field)], Vec::new())),
             _ => None,
         },
-        _ => None,
+        // 1.28.45's new classes (fncheck/fnv52.rs).
+        _ => super::fncheck::fnv52::v45_fields(g, class, id),
     }
 }

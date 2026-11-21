@@ -981,7 +981,7 @@ impl Game {
     }
 
     /// ToolControllerBehaviour.SelectByMass: the least InitialMass (less 10000000 for SelectionPriority); the first of equals wins.
-    fn select_by_mass(&mut self, mouse: [f32; 3]) -> Option<usize> {
+    pub(crate) fn select_by_mass(&mut self, mouse: [f32; 3]) -> Option<usize> {
         let (mut best, mut least) = (None, f32::MAX);
         for ph in self.selection_hits(mouse) {
             let mut v = self.physicals[ph].InitialMass;
@@ -998,7 +998,7 @@ impl Game {
 
     /// ToolControllerBehaviour.SelectBySize: the least PhysicalBehaviour.ObjectAreaByMass (rigidbody.mass / TrueInitialMass * ObjectArea),
     /// less 10000000 for SelectionPriority.
-    fn select_by_size(&mut self, mouse: [f32; 3]) -> Option<usize> {
+    pub(crate) fn select_by_size(&mut self, mouse: [f32; 3]) -> Option<usize> {
         let (mut best, mut least) = (None, f32::MAX);
         for ph in self.selection_hits(mouse) {
             let p = &self.physicals[ph];
@@ -1016,7 +1016,7 @@ impl Game {
 
     /// ToolControllerBehaviour.SelectByDepth: SortingLayer.GetLayerValueFromID(sortingLayerID) and sortingOrder (both +100000 for
     /// SelectionPriority); a higher layer wins, else a higher order.
-    fn select_by_depth(&mut self, mouse: [f32; 3]) -> Option<usize> {
+    pub(crate) fn select_by_depth(&mut self, mouse: [f32; 3]) -> Option<usize> {
         let (mut best, mut depth_layer, mut depth_order) = (None, i32::MIN, i32::MIN);
         for ph in self.selection_hits(mouse) {
             let mut layer = crate::play::sorting_layer_index(self.physicals[ph].sprite_layer) as i32;

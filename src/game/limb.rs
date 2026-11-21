@@ -550,8 +550,8 @@ impl Game {
     /// ShatteredObjectGenerators) are the shared arena index and the fields of this limb. Not modelled: the LimbStatus UI
     /// clone's own state (LimbStatusBehaviour holds no simulation data).
     pub fn limb_awake(&mut self, l: usize) {
-        // Color = Color.white (set_Color; the SpriteRenderer's colour is rendering).
-        self.limbs[l].Color = [1.0; 4];
+        // Color = Color.white (set_Color: the SpriteRenderer's colour too).
+        self.limb_set_color(l, [1.0; 4]);
         // myStatus = Instantiate(LimbStatus, transform): the clone's objects take instance ids.
         for _ in 0..LIMB_STATUS_OBJECTS {
             self.allocate_instance_id();
@@ -1301,9 +1301,14 @@ impl Game {
         }
     }
 
-    /// LimbBehaviour.set_Color: color = value, then the SpriteRenderer's colour (rendering).
+    /// LimbBehaviour.set_Color: color = value, then GetComponent<SpriteRenderer>().color = value (the limb's PhysicalBehaviour
+    /// holds its SpriteRenderer).
     pub fn limb_set_color(&mut self, l: usize, value: [f32; 4]) {
         self.limbs[l].Color = value;
+        let p = self.limbs[l].PhysicalBehaviour;
+        if let Some(sprite) = self.physicals[p].sprite.as_mut() {
+            sprite.1 = value;
+        }
     }
 
     /// SkinMaterialHandler.IsSkinVisible: acidProgress < 0.62 and the limb's PhysicalBehaviour.BurnProgress < 0.45.

@@ -203,7 +203,7 @@ impl Game {
         }
     }
 
-    /// PoisonSpreadBehaviour.Update, PoisonSpreadBehaviour.DestroyIfExpired
+    /// PoisonSpreadBehaviour.Update
     pub fn poison_update(&mut self, i: usize) {
         let (id, l) = (self.poisons[i].id, self.poisons[i].Limb);
         // The limb's GameObject was destroyed: the component goes with it.
@@ -215,9 +215,13 @@ impl Game {
         }
         self.poisons[i].LifeTime += self.time.deltaTime;
         self.poison_spread(i);
-        // DestroyIfExpired
+        self.poison_destroy_if_expired(i);
+    }
+
+    /// PoisonSpreadBehaviour.DestroyIfExpired: Object.Destroy(this) once LifeTime > Lifespan.
+    pub(crate) fn poison_destroy_if_expired(&mut self, i: usize) {
         if self.poisons[i].LifeTime > self.poisons[i].kind.lifespan() {
-            self.tr_destroy_component(id, 0.0);
+            self.tr_destroy_component(self.poisons[i].id, 0.0);
         }
     }
 
