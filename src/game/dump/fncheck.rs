@@ -1921,6 +1921,39 @@ const CALLS: &[(&str, Call)] = &[
         let h = |x: f32| format!("{:08x}", x.to_bits());
         Ok(format!(" st=sa:{},{},{}", mp.0.is_empty() as u8, lc.map(h).join(","), h(mp.get_float("_Direction"))))
     }),
+    // fc41 r15: SingleFloodlightBehaviour.Awake on a " fla=1" case: FnTiny gave the Renderer's and each Highlight sprite's block a
+    // _GlowIntensity (" flr=", " flh=": not in the dump) and junk in the held blocks; the return is the held blocks after (st=fl:).
+    ("SingleFloodlightBehaviour.Awake", |g, c| {
+        use crate::game::props::PropBlock;
+        let i = g.floodlights.iter().position(|x| x.id == c.id).ok_or("no floodlights entry")?;
+        let case = c.s.of("FnCase").next();
+        if case.and_then(|r| r.get("fla")) != Some("1") { g.floodlight_awake(i); return VOID }
+        let f = |v: &str| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string());
+        let flr = case.and_then(|r| r.get("flr")).ok_or("fla case: no flr")?;
+        let flh: Vec<&str> = case.and_then(|r| r.get("flh")).unwrap_or("").split(';').filter(|x| !x.is_empty()).collect();
+        if flh.len() != g.floodlights[i].Highlights.len() { return Err(format!("flh: {} values, {} highlights", flh.len(), g.floodlights[i].Highlights.len())) }
+        let mut put = Vec::new();
+        let mut seed = |g: &mut Game, at, v: &str| -> Result<(), String> {
+            if v == "n" { return Ok(()) }
+            let old = g.get_property_block(at);
+            let mut b = old.clone();
+            b.set_float("_GlowIntensity", f(v)?);
+            g.set_property_block(at, &b);
+            put.push((at, old));
+            Ok(())
+        };
+        if let Some(r) = g.floodlights[i].Renderer { seed(g, r, flr)? }
+        for (h, v) in flh.iter().enumerate() { let at = g.floodlights[i].Highlights[h].SpriteRenderer; seed(g, at, v)? }
+        let junk = |v: f32| { let mut b = PropBlock::default(); b.set_float("_GlowIntensity", v); b };
+        g.floodlights[i].propertyBlock = junk(7.0);
+        for h in &mut g.floodlights[i].Highlights { h.PropertyBlock = junk(9.0) }
+        g.floodlight_awake(i);
+        for (at, old) in put.into_iter().rev() { g.set_property_block(at, &old) }
+        let one = |b: &PropBlock| format!("{},{:08x}", b.0.is_empty() as u8, b.get_float("_GlowIntensity").to_bits());
+        let s = &g.floodlights[i];
+        let first = if s.Renderer.is_some() { one(&s.propertyBlock) } else { "n".into() };
+        Ok(format!(" st=fl:{}", std::iter::once(first).chain(s.Highlights.iter().map(|h| one(&h.PropertyBlock))).collect::<Vec<_>>().join("/")))
+    }),
     // fc41 r13: SerialisableIdentity.Regenerate: Guid.NewGuid can't be reproduced, so FnTiny's st=sid: is <changed>,<not empty>.
     ("SerialisableIdentity.Regenerate", |g, c| {
         let c = c.with(1)?;
@@ -4487,6 +4520,7 @@ const SUPERSEDED: &[(&str, &str)] = &[
 
 pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
     let stem = path.file_name().and_then(|n| n.to_str()).map_or("", |n| n.split('.').next().unwrap_or(""));
+    *OWN_DIR.lock().unwrap() = Some(path.with_file_name(format!("{stem}_own")));
     // A recorder PPG_MAPEDITOR recording: the map editor's own checker.
     if std::fs::File::open(path).ok().and_then(|f| std::io::BufRead::lines(std::io::BufReader::new(f)).next()?.ok()).is_some_and(|l| l.starts_with("mapeditor")) {
         return super::super::map_editor::fncheck::fn_check(path);

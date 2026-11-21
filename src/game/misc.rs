@@ -1824,6 +1824,30 @@ impl Game {
         Some(self.blood_impact_set_color(b, color))
     }
 
+    /// The BloodPuff poolable prefab's GameObjects plus components (the instance ids its Instantiate takes), from the Human
+    /// PhysicalProperties' ShotImpact; 0 without the game's data or a puff ShotImpact.
+    fn blood_puff_id_count(&mut self) -> usize {
+        if let Some(n) = self.blood_puff_ids {
+            return n;
+        }
+        let Some(i) = self.properties.iter().position(|x| matches!(x.ShotImpact, Some((_, true)))) else { return 0 };
+        let was = self.properties[i].ShotImpact;
+        if matches!(was, Some((None, _))) {
+            if crate::game_assets::find_game(None).is_err() {
+                return 0;
+            }
+            self.recorded_shot_impact(i);
+        }
+        let prefab = self.properties[i].ShotImpact.and_then(|(r, _)| r);
+        self.properties[i].ShotImpact = was;
+        let Some(r) = prefab else { return 0 };
+        let Ok(game) = crate::game_assets::find_game(None) else { return 0 };
+        let db = self.assets.get_or_insert_with(|| Box::new(crate::assets::db::AssetDb::open(&game).expect("the game's data")));
+        let n = db.prefab(r).map_or(0, |p| p.objects.iter().map(|o| 1 + o.components.len()).sum());
+        self.blood_puff_ids = Some(n);
+        n
+    }
+
     /// PoolGenerator.RequestPrefab(BloodPuff poolable): ObjectPoolBehaviour.Request.
     pub(crate) fn pool_request_blood_puff(&mut self, position: [f32; 2]) -> Option<usize> {
         if self.blood_puff_pool.is_none() {
@@ -1831,6 +1855,13 @@ impl Game {
             self.behaviours.add(0, super::Behaviour::ObjectPool(super::pool::PoolRef::BloodPuff));
             // A replay's empty pool that an earlier scenario of the launch made (ClearEverything emptied it; it stays).
             self.blood_puff_pool = self.take_recorded_pool("BloodPuff poolable");
+            // fc41 r15: a new pool (none recorded): new GameObject(name).AddComponent<ObjectPoolBehaviour>() takes the
+            // GameObject's, its Transform's and the behaviour's instance ids, as pool_ensure does.
+            if self.blood_puff_pool.is_none() {
+                for _ in 0..3 {
+                    self.allocate_instance_id();
+                }
+            }
         }
         let pool = self.blood_puff_pool.get_or_insert_with(Default::default);
         pool.inactivityTimer = 0.0;
@@ -1856,6 +1887,10 @@ impl Game {
         if self.blood_puff_pool.as_ref().unwrap().created.len() >= 256 {
             return None;
         }
+        // fc41 r15: Instantiate takes an instance id for each GameObject and component of the prefab (fnbb11_gen case 0: the
+        // game's first puff took 37, so the BleedingParticle after it had another id than ours).
+        let ids = self.blood_puff_id_count();
+        self.allocate_instance_ids(ids);
         // Instantiate(Prefab, position, identity). Awake in hierarchy order: the root's ExplosionSoundBehviour,
         // PoolableParticleSystemHelper and PoolableSizeHelper; the Extra decal emitter's and water puff's
         // ActivateIfFancyEffects each draw `Chance(1) > Random.value`.

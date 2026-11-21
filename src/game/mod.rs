@@ -2855,6 +2855,8 @@ pub struct Game {
     pub context_prior: Option<i32>,
     /// Global.BulletCrackClips length.
     pub bullet_crack_clips: usize,
+    /// fc41 r15: the BloodPuff poolable prefab's instance-id count (blood_puff_id_count's cache).
+    pub blood_puff_ids: Option<usize>,
     pub coroutine_seq: u64,
     /// The translated routines (`coroutine::Routine`) the queues above resume.
     pub co: coroutine::Coroutines,

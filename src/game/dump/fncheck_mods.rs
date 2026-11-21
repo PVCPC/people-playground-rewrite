@@ -1225,13 +1225,19 @@ fn sp_liquid(c: &Case) -> Result<String, String> {
     api.lock().unwrap().allowedToRegisterExternalLiquids = false;
     Ok(m_l(res))
 }
+/// The `<recording stem>_own` folder beside the recording fn_check runs (see sp_meta), when it exists.
+static OWN_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 /// The contraption a row names (`<folder>,<metadata path relative to it>`), as ContraptionFolderSource lists it.
 fn sp_meta(c: &Case) -> Result<ContraptionMetaData, String> {
     let (dir, rel) = m_arg(c, 0)?.split_once(',').ok_or("args")?;
     let (mut dir, rel) = (m_str(dir)?.ok_or("dir")?, m_str(rel)?.ok_or("rel")?);
     // The recorder ran over a temp copy (a PC scratch folder, gone after the run): the same copy is kept in every
     // machine's store as reference-probe/game/bbsave-c, so a row checks on any machine.
-    if !std::path::Path::new(&dir).is_dir() {
+    // v52h r8: an own-folder probe (PPG_SAVEPROBE_OWN) recording's copy of its folder, `<recording stem>_own` beside it (fn_check sets
+    // OWN_DIR): each such run empties and rewrites the one folder its rows name, so an earlier recording reads its own copy.
+    if let Some(d) = OWN_DIR.lock().unwrap().clone().filter(|d| d.is_dir()) {
+        dir = d.to_string_lossy().into_owned();
+    } else if !std::path::Path::new(&dir).is_dir() {
         dir = "reference-probe/game/bbsave-c".into();
     }
     let want = std::path::Path::new(&dir).join(&rel);

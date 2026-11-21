@@ -520,6 +520,17 @@ pub fn catalog(db: &mut AssetDb) -> Result<Catalog, String> {
     let all = db.resources_in("SpawnableAssets", 114)?;
     let n = all.len();
     super::uifn("CatalogBehaviour.Populate", || n.to_string());
+    // v52h r8: what Global.Awake left (UiFnProbe's row): Liquid.Registry (identity:class) and LiquidMixingController.MixInstructions
+    // (sources>target@rate bits, f with a ContainerFilter). The extras' CRAB BLOOD (not in the game) is left out.
+    super::uifn("Global.Awake", || {
+        use crate::game::circulation::{mix_instructions, LIQUIDS};
+        let reg: Vec<String> = LIQUIDS.iter().filter(|(_, c)| *c != "CrabBlood").map(|(i, c)| format!("{i}:{c}")).collect();
+        let mix: Vec<String> = mix_instructions().iter().map(|m| {
+            let s: Vec<&str> = m.SourceLiquids.iter().map(|&k| LIQUIDS[k].0).collect();
+            format!("{}>{}@{:08x}{}", s.join(","), LIQUIDS[m.TargetLiquid].0, m.RatePerSecond.to_bits(), if m.only_outside_circulations { "f" } else { "" })
+        }).collect();
+        format!("{} {} ; {} {}", reg.len(), reg.join("|"), mix.len(), mix.join("|"))
+    });
     for r in all {
         let (_, mb, v) = db.mono(r)?.ok_or("SpawnableAsset")?;
         let visible = v.get("VisibleInCatalog").and_then(Value::bool).unwrap_or(true);

@@ -624,6 +624,8 @@ impl Game {
         g.disk_logger = Some(super::disk_logger::DiskLogger::loaded());
         // Main's Global.BulletCrackClips: 9 clips (scene.rs load_main reads them); a crack's PickRandom draws on the count.
         g.bullet_crack_clips = 9;
+        // fc41 r15: the clip list (not in the dump) as 9 unknown clips, so a crack's clips()[k] does not index an empty list.
+        g.audio.clip_fields.insert((0, "BulletCrackClips".into()), vec![None; 9]);
         g.world = World::new(V::new(-0.0, -9.81));
         // The whole b2 world when the dump has it (the map's colliders, contacts and listener records too).
         let mut restored = match s.of("b2World").next() {
