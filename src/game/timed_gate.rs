@@ -120,7 +120,8 @@ impl Game {
     pub fn gates_will_render(&mut self) {
         for g in 0..self.gates.len() {
             let s = &self.gates[g];
-            if !self.will_render_dispatch(s.id, s.enabled && !self.destroyed_components.contains(&s.id) && self.sprite_drawn(super::visual::SpriteAt::Physical(s.physical))) {
+            // Unity sends OnWillRenderObject to a disabled behaviour too; the body checks `base.enabled`.
+            if !self.will_render_dispatch(s.id, !self.destroyed_components.contains(&s.id) && self.sprite_drawn(super::visual::SpriteAt::Physical(s.physical))) || !s.enabled {
                 continue;
             }
             let Some(cursor) = s.Cursor else {

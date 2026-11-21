@@ -1626,7 +1626,12 @@ impl Game {
                 return Err(format!("BleedingParticleBehaviour {}: pseed needs 53 words", r.id));
             }
             b.awake(g.prefs.FancyEffects);
-            b.dripSoundClock = distributor(r.req("dripSoundClock")?);
+            // A fuzzed null clock (fc41_42_gen) loads as Awake's own: Awake, the one case that takes it, replaces it first.
+            // Limit: a null clock in another function (Update's NullReferenceException) is not modelled.
+            match r.req("dripSoundClock")? {
+                "null" => {}
+                t => b.dripSoundClock = distributor(t),
+            }
             g.bleeding.push(b);
         }
         // FireLoopSoundControllerBehaviour's chunks an earlier scenario of the launch made (the Main scene's; they stay).

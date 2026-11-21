@@ -704,6 +704,14 @@ fn fixed_wire_tool_on_joint_create(g: &mut Game, c: &Case) -> Result<String, Str
     g.wire_tool.kind = saved;
     VOID
 }
+fn wire_on_select_as_self(g: &mut Game, c: &Case) -> Result<String, String> {
+    c.with(0)?;
+    let kind = c.self_kind(super::super::blood_wire::WireKind::of_tool)?;
+    let saved = std::mem::replace(&mut g.wire_tool.kind, kind);
+    g.wire_on_select();
+    g.wire_tool.kind = saved;
+    VOID
+}
 fn wire_tool_chosen(g: &mut Game, c: &Case) -> Result<String, String> {
     use crate::game::blood_wire::WireKind;
     c.with(0)?;
@@ -1933,7 +1941,10 @@ const CALLS: &[(&str, Call)] = &[
     }),
     // fc41 r16: the FnTiny seed (emn: the nodes; the mesh lists cleared); st=em:<enabled>,<vertices>,<colours>,<indices>,<FNV of the bits>.
     // fc41 r18: the case's fuzzed fields (its ItemScript record): the private cursorStartPos, barStartPos and barSize and
-    // CursorMaxDistance, ThresholdPercentage and MaxPower, which the gate loaded from another case keeps.
+    // CursorMaxDistance, ThresholdPercentage, MaxPower and enabled, which the gate loaded from another case keeps.
+    // fc41 r19: the line tool's OnSelect as the self's own kind (selfty=), which `chosen`/`created` are kept for.
+    ("SpringJointWireTool.OnSelect", wire_on_select_as_self),
+    ("FixedWireTool.OnSelect", wire_on_select_as_self),
     ("GateBehaviour.OnWillRenderObject", |g, c| {
         c.with(0)?;
         let i = g.gates.iter().position(|x| x.id == c.sid).ok_or("no gates entry")?;
@@ -1948,6 +1959,8 @@ const CALLS: &[(&str, Call)] = &[
         let x = &mut g.gates[i];
         (x.CursorMaxDistance, x.ThresholdPercentage, x.MaxPower) = (one("CursorMaxDistance")?, one("ThresholdPercentage")?, one("MaxPower")?);
         (x.cursorStartPos, x.barStartPos, x.barSize) = (three("cursorStartPos")?, three("barStartPos")?, three("barSize")?);
+        // The fuzzed Behaviour.enabled (OnWillRenderObject's `if (base.enabled)`).
+        x.enabled = rec.req("enabled")? == "1";
         g.gates_will_render();
         VOID
     }),
@@ -4386,6 +4399,7 @@ fn static_field<'a>(g: &'a mut Game, name: &str) -> Option<&'a mut dyn crate::ga
         "PhysicalBehaviour.AmbientTemperature" => &mut g.AmbientTemperature,
         "WoodStrutBehaviour.lastStressSoundTime" => &mut g.wire_tool.lastStressSoundTime,
         "UndoControllerBehaviour.currentHistoryPosition" => &mut g.undo.currentHistoryPosition,
+        "UseWireBehaviour.lastWarningTime" => &mut g.signals.last_warning,
         _ => return None,
     })
 }
@@ -5351,7 +5365,12 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                             if ver >= 3 {
                                 let theirs: Vec<&str> = s.of("FnResult").next().and_then(|x| x.get("shots")).map_or(Vec::new(), |v| v.split(';').filter(|x| x.split(':').nth(1) != Some("null")).collect());
                                 let ours = &g.audio.shot_log;
-                                if theirs.len() != ours.len() || theirs.iter().zip(ours).any(|(t, o)| t != o) {
+                                // fc41 r19: a scene AudioSource (UISoundBehaviour's, DistantSoundBehaviour's) has a positive level1 id in the
+                                // game and a made-up one below i32::MIN / 2 in ours (scene.rs scene_audio_source): such a shot compares
+                                // its clip and volume only. Limit: which scene source played is not checked.
+                                let scene = |o: &str| o.split(':').next().and_then(|x| x.parse::<i32>().ok()).is_some_and(|x| x < i32::MIN / 2);
+                                let same = |t: &str, o: &str| if scene(o) { t.split_once(':').map(|x| x.1) == o.split_once(':').map(|x| x.1) && !t.starts_with('-') } else { t == o };
+                                if theirs.len() != ours.len() || theirs.iter().zip(ours).any(|(t, o)| !same(t, o)) {
                                     d.push(format!("PlayOneShot calls: game [{}] ours [{}]", theirs.join(";"), ours.join(";")));
                                 }
                             }

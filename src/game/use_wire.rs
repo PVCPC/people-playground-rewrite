@@ -167,14 +167,16 @@ impl Game {
     }
 
     /// UseWireBehaviour.ShowTooManyPropagationsWarning (static lastWarningTime, LAST_WARNING_TIME until the first warning; Time.timeSinceLevelLoad is Time.time
-    /// here, the same differences within one level), then UISoundBehaviour.Main.Warning().
+    /// here, the same differences within one level): UISoundBehaviour.Main.Warning() past 10 s, then the notification.
     pub(crate) fn too_many_propagations_warning(&mut self) {
         let now = self.time.time;
         let last = self.signals.last_warning.unwrap_or(LAST_WARNING_TIME);
         if now - last > 1.0 {
+            if now - last > 10.0 {
+                self.ui_sound(super::audio::UiSoundKind::Warning);
+            }
             self.notify(crate::il!(str "UseWireBehaviour::ShowTooManyPropagationsWarning" 0).into());
             self.signals.last_warning = Some(now);
-            self.ui_sound(super::audio::UiSoundKind::Warning);
         }
     }
 }
