@@ -300,6 +300,11 @@ fn same(g: &str, v: &V) -> Option<bool> {
         V::List(xs) => {
             // gapB r7: a non-empty Dictionary `{"key":value;...}` (its entries in the game's order) against the rewrite's
             // [(key, value), ...]: same count, then each key and value.
+            // v52h r5: an empty Dictionary against something other than (key, value) pairs (PhysicalBehaviour's
+            // ContinuousActivationTracker, a fixed per-channel array in the rewrite): not the same form.
+            if g == "{}" && xs.iter().any(|v| !matches!(v, V::Call(n, kv) if n.is_empty() && kv.len() == 2)) {
+                return None;
+            }
             if let Some(inner) = g.strip_prefix('{').and_then(|i| i.strip_suffix('}')).filter(|i| !i.is_empty()) {
                 let items = game_items(&format!("[{inner}]"))?.into_iter().map(str::to_string).collect::<Vec<_>>();
                 if items.len() != xs.len() {
@@ -432,6 +437,11 @@ const RANDOM: &[(&str, fn([u32; 4]) -> String)] = &[
 /// The `fnctor` lines' checks: each name with its compared field count, or why it fails.
 /// gapB r4: the constructors with parameters: the rewrite's object from the recorder's args (Recorder.Fmt, ';'-joined).
 const ARGS: &[(&str, fn(&[&str]) -> Result<String, String>)] = &[
+    // v52h r5: ContraptionMetaData(string name) (the list's "@1"): Name = DisplayName = name, Version = GameInfo.Version.
+    ("ContraptionMetaData.constructor", |a| {
+        let name = a.first().and_then(|t| t.strip_prefix('"')?.strip_suffix('"')).ok_or(format!("not a string: {a:?}"))?;
+        Ok(format!("{:?}", crate::game::contraption::ContraptionMetaData::new(name)))
+    }),
     // DeltaInt(int value): Value = PreviousValueFixed = PreviousValue = value.
     ("DeltaInt.constructor", |a| Ok(format!("{:?}", crate::game::continuous::DeltaInt::new(a[0].parse().map_err(|_| format!("not an int: {}", a[0]))?)))),
     // fnrec r1: GoreStringBehaviour.TissueString(float pos1, float pos2, float thickness, float strength, float thicknessRatio).

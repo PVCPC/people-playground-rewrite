@@ -1873,15 +1873,25 @@ const CALLS: &[(&str, Call)] = &[
     ("Activations.SendOnce", |g, c| { let n = c.args.len(); let t = c.with(n)?.p_usize(g, n - 1)?; g.activations_send_once(t); VOID }),
     // fc41 r6: BalloonBehaviour.Shot starts WaitAFrame: " st=bw:<its wait>" (FnTiny.R4Of); a " balpop=1" case runs it on to Pop.
     // fc41 r8: SoapBehaviour.Clean; a seeded case (" scs=1") has the hit controller's decal alphas after (FnTiny StateOf st=sc:).
+    // fc41 r9: the dump holds no decal colour: the case's " sca=" (the alphas FnTiny set and read back before the call) is that
+    // state, put on the controller's decals in order before the call.
     ("SoapBehaviour.Clean", |g, c| {
         let w = c.with(2)?;
         let (s, hit) = (w.p_usize(g, 0)?, w.p_int(1)?);
-        g.soap_clean(s, hit);
-        if c.s.of("FnCase").next().and_then(|r| r.get("scs")) != Some("1") { return VOID }
+        let case = c.s.of("FnCase").next();
+        if case.and_then(|r| r.get("scs")) != Some("1") { g.soap_clean(s, hit); return VOID }
         let q = *g.soap_decal_physicals(hit).first().ok_or("scs case: no decal-holding physical on the hit")?;
-        let [dc] = &g.physicals[q].decal_controllers[..] else { return Err(format!("scs case: physical #{} has {} decal controllers", g.physicals[q].id, g.physicals[q].decal_controllers.len())) };
-        Ok(format!(" st=sc:{}", dc.decals.iter().map(|d| format!("{:08x}", d.colour[3].to_bits())).collect::<Vec<_>>().join(",")))
+        if g.physicals[q].decal_controllers.len() != 1 { return Err(format!("scs case: physical #{} has {} decal controllers", g.physicals[q].id, g.physicals[q].decal_controllers.len())) }
+        let sca: Vec<f32> = case.and_then(|r| r.get("sca")).ok_or("scs case: no sca")?.split(',').filter(|v| !v.is_empty()).map(|v| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+        let decals = &mut g.physicals[q].decal_controllers[0].decals;
+        if decals.len() != sca.len() { return Err(format!("scs case: {} decals, sca has {}", decals.len(), sca.len())) }
+        for (d, a) in decals.iter_mut().zip(sca) { d.colour[3] = a; }
+        g.soap_clean(s, hit);
+        Ok(format!(" st=sc:{}", g.physicals[q].decal_controllers[0].decals.iter().map(|d| format!("{:08x}", d.colour[3].to_bits())).collect::<Vec<_>>().join(",")))
     }),
+    // fc41 r9: PoisonSpreadBehaviour.OnPoisonOther is an empty virtual (no override in Assembly-CSharp); the generated entry
+    // called poison_poison (Poison, its caller).
+    ("PoisonSpreadBehaviour.OnPoisonOther", |_, _| VOID),
     // fc41 r7: SyringeBehaviour.Shot as Balloon.Shot: the WaitAFrame's wait (st=bw), on recordings whose case has " syw=1".
     ("SyringeBehaviour.Shot", |g, c| {
         let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?;
@@ -2508,7 +2518,7 @@ const CALLS: &[(&str, Call)] = &[
     ("PhysicalBehaviour.GetSharpEnd", |g, c| { let a = super::fnmaped::sharp_axis(c.args.first().ok_or("no SharpAxis")?)?; Ok(Enc::enc(g.get_sharp_end(c.phys(g)?, &a))) }),
     // fnmaped round 12: HandleStabbing and DoStab on a knife set against a limb (MapConfigProbe.PokeCase), IsInsideOf on a
     // limb's own non-trigger colliders.
-    // v52h r4: the private previousVelocity HandleStabbing reads, from the recorder's " stpre=pv:<x>,<y>" (FnTiny.R4Of); a recording
+    // v52h r4: the private previousVelocity HandleStabbing reads, from the recorder's " stpre=pv:<x>,<y>,<victim x>,<victim y>" (FnTiny.R4Of; the victim pair, "-" without one, is informational: the victim's PhysicalBehaviour record already carries its previousVelocity); a recording
     // from before it (the 1.28.41 fnmaped ones) leaves the loaded value.
     ("PhysicalBehaviour.HandleStabbing", |g, c| { let col = c.with(3)?.p_collision(1)?; let ct = super::fnmaped::contact_point(c.args.get(1).ok_or("no ContactPoint2D")?)?; let p = c.phys(g)?; if crate::assets::il::is_1_28_45() { super::all_property_clips(g)?; } if let Some(v) = st_pre(c).and_then(|v| v.strip_prefix("pv:")) { let w: Vec<f32> = v.split(',').filter_map(|x| u32::from_str_radix(x, 16).ok()).map(f32::from_bits).collect(); g.physicals[p].previousVelocity = [w[0], w[1]]; } let r = g.handle_stabbing(p, &col, &ct); if crate::assets::il::is_1_28_45() { Ok(bit(r)) } else { VOID } }),
     ("PhysicalBehaviour.DoStab", |g, c| { c.with(4)?; let p = c.phys(g)?; let other = c.arg_phys(g, 0)?; let a = super::fnmaped::sharp_axis(c.args[1])?; let pen = super::fnmaped::fresh_penetration(g, c.args[2])?; g.do_stab(p, other, a, pen); VOID }),

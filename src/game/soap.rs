@@ -26,7 +26,7 @@ script! {
 
 impl Game {
     /// base.transform.position of the soap.
-    fn soap_position(&mut self, s: usize) -> [f32; 3] {
+    pub(crate) fn soap_position(&mut self, s: usize) -> [f32; 3] {
         self.with_component_instance(self.soaps[s].id, |_, inst, o| inst.position(o))
     }
 

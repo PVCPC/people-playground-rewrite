@@ -37,8 +37,10 @@ impl SpawnableOutline {
     /// SpawnableOutlineBehaviour.SetOutline: the existing children take the rectangles in order and the surplus are deactivated; missing children are appended.
     pub fn SetOutline(&mut self, rectangles: &[RotatedRectangle]) {
         // ContraptionOutline.op_Equality (1.28.45 first returns when CurrentOutline == outline) is Equals(right).
-        // ContraptionOutline.Equals: object.Equals on the Rectangles arrays, reference identity. Every caller passes a fresh array
-        // (LoadOutline, GenerateOutline), so the outlines are never equal and SetOutline always goes on.
+        // ContraptionOutline.Equals: object.Equals on the Rectangles arrays, reference identity. Equal only when
+        // DragTool's paste passes the clipboard's Outline again after the Clipboard constructor's SetOutline of that same array,
+        // with no other SetOutline between; SetOutline is the children's only writer, so they already hold those rectangles and
+        // going on again leaves the same state as the early return.
         let num = rectangles.len();
         let count = self.children.len();
         let mut num2 = 0;

@@ -4893,6 +4893,10 @@ fn load_grip_joints(g: &mut Game, s: &Snapshot, rs: &physics::Restored) -> Resul
         if let Some(v) = r.get("originalRotation") {
             g.grips[gi].originalRotation = f(v);
         }
+        // v52h r5: CollidersToIgnore (Start's root.GetComponentsInChildren<Collider2D>()), the `@name#id` collider list.
+        if let Some(v) = r.get("CollidersToIgnore") {
+            g.grips[gi].CollidersToIgnore = list(v).into_iter().filter_map(reference).collect();
+        }
     }
     // Oldest first (instance ids count down), the order the comparison zips them in.
     let mut records: Vec<&Record> = s.of("FixedJoint2D").collect();

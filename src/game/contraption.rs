@@ -1081,8 +1081,8 @@ pub fn current_version() -> &'static str {
     V.get_or_init(|| {
         if crate::assets::il::is_1_28_45() {
             // GameInfo..cctor: new Version(1, 28, 52).
-            let n = |k: usize| crate::assets::il::get().i4("GameInfo::.cctor", k);
-            format!("{}.{}.{}", n(0), n(1), n(2))
+            let (a, b, c) = crate::ui::debug_info::version();
+            format!("{a}.{b}.{c}")
         } else {
             "1.28".to_string()
         }

@@ -507,11 +507,39 @@ fn logo_flash(
             None => return commands.remove_resource::<LogoFlashState>(),
         }
     }
+    let duration = scene::number("Menu", view::LOGO_FLASH, "LogoFlashBehaviour", "Duration");
+    // 1.28.45: a static `finished` (once the flash ran out, every later Menu's logo is hidden at its first Update; SetActive(false),
+    // the object kept), unscaledDeltaTime > 0.1 skips the frame, and no 120 s cap.
+    if crate::assets::il::is_1_28_45() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static FINISHED: AtomicBool = AtomicBool::new(false);
+        if FINISHED.load(Ordering::Relaxed) {
+            for mut i in &mut images {
+                i.color = Color::NONE;
+            }
+            return;
+        }
+        if time.delta_secs() > 0.1 {
+            return;
+        }
+        if s.t > duration {
+            FINISHED.store(true, Ordering::Relaxed);
+            for mut i in &mut images {
+                i.color = Color::NONE;
+            }
+            return;
+        }
+        s.t += time.delta_secs();
+        let c = gradient((s.t / duration).clamp(0.0, 1.0));
+        for mut i in &mut images {
+            i.color = c;
+        }
+        return;
+    }
     // Time.deltaTime: the real frame time capped at the Maximum Allowed Timestep (0.1), times the time scale (1 here).
     if time.delta_secs().min(0.1) > 1.0 {
         return;
     }
-    let duration = scene::number("Menu", view::LOGO_FLASH, "LogoFlashBehaviour", "Duration");
     if time.elapsed_secs() > 120.0 || s.t > duration {
         return gone(&mut commands, &s);
     }
