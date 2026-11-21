@@ -1859,6 +1859,20 @@ impl Game {
         }
         // Its Awake ran in the game: AliveByTransform holds its root.
         p.alive_entry = true;
+        // The Person's clip arrays (BoneBreakClips, DismembermentClips; a snapshot holds only their lengths): the Human catalog
+        // prefab's PersonBehaviour's.
+        if p.BoneBreakClips > 0 && g.audio.clips(p.id, "BoneBreakClips").is_empty() {
+            let game = crate::game_assets::find_game(None)?;
+            let mut db = g.assets.take().unwrap_or_else(|| Box::new(crate::assets::db::AssetDb::open(&game).expect("the game's data")));
+            let human = Game::catalog_prefab(&mut db, "Human")?;
+            let script = human.objects.iter().find_map(|o| o.components.iter().find_map(|(_, c)| match c {
+                crate::assets::db::Component::Script { class, fields, .. } if class == "PersonBehaviour" => Some((o.game_object.file, fields.clone())),
+                _ => None,
+            }));
+            let r = script.map_or(Ok(()), |(file, v)| g.audio.register_clip_fields(&db, file, p.id, &v));
+            g.assets = Some(db);
+            r?;
+        }
         g.people.push(p);
         // The limbs' context menu buttons (the menu is no recorded state): PhysicalBehaviour.Start's, then LimbBehaviour.Start's
         // CreateContextMenuOptions, as their Starts ran in the game.
@@ -4294,7 +4308,14 @@ fn compare_stabs(g: &Game, s: &Snapshot) -> Vec<String> {
     for r in s.of("PhysicalBehaviour") {
         let Some(p) = g.physicals.iter().position(|x| x.id == r.id) else { continue };
         let ph = &g.physicals[p];
-        let join = |v: Vec<String>| format!("[{}]", v.join(";"));
+        // Dump.Format writes 256 items, then "...".
+        let join = |mut v: Vec<String>| {
+            if v.len() > 256 {
+                v.truncate(256);
+                v.push("...".into());
+            }
+            format!("[{}]", v.join(";"))
+        };
         let mut check = |k: &str, ours: String| {
             if let Some(theirs) = r.get(k) {
                 if loose(theirs) != ours {

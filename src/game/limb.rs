@@ -429,7 +429,8 @@ impl Game {
         if !self.limbs[l].HasJoint {
             return;
         }
-        let h = self.limbs[l].Joint.unwrap();
+        // Joint.motor on a null Joint (HasJoint set without one).
+        let h = self.limbs[l].Joint.unwrap_or_else(|| super::menu::throw("NullReferenceException"));
         let motor = self.hinges[h].motor;
         if self.people[self.limbs[l].Person].BrainDamaged && self.random.value() > 0.95 {
             value *= self.random.range_int(-1, 1) as f32;

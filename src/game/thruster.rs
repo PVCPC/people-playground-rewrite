@@ -85,10 +85,12 @@ impl Game {
     pub(crate) fn thrusterbed_update_audio(&mut self, i: usize, progress: f32) {
         let (low, high) = self.thrusterbed_sources(i);
         let charge = self.thrusterbed_boost(i);
+        // AudioSource.volume's setter clamps to 0..1 (1.28.52 recording: 43.85 reads back 1); minDistance's to 0..maxDistance (1922 reads back 100).
+        // ponytail: clamped here only; the other `.volume =` sites write 0..1 values already.
         let a = self.audio.get_mut(high);
-        a.volume = progress * charge;
-        a.min_distance = 10.0 + progress * charge;
-        self.audio.get_mut(low).volume = progress;
+        a.volume = super::mathf::clamp01(progress * charge);
+        a.min_distance = (10.0 + progress * charge).max(0.0).min(a.max_distance);
+        self.audio.get_mut(low).volume = super::mathf::clamp01(progress);
     }
 
     /// ThrusterbedBehaviour.UpdateActivated
@@ -170,7 +172,7 @@ impl Game {
         let (p, force, direction) = (s.Phys, s.ThrustingForce, s.RelativeDirection);
         let num = mathf::max(1.0, self.thrusterbed_boost(i) * 2.0);
         let scalar = (d(num) * progress * force).f();
-        let v = self.transform_vector(p, direction);
+        let v = self.transform_vector_chain(p, direction);
         let rb = self.physicals[p].rigidbody.clone();
         rb.add_force(&mut self.world, [scalar * v[0], scalar * v[1]]);
     }
@@ -209,7 +211,7 @@ impl Game {
     pub(crate) fn thrusterbed_burn_in_buffer(&mut self, i: usize, progress: f32, hits: &[super::explosion::RayHit2D]) {
         let s = &self.thrusterbeds[i];
         let (p, direction, target, id) = (s.Phys, s.RelativeDirection, s.TemperatureTarget, s.id);
-        let vector = self.transform_vector(p, direction);
+        let vector = self.transform_vector_chain(p, direction);
         let own = self.with_component_instance(id, |_, inst, o| inst.objects[o].game_object);
         for hit in hits {
             // collider.transform == base.transform

@@ -178,6 +178,9 @@ pub(super) fn load_wires(g: &mut Game, s: &Snapshot, rs: &physics::Restored) -> 
             if let Some(v) = r.get("healingRatio") {
                 w.healingRatio = f(v);
             }
+            if let Some(v) = r.get("SoakColour") {
+                w.SoakColour = floats(v);
+            }
         }
         // gapB r23: EnergyWireBehaviour.hasEggs (GenRun flips it; SetEggs reads it).
         if kind == WireKind::Energy {

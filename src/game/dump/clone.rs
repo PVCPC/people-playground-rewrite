@@ -1189,6 +1189,30 @@ impl Game {
             self.physical_add_sliding_audio_source(p, id, ancestors);
             self.audio.set_clip(id, clip);
         }
+        // v52h round 2: a kept slidingAudioSource (ours' id is the recorded one) made while the properties had no clips: Start's
+        // clip = Properties.SlidingLoop (the Head's body_slide_1).
+        let kept: Vec<usize> = s.of("PhysicalBehaviour").filter_map(|r| self.physicals.iter().position(|p| p.id == r.id)).collect();
+        for p in kept {
+            let id = self.physicals[p].ids.slidingAudioSource;
+            if self.audio.sources.get(&id).is_some_and(|a| a.clip.is_none()) {
+                let clip = super::sliding_loop_clip(self, self.physicals[p].Properties)?;
+                self.audio.set_clip(id, clip);
+            }
+        }
+        // v52h round 2: a recorded AudioSourceTimeScaleBehaviour (Clone comps) on an object (a scene human's root): Start's
+        // GetComponentInParent finds it and adds none (ours added one, an instance id more).
+        let ts: std::collections::HashSet<i32> = s.of("Clone").filter_map(|r| r.get("comps")).filter(|c| c.contains("AudioSourceTimeScaleBehaviour:"))
+            .filter_map(|c| c.trim_matches(['[', ']']).split(';').find_map(|e| e.strip_prefix("Transform:")).and_then(|v| v.parse().ok())).collect();
+        for n in 0..self.transform_nodes.len() {
+            if ts.contains(&self.transform_nodes[n].id) && !self.audio_time_scale_roots.contains(&n) {
+                self.audio_time_scale_roots.push(n);
+            }
+        }
+        for p in 0..self.physicals.len() {
+            if ts.contains(&self.physicals[p].transform_id) {
+                self.physicals[p].audio_time_scale = true;
+            }
+        }
 
         // The item's AudioSources (`ItemAudioSource`): playing or not, at the recorded time.
         for r in s.of("ItemAudioSource") {

@@ -869,8 +869,8 @@ impl Game {
     /// Collider2D != null: the object behind the instance id is not destroyed (a bare collider goes with its anchor
     /// physical's object).
     pub(super) fn collider_exists(&self, c: i32) -> bool {
-        // A collider of an object destroyed before a recording's snapshot (a shattered map Window) has neither.
-        if self.destroyed_components.contains(&c) {
+        // A collider of an object destroyed before a recording's snapshot (a shattered map Window) has neither; 0 is a null reference.
+        if c == 0 || self.destroyed_components.contains(&c) {
             return false;
         }
         match self.physicals.iter().position(|p| p.all_colliders.contains(&c)) {

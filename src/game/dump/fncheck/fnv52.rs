@@ -63,8 +63,43 @@ fn go_physical(g: &mut Game, a: &str) -> Result<Option<usize>, String> {
     let Some(id) = reference(a) else { return Ok(None) };
     Ok((0..g.physicals.len()).find(|&p| !g.physicals[p].destroyed && g.physical_game_object(p) == id))
 }
+/// v52h round 2: the case's InjectableBehaviour (added at run time: no prefab, no record) on the PhysicalBehaviour of its
+/// Clone row, from the recorder's ` inj=r,g,b,a|ID:amount,...` mark (V52Seed.Args; `~` a space in an id, `null` none).
+fn injectable(g: &mut Game, c: &Case) -> Result<usize, String> {
+    if let Some(i) = g.v45.injectables.iter().position(|x| x.id == c.sid && !x.destroyed) {
+        return Ok(i);
+    }
+    let t = c.field("inj").ok_or("no inj= mark (a recording before V52Seed's InjectableBehaviour mark)")?;
+    let (fx, ld) = t.split_once('|').ok_or("inj=: no |")?;
+    let h = |s: &str| u32::from_str_radix(s, 16).map(f32::from_bits).map_err(|_| format!("inj=: not hex {s}"));
+    let fx = fx.split(',').map(h).collect::<Result<Vec<_>, _>>()?;
+    let FxColor: [f32; 4] = fx.try_into().map_err(|_| "inj=: FxColor not 4 floats")?;
+    let LiquidDistributions = match ld {
+        "null" => None,
+        _ => Some(ld.split(',').filter(|e| !e.is_empty()).map(|e| {
+            let (id, a) = e.rsplit_once(':').ok_or("inj=: no :")?;
+            Ok((id.replace('~', " "), h(a)?))
+        }).collect::<Result<Vec<_>, String>>()?),
+    };
+    let pid = c.sibling_id(c.sid, "PhysicalBehaviour")?.ok_or("no PhysicalBehaviour by the InjectableBehaviour")?;
+    let p = phys_by_id(g, pid)?;
+    g.v45.injectables.push(crate::game::v45_new::Injectable { id: c.sid, phys: Some(p), LiquidDistributions, FxColor, destroyed: false, ImbueParticles: None });
+    Ok(g.v45.injectables.len() - 1)
+}
 
 pub(super) const CALLS: &[(&str, Call)] = &[
+    ("InjectableBehaviour.Start", |g, c| { let i = injectable(g, c)?; g.injectable_start(i); VOID }),
+    // Lodged(stabbing): Start ran before (ImbueParticles found again); SendMessage reaches the stabber object's injectables.
+    ("InjectableBehaviour.Lodged", |g, c| {
+        let i = injectable(g, c)?;
+        let e = g.injectable_find_particles(i);
+        g.v45.injectables[i].ImbueParticles = e;
+        let victim = phys_by_id(g, c.rec::<i32>("Stab(", "victim")?)?;
+        let p = g.v45.injectables[i].phys.unwrap();
+        g.injectable_lodged_on(p, victim);
+        stab_probe_reset(g, c)?;
+        VOID
+    }),
     // The new liquids (Chemistry.cs): self is the registry liquid (`liquid=`).
     ("Nasumica.GetDisplayName", |_, c| Ok(Enc::enc(super::super::circulation::liquid_display_name(c.liq()?)))),
     ("Amaraevelum.GetDisplayName", |_, c| Ok(Enc::enc(super::super::circulation::liquid_display_name(c.liq()?)))),
@@ -223,11 +258,62 @@ pub(super) const CALLS: &[(&str, Call)] = &[
         g.thrusterbed_burn_in_buffer(i, progress, &hits);
         VOID
     }),
-    ("PhysicalBehaviour.OnBeforeSerialise", |g, c| { let p = c.with(1)?.p_usize(g, 0)?; g.physical_on_before_serialise(p); VOID }),
+    // v52h round 2: on the recorder's lodged knife (FnWeap.NonVirtual) the arrays after (`ser=`); an older case's return is void.
+    ("PhysicalBehaviour.OnBeforeSerialise", |g, c| {
+        let p = c.with(1)?.p_usize(g, 0)?;
+        let s = g.physical_on_before_serialise(p);
+        if c.field("serret").is_none() {
+            return VOID;
+        }
+        let stabs: Vec<String> = (0..s.victims.len()).map(|i| format!("{}:{}:{}:{},{}", (s.victims[i] != 0) as u8, hex(s.durations[i]), bit(s.active[i]), hex(s.anchors[i][0]), hex(s.anchors[i][1]))).collect();
+        Ok(format!("ser={}|{}", stabs.join(";"), s.slash_strength.iter().map(|&x| hex(x)).collect::<Vec<_>>().join(";")))
+    }),
+    // v52h round 2: the recorder ran the knife's OnBeforeSerialise first and passes its victim's root: the knife's penetrations after (`pens=`).
+    ("PhysicalBehaviour.OnAfterDeserialise", |g, c| {
+        let c2 = c.with(2)?;
+        let p = c2.p_usize(g, 0)?;
+        if c.field("serret").is_none() {
+            let a1 = c2.p_list(1, item_int::<i32>)?;
+            g.physical_on_after_deserialise(p, &a1);
+            return VOID;
+        }
+        // The SerialisableIdentity pool: every Transform under the victims' roots.
+        let roots: Vec<i32> = g.physicals[p].penetrations.iter().filter_map(|&k| g.penetration_arena[k].Victim).map(|v| g.root_id(v)).collect();
+        let objects: Vec<i32> = (0..g.physicals.len()).filter(|&v| !g.physicals[v].destroyed && roots.contains(&g.root_id(v))).map(|v| g.physicals[v].transform_id).collect();
+        // `ident=1`: the recorder gave those limbs SerialisableIdentities (fresh Guids) first.
+        if c.field("ident").is_some() {
+            for (n, &t) in objects.iter().enumerate() {
+                g.identities.insert(t, 0x5e1a_0000 + n as u128 + 1);
+            }
+            for &r in &roots {
+                g.object_names.entry(r).or_default();
+            }
+        }
+        let s = g.physical_on_before_serialise(p);
+        g.saved_stabs.insert(p, s);
+        g.physical_on_after_deserialise(p, &objects);
+        let pens: Vec<String> = g.physicals[p].penetrations.iter().map(|&k| {
+            let x = &g.penetration_arena[k];
+            format!("{}:{}:{}:{},{}", x.Victim.map_or(0, |v| g.physicals[v].id), hex(x.Duration), bit(x.Active), hex(x.CurrentConnectedAnchor[0]), hex(x.CurrentConnectedAnchor[1]))
+        }).collect();
+        Ok(format!("pens={}", pens.join(";")))
+    }),
     // ToolControllerBehaviour.SelectByMass/Size/Depth(mouse): the PhysicalBehaviour picked, or null.
     ("ToolControllerBehaviour.SelectByMass", |g, c| { let m = c.with(1)?.p_arr::<3>(0)?; let p = g.select_by_mass(m); Ok(phys_ref(g, p)) }),
     ("ToolControllerBehaviour.SelectBySize", |g, c| { let m = c.with(1)?.p_arr::<3>(0)?; let p = g.select_by_size(m); Ok(phys_ref(g, p)) }),
     ("ToolControllerBehaviour.SelectByDepth", |g, c| { let m = c.with(1)?.p_arr::<3>(0)?; let p = g.select_by_depth(m); Ok(phys_ref(g, p)) }),
+    // v52h round 2: SetSoakColour with the recorder's `soak=` returns the line's colours (FnWeap's `lines=start;end`, as SetWireColours).
+    ("AppliedBandageBehaviour.SetSoakColour", |g, c| {
+        let soak = c.field("soak").is_some();
+        let c = c.with(1)?;
+        let w = c.p_usize(g, 0)?;
+        g.bandage_soak_colour(w);
+        if !soak {
+            return VOID;
+        }
+        let q = |v: [f32; 4]| v.map(|x| (x.clamp(0.0, 1.0) * 255.0).round() / 255.0);
+        Ok(format!("lines={};{}", vec(q(g.blood_wires[w].start_color)), vec(q(g.blood_wires[w].end_color))))
+    }),
     ("ExistInBeta.Start", |g, c| { g.exist_in_beta_start(c.sid); VOID }),
     // ThrusterbedBehaviour.Boost (1.28.45's property)
     ("ThrusterbedBehaviour.get_Boost", |g, c| { let i = g.thrusterbeds.iter().position(|x| x.id == c.sid).ok_or("no thrusterbeds entry")?; Ok(Enc::enc(g.thrusterbed_boost(i))) }),

@@ -966,11 +966,24 @@ impl Game {
     /// is one, main.startColor = FxColor, then Play().
     pub(crate) fn injectable_start(&mut self, i: usize) {
         let x = &self.v45.injectables[i];
-        let Some(p) = x.phys.filter(|_| !x.destroyed) else { return };
+        if x.phys.is_none() || x.destroyed {
+            return;
+        }
         let fx = x.FxColor;
+        let found = self.injectable_find_particles(i);
+        self.v45.injectables[i].ImbueParticles = found;
+        if let Some(e) = found {
+            self.ps_calls.push((e, super::PsCall::Writes(crate::particles::PsWrites { color: Some(fx), ..Default::default() })));
+            self.ps_calls.push((e, super::PsCall::Play));
+        }
+    }
+
+    /// Start's `gameObject.GetComponentInChildren<ParticleSystem>()` (an `embedded_ps` index).
+    pub(crate) fn injectable_find_particles(&mut self, i: usize) -> Option<usize> {
+        let p = self.v45.injectables[i].phys?;
         let on = self.physicals[p].id;
         // GetComponentInChildren: this object first, then its active children depth first; the first ParticleSystem's system.
-        let found = self.with_component_instance(on, |g, inst, o| {
+        self.with_component_instance(on, |g, inst, o| {
             let mut stack = vec![o];
             while let Some(t) = stack.pop() {
                 if !inst.objects[t].active {
@@ -983,12 +996,7 @@ impl Game {
                 stack.extend((0..inst.objects.len()).rev().filter(|&c| inst.objects[c].parent == Some(t)));
             }
             None
-        });
-        self.v45.injectables[i].ImbueParticles = found;
-        if let Some(e) = found {
-            self.ps_calls.push((e, super::PsCall::Writes(crate::particles::PsWrites { color: Some(fx), ..Default::default() })));
-            self.ps_calls.push((e, super::PsCall::Play));
-        }
+        })
     }
 
     /// InjectableBehaviour.Lodged (SendMessage("Lodged") to the stabber's GameObject).
@@ -1014,8 +1022,12 @@ impl Game {
             if let Some(e) = self.v45.injectables[i].ImbueParticles {
                 self.ps_calls.push((e, super::PsCall::Stop(self.time.timeAsDouble)));
             }
-            // Object.Destroy(this)
+            // Object.Destroy(this): queued (end of frame) like the others; the entry counts as spent at once.
             self.v45.injectables[i].destroyed = true;
+            let (id, at) = (self.v45.injectables[i].id, self.time.fixedTimeAsDouble.min(self.time.timeAsDouble));
+            if !self.component_destroys.iter().any(|&(_, c)| c == id) {
+                self.component_destroys.push((at, id));
+            }
         }
     }
 

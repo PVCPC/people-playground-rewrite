@@ -4002,6 +4002,8 @@ fn ps_field(g: &Game, sid: i32, field: &str) -> Option<usize> {
         D::Muzzle(_) => field == "flash",   // gapC r16: FirearmBehaviour.flash (Awake's MuzzleSmoke clone)
         _ => false,
     }).or_else(|| g.field_ps(sid, field))   // gapC r10: any other script's field (particles.rs field_ps)
+        // v52h round 2: InjectableBehaviour.ImbueParticles (Start's GetComponentInChildren).
+        .or_else(|| g.v45.injectables.iter().find(|x| x.id == sid && field == "ImbueParticles").and_then(|x| x.ImbueParticles))
 }
 
 /// gapC r20: the container's GlowInTheDarkBehaviour before the call (its PI Clone record's `comps=` entry; none: no glow) as ours'
@@ -4259,6 +4261,9 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
     // gapC r5: every AudioSource's clip name in ours just before the call (the clip compare's "ours changed it" side).
     let clip_of = |g: &Game, id: i32| g.audio.get(id).clip.as_ref().map_or("null".to_string(), |c| c.clip.name.replace(' ', "_"));
     let mut ours_pre_clips: std::collections::BTreeMap<i32, String> = Default::default();
+    // v52h: every AudioSource's volume, minDistance and maxDistance in ours just before the call (`ItemAudioSource vol= mind= maxd=`, PPG_AUDIO_VOL).
+    let vol_of = |g: &Game, id: i32| { let a = g.audio.get(id); [hex(a.volume), hex(a.min_distance), hex(a.max_distance)] };
+    let mut ours_pre_vols: std::collections::BTreeMap<i32, [String; 3]> = Default::default();
     // gapA r17: ours' coroutine count just before the call (a use wire's routine the call started has a later seq).
     let mut ours_pre_seq = 0;
     // gapC r5: a SpriteRenderer's sprite and a TextMeshPro's text in ours by the recorder's names (`ItemSprite sprite=`,
@@ -4296,6 +4301,8 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
     let mut ours_pre_destroys: (Vec<(f64, i32)>, Vec<(f64, i32)>, usize, usize, usize) = Default::default();
     let mut drag_pre: Vec<(i32, Option<f64>)> = Vec::new();
     let mut gore_pre: Vec<(i32, Option<f64>)> = Vec::new();
+    // v52h round 2: each limb's HingeJoint2D (its hinges slot, the record id by the limb's name) and its pending Object.Destroy(Joint).
+    let mut limb_hinge_pre: Vec<(usize, i32, Option<f64>)> = Vec::new();
     // gapC r7: the objects of the clone holding the self (`Clone active=<inHierarchy>,<self> lrot=`): ours' activeSelf and, for a
     // body-less non-root object, localRotation, by the recorded GameObject id; and both before the call.
     // gapC r12: localPosition and localScale too (the Clone record's lpos= / lscale=; xyz of the Trs).
@@ -4509,6 +4516,7 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                                 g.ref_reset = reset;
                             }
                             ours_pre_clips = g.audio.sources.keys().map(|&i| (i, clip_of(&g, i))).collect();
+                            ours_pre_vols = g.audio.sources.keys().map(|&i| (i, vol_of(&g, i))).collect();
                             ours_pre_seq = g.coroutine_seq;
                             g.audio.shot_log.clear();
                             ours_pre_clone = clone_look(&g, case.sid);
@@ -4522,6 +4530,11 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                             ours_pre_ignored = g.world.ignored.clone();
                             drag_pre = g.tool.as_ref().map_or(vec![], |t| t.destroying.iter().chain(&t.dragJoint).map(|j| (j.id, j.destroy_at)).collect());
                             gore_pre = g.limbs.iter().map(|l| (l.gore.spring_id, l.gore.destroy_at)).collect();
+                            limb_hinge_pre = g.limbs.iter().filter_map(|l| {
+                                let h = l.Joint?;
+                                let name = &g.physicals[l.PhysicalBehaviour].name;
+                                Some((h, s.of("HingeJoint2D").find(|r| &r.name == name)?.id, g.hinges[h].destroy_at))
+                            }).collect();
                             ours_pre_destroys = (g.component_destroys.clone(), g.object_destroys.clone(), g.joint_destroys.len(), g.attachment_joint_destroys.len(), g.glows.len());
                             #[cfg(fncov)]
                             cov::start();
@@ -4726,6 +4739,17 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                                 let ours = clip_of(&g, r.id);
                                 let changed = Some(&theirs) != pre.as_ref() || ours_pre_clips.get(&r.id).is_some_and(|p| *p != ours);
                                 if changed && theirs != ours { d.push(format!("AudioSource {} #{} clip: game {theirs} ours {ours}", r.name, r.id)) }
+                            }
+                            // v52h: volume, minDistance and maxDistance (a recording made with PPG_AUDIO_VOL=1), by the same rule.
+                            for r in s.of("ItemAudioSource") {
+                                if !g.audio.sources.contains_key(&r.id) { continue }
+                                let ours = vol_of(&g, r.id);
+                                let pre = pi.of(&r.ty).find(|x| x.id == r.id);
+                                for (k, key) in ["vol", "mind", "maxd"].iter().enumerate() {
+                                    let Some(theirs) = r.get(key) else { continue };
+                                    let changed = pre.and_then(|x| x.get(key)) != Some(theirs) || ours_pre_vols.get(&r.id).is_some_and(|w| w[k] != ours[k]);
+                                    if changed && theirs != ours[k] { d.push(format!("AudioSource {} #{} {key}: game {theirs} ours {}", r.name, r.id, ours[k])) }
+                                }
                             }
                             // gapC r16: the PhysicalBehaviour members compare() leaves out, by the same rule (ToggleableMirrorBehaviour's
                             // ReflectsLasers/AbsorbsLasers, OnCollisionStayWithoutSleep's collisionBufferCount).
@@ -4933,6 +4957,8 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                                 }
                                 // gapB r25: a gore string's SpringJoint2D (GoreStringBehaviour.DestroyJoint's Object.Destroy(Joint), queued as gore.destroy_at).
                                 ours.extend(g.limbs.iter().filter(|l| l.gore.spring_id != 0).filter_map(|l| l.gore.destroy_at.map(|at| (l.gore.spring_id, at))).filter(|&(id, at)| !gore_pre.contains(&(id, Some(at)))).map(|(id, at)| format!("c{id}:{}", t(at))));
+                                // v52h round 2: a limb's Object.Destroy(Joint) (limb_destroy_joint: hinges[h].destroy_at).
+                                ours.extend(limb_hinge_pre.iter().filter_map(|&(h, id, pre)| g.hinges[h].destroy_at.filter(|&at| pre != Some(at)).map(|at| format!("c{id}:{}", t(at)))));
                                 ours.extend(g.object_destroys.iter().filter(|e| !po.contains(e)).map(|&(at, id)| format!("g{}:{}", go(&g, id), t(at))));
                                 if theirs != ours && g.joint_destroys.len() == *pj && g.attachment_joint_destroys.len() == *pa {
                                     d.push(format!("Object.Destroy calls: game [{}] ours [{}]", theirs.into_iter().collect::<Vec<_>>().join(";"), ours.into_iter().collect::<Vec<_>>().join(";")));
