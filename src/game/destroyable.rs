@@ -467,6 +467,7 @@ impl Game {
         // components go, and it leaves its parent's children; its DeleteAfterTime drops out at its next Update.
         if let Some(parent) = self.delete_afters.iter().find(|d| d.added_to == Some(id)).and_then(|d| d.parent) {
             self.destroyed_components.extend([id + 2, id, id - 2, id - 4, id - 6, id - 8]);
+            crate::particles::destroyed_ghost(self, id);
             if let Some(v) = self.runtime_clone_transforms.get_mut(&parent) {
                 v.retain(|c| c[0].0 != id);
             }

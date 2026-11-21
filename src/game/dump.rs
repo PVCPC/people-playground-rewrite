@@ -131,9 +131,12 @@ pub fn open_recording(path: &Path) -> Result<Box<dyn std::io::Read>, String> {
 pub fn recording_for_version(path: &Path) -> std::path::PathBuf {
     if crate::assets::il::is_1_28_45() {
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            let v52 = path.with_file_name(format!("{stem}-v52.txt"));
-            if v52.exists() || v52.with_extension("txt.gz").exists() {
-                return v52;
+            // -v52b: a later re-recording (one with every particle system's active-list slot) over -v52.
+            for v in ["v52b", "v52"] {
+                let v52 = path.with_file_name(format!("{stem}-{v}.txt"));
+                if v52.exists() || v52.with_extension("txt.gz").exists() {
+                    return v52;
+                }
             }
         }
     }
@@ -1704,6 +1707,36 @@ impl Game {
                 g.behaviours.add(0, super::Behaviour::ObjectPool(super::pool::PoolRef::Recorded(g.recorded_pool_items.len() - 1)));
             }
             g.recorded_pools.push((r.name.clone(), pool));
+        }
+        // The active list (psm=, newer recordings): each listed system by its slot. A bleed's root by its own psm; a
+        // BloodPuff's systems by GetComponentsInChildren position; a DeleteAfterTime clone's (SpawnParticles) leaves at
+        // its Destroy; any other (a bleed's Trail and water_puff) is a placeholder that leaves at the first EndUpdateAll.
+        let psm = |t: &str| t.parse::<i32>().map_err(|_| format!("bad psm {t}"));
+        for r in s.of("Clone") {
+            let Some(i) = r.get("psm").map(psm).transpose()?.filter(|&i| i >= 0) else { continue };
+            let comps = r.req("comps")?;
+            let listed = if comps.contains("BleedingParticleBehaviour:") {
+                crate::particles::Listed::Bleed
+            } else if comps.contains("DeleteAfterTime:") {
+                let key = comps.trim_matches(['[', ']']).split(';').find_map(|t| t.strip_prefix("Transform:")).and_then(|t| t.parse().ok()).ok_or("psm clone without a Transform")?;
+                crate::particles::Listed::Destroyed(key)
+            } else {
+                crate::particles::Listed::Ghost
+            };
+            g.recorded_active.push((i, listed));
+        }
+        for (k, o) in s.of("PoolObject").filter(|o| o.name == "BloodPuff_poolable_pool").enumerate() {
+            let Some(b) = g.blood_puff_pool.as_ref().and_then(|p| p.created.get(k).copied()) else { continue };
+            for (j, t) in o.get("psm").unwrap_or("-").split(',').filter(|t| *t != "-").enumerate() {
+                let i = psm(t)?;
+                if i >= 0 {
+                    g.recorded_active.push((i, crate::particles::Listed::Puff(b, j)));
+                }
+            }
+        }
+        g.recorded_active.sort_by_key(|x| x.0);
+        if let Some(w) = g.recorded_active.windows(2).find(|w| w[0].0 == w[1].0) {
+            return Err(format!("psm {} listed twice", w[0].0));
         }
         if let Some(r) = s.of("AudioClipsNotLoaded").next() {
             g.audio.not_loaded = list(r.req("clips")?).into_iter().map(|c| c.rsplit_once('#').map_or(c, |(n, _)| n).to_string()).collect();
@@ -3604,6 +3637,14 @@ pub fn compare(g: &mut Game, s: &Snapshot) -> Vec<String> {
         let ours = g.pool_named(&r.name).map(|p| format!("size={} inactive={} timer={:08x}", p.get_pool_size(), p.get_inactive_pool_size(), p.inactivityTimer.to_bits()));
         if ours.as_ref() != Some(&theirs) {
             out.push(format!("PoolGeneratorPool {}: game {theirs} ours {ours:?}", r.name));
+        }
+        // availableObjects, top first, as createdObjects indices: the order the next Requests hand them out.
+        if let (Some(theirs), Some(p)) = (r.get("avail"), g.pool_named(&r.name)) {
+            let ours: Vec<String> = p.available.iter().rev().map(|b| p.created.iter().position(|c| c == b).map_or("?".into(), |k| k.to_string())).collect();
+            let ours = if ours.is_empty() { "-".to_string() } else { ours.join(",") };
+            if ours != theirs {
+                out.push(format!("PoolGeneratorPool {} avail: game {theirs} ours {ours}", r.name));
+            }
         }
     }
     // gapA r2: each LocalFirePropagationMap's Points and RandomisedIndices (the load's record), by its phys.

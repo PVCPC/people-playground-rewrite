@@ -3213,6 +3213,35 @@ pub(crate) struct Manager {
     nodes: Vec<u32>,
     /// The pooled clones made so far: a later Request reactivates one (SetActive(true)).
     pooled: std::collections::HashSet<crate::game::Pooled>,
+    /// A loaded recording's listed systems the replay does not run (Listed::Ghost, Listed::Destroyed): they hold their
+    /// slots until the first EndUpdateAll (None) or their clone's Destroy (its Transform).
+    ghosts: HashMap<u32, Option<i32>>,
+}
+
+/// One slot of a recording's active list (Game::recorded_active).
+#[derive(Clone, Copy, Debug)]
+pub enum Listed {
+    /// A loaded bleed's root (BleedingParticle.psm).
+    Bleed,
+    /// BloodPuff `b`'s system at GetComponentsInChildren position `j` (0: the root).
+    Puff(usize, usize),
+    /// A DeleteAfterTime clone's system (SetupSpawnPrefab's SpawnParticles): it leaves at its Transform's Destroy.
+    Destroyed(i32),
+    /// ponytail: any other listed system (a loaded bleed's Trail and water_puff, played long ago) is taken to leave at
+    /// the first EndUpdateAll, as the 1.28.52 recordings show; one that plays on needs its own run.
+    Ghost,
+}
+
+/// Destroy of a recorded DeleteAfterTime clone (its Transform `key`): RemoveFromManager swap-removes its system.
+pub fn destroyed_ghost(g: &mut Game, key: i32) {
+    let Some(w) = g.particle_world.as_mut() else { return };
+    let m = &mut w.manager;
+    if let Some((&id, _)) = m.ghosts.iter().find(|(_, k)| **k == Some(key)) {
+        m.ghosts.remove(&id);
+        if let Some(i) = m.active.iter().position(|&x| x == id) {
+            m.active.swap_remove(i);
+        }
+    }
 }
 
 /// RendererBecameInvisible (1801beb10): an enabled renderer's system culls when cullingMode is PauseAndCatchup or Pause
@@ -3308,7 +3337,7 @@ pub fn set_manager_rand(g: &mut Game, state: [u32; 4]) {
 
 impl Default for World {
     fn default() -> Self {
-        World { library: Library::default(), runs: Vec::new(), bleeds: HashMap::new(), attached: HashMap::new(), embedded: HashMap::new(), shockwaves: Vec::new(), shockwave_scan: 0, rng: Rng(0x9e3779b9), manager: Manager { rand: crate::game::particle_rand::manager_rand(), active: Vec::new(), inactive: Vec::new(), next: 0, groups: 0, invisible: Vec::new(), nodes: Vec::new(), pooled: Default::default() } }
+        World { library: Library::default(), runs: Vec::new(), bleeds: HashMap::new(), attached: HashMap::new(), embedded: HashMap::new(), shockwaves: Vec::new(), shockwave_scan: 0, rng: Rng(0x9e3779b9), manager: Manager { rand: crate::game::particle_rand::manager_rand(), active: Vec::new(), inactive: Vec::new(), next: 0, groups: 0, invisible: Vec::new(), nodes: Vec::new(), pooled: Default::default(), ghosts: HashMap::new() } }
     }
 }
 
@@ -3317,6 +3346,7 @@ impl Default for World {
 pub fn begin_update_all(g: &mut Game) {
     let log = std::mem::take(&mut g.effect_log);
     let calls = std::mem::take(&mut g.ps_calls);
+    let recorded_active = std::mem::take(&mut g.recorded_active);
     let Some(mut db) = g.assets.take() else { return };
     let mut w = g.particle_world.take().unwrap_or_default();
     let World { library, runs, bleeds, attached, embedded, shockwaves, shockwave_scan, rng, manager } = &mut *w;
@@ -3453,9 +3483,41 @@ pub fn begin_update_all(g: &mut Game) {
         run.invalid |= !run.halted;
         step(run, &library.systems, Some(&drive), g, dt, rng);
     }
-    // The recorded active list: the loaded bleeds take their slots in its order, an unlisted one leaves (recordings
-    // before the index keep record order).
-    if restored.iter().any(|r| r.0.is_some()) {
+    // A recording with every listed system's slot: the active list as recorded, our systems in their slots and
+    // placeholders for the others; any of ours it does not list keeps its order after them.
+    if !recorded_active.is_empty() {
+        let bleed_of = |psm: i32| restored.iter().find(|r| r.0 == Some(psm)).map(|r| r.1);
+        let puff_of = |b: usize, j: usize| {
+            let chain: Vec<usize> = if j == 0 { vec![0] } else { vec![j, 0] };
+            let mut stack: Vec<&Run> = runs.iter().filter(|r| r.pooled == Some(crate::game::Pooled::BloodPuff(b))).collect();
+            while let Some(r) = stack.pop() {
+                if r.chain == chain {
+                    return Some(r.id);
+                }
+                stack.extend(r.children.iter());
+            }
+            None
+        };
+        let mut list = Vec::new();
+        for (i, l) in recorded_active {
+            let id = match l {
+                Listed::Bleed => bleed_of(i),
+                Listed::Puff(b, j) => puff_of(b, j),
+                Listed::Destroyed(_) | Listed::Ghost => None,
+            };
+            let id = id.unwrap_or_else(|| {
+                manager.next += 1;
+                manager.ghosts.insert(manager.next, if let Listed::Destroyed(k) = l { Some(k) } else { None });
+                manager.next
+            });
+            list.push(id);
+        }
+        let rest: Vec<u32> = manager.active.iter().copied().filter(|x| !list.contains(x) && !restored.iter().any(|r| r.1 == *x)).collect();
+        list.extend(rest);
+        manager.active = list;
+    } else if restored.iter().any(|r| r.0.is_some()) {
+        // The recorded active list: the loaded bleeds take their slots in its order, an unlisted one leaves (recordings
+        // before the index keep record order).
         let mut slots: Vec<usize> = restored.iter().map(|r| manager.active.iter().position(|&x| x == r.1).unwrap()).collect();
         slots.sort();
         restored.sort_by_key(|r| r.0);
@@ -3611,6 +3673,14 @@ pub fn end_update_all(g: &mut Game) -> Vec<crate::game::Pooled> {
     while i > 0 {
         i -= 1;
         let id = m.active[i];
+        // A recording's placeholder: played long before, it stopped (one its Destroy takes holds on).
+        if let Some(&k) = m.ghosts.get(&id) {
+            if k.is_none() {
+                m.ghosts.remove(&id);
+                m.active.swap_remove(i);
+            }
+            continue;
+        }
         let e = &all[&id];
         if e.empty && e.stop_emitting {
             all.get_mut(&id).unwrap().halted = true;
@@ -4088,7 +4158,7 @@ mod tests {
     /// Update2's culling walks the active list from the last, swap-removing.
     #[test]
     fn update2_cull_order() {
-        let mut m = Manager { rand: Rand::new(1), active: Vec::new(), inactive: Vec::new(), next: 0, groups: 0, invisible: Vec::new(), nodes: Vec::new(), pooled: Default::default() };
+        let mut m = Manager { rand: Rand::new(1), active: Vec::new(), inactive: Vec::new(), next: 0, groups: 0, invisible: Vec::new(), nodes: Vec::new(), pooled: Default::default(), ghosts: HashMap::new() };
         for _ in 0..5 {
             m.add();
         }
@@ -4209,7 +4279,7 @@ mod tests {
                 add(&db, fi, ps, &mut systems);
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut rng = Rng(1);
-                    let mut run = start(0, Vec3::new(1.0, 2.0, 0.0), Quat::from_rotation_z(0.3), 1.0, &systems, &mut Manager { rand: Rand::new(1), active: Vec::new(), inactive: Vec::new(), next: 0, groups: 0, invisible: Vec::new(), nodes: Vec::new(), pooled: Default::default() });
+                    let mut run = start(0, Vec3::new(1.0, 2.0, 0.0), Quat::from_rotation_z(0.3), 1.0, &systems, &mut Manager { rand: Rand::new(1), active: Vec::new(), inactive: Vec::new(), next: 0, groups: 0, invisible: Vec::new(), nodes: Vec::new(), pooled: Default::default(), ghosts: HashMap::new() });
                     for k in 0..30 {
                         run.position.x += 0.01 * k as f32;
                         step(&mut run, &systems, None, &g, 1.0 / 60.0, &mut rng);

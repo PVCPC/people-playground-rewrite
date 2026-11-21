@@ -3052,6 +3052,8 @@ pub struct Game {
     pub pooled_deactivated: Vec<Pooled>,
     /// SetActive(false) of a pooled clone's child, by name, for the particle systems.
     pub pooled_child_off: Vec<(Pooled, &'static str)>,
+    /// A recording's ParticleSystemManager active list (psm=, index order): the first particle update builds it.
+    pub recorded_active: Vec<(i32, crate::particles::Listed)>,
     /// Synced instances that hold a WaterBehaviour (its SetActive calls change their objects).
     pub retained: Vec<spawn::Instance>,
     /// Kept clones whose Transform a Start moved after their first sync (a component id of each): the next SyncTransforms takes them.
