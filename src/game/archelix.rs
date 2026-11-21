@@ -166,9 +166,10 @@ impl Game {
                 g.tr_set_right(Xf::Object(root), [dir[0], dir[1], 0.0]);
                 let turned = g.with_component_instance(root, |_, inst, o| inst.rotation(o)) != before;
                 if let Some(b) = g.archelix_bolt_of_clone(root) {
-                    // The trail sees a Transform change only when the rotation really changed: a barrel this
-                    // close to level gives FromToRotation's identity, the new clone's own (the recordings:
-                    // 1.28.41's tilted caster 1 point, 1.28.52's level one 0).
+                    // Transform::SetRotation (UnityPlayer 1807f5af0) sets the change bits only if SetLocalR
+                    // (1800ca1c0) finds the normalized rotation differs from the stored one (cmpneqps, 1800ca225).
+                    // A barrel this close to level gives FromToRotation's identity, the new clone's own, so no
+                    // change: 1.28.41's tilted caster 1 point, 1.28.52's level one 0.
                     g.archelix_bolts[b].trail_dirty |= turned;
                     let caster = &mut g.archelix_casters[c];
                     caster.phaseOffset = !caster.phaseOffset;

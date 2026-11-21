@@ -1144,7 +1144,7 @@ impl Game {
         // The 8-bit samples are (b - 128) / 128: as 16-bit PCM exactly (b - 128) * 256.
         let data = samples.iter().map(|&x| (x * 32768.0) as i16).collect();
         let pcm = crate::assets::audio::Pcm { channels: 1, frequency: 8000, data };
-        let clip = crate::assets::classes::AudioClip { name: format!("buzzer_clip_{id}"), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 8000, length: samples.len() as f32 / 8000.0, resource: Default::default(), compression_format: 0 };
+        let clip = crate::assets::classes::AudioClip { name: format!("buzzer_clip_{id}"), load_type: 0, channels: 1, frequency: 8000, length: samples.len() as f32 / 8000.0, resource: Default::default(), compression_format: 0 };
         let clip = std::sync::Arc::new(super::audio::Clip { asset: ObjRef { file: usize::MAX, path_id: clip_id as i64 }, clip, pcm: Some(std::sync::Arc::new(pcm)), stream: None });
         self.v45.buzzer_clip_cache.insert(id, clip.clone());
         (clip, id)

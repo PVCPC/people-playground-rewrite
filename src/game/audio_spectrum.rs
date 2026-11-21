@@ -495,7 +495,7 @@ mod tests {
 
     fn test_clip() -> super::super::audio::ClipRef {
         let pcm = Pcm { channels: 1, frequency: 48000, data: (0..48000).map(|i| (i % 1000) as i16).collect() };
-        let clip = crate::assets::classes::AudioClip { name: "t".into(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 48000, length: 1.0, resource: Default::default(), compression_format: 0 };
+        let clip = crate::assets::classes::AudioClip { name: "t".into(), load_type: 0, channels: 1, frequency: 48000, length: 1.0, resource: Default::default(), compression_format: 0 };
         Arc::new(Clip { asset: crate::assets::db::ObjRef { file: usize::MAX, path_id: 77 }, clip, pcm: Some(Arc::new(pcm)), stream: None })
     }
 

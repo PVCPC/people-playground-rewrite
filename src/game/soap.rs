@@ -82,7 +82,7 @@ impl Game {
 
     /// The physical objects that GetComponentsInParent(includeInactive: false) on `hit` (an object key) searches (the
     /// object first, then its parents), of those with DecalControllerBehaviours.
-    fn soap_decal_physicals(&mut self, hit: i32) -> Vec<usize> {
+    pub(crate) fn soap_decal_physicals(&mut self, hit: i32) -> Vec<usize> {
         // A pooled effect (BleedingParticle, a VFX) is on no clone and holds no DecalControllerBehaviour.
         let on_clone = |i: &super::spawn::Instance| i.objects.iter().any(|x| x.components.contains(&hit));
         if !self.unsynced.iter().chain(self.retained.iter()).any(on_clone) {

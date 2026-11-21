@@ -212,7 +212,7 @@ fn channel_clip(units: &[u16], id: i32) -> super::audio::ClipRef {
     }
     let name = format!("{} clip", String::from_utf16_lossy(units));
     let length = data.len() as f32 / 8000.0;
-    let clip = crate::assets::classes::AudioClip { name, load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 8000, length, resource: Default::default(), compression_format: 0 };
+    let clip = crate::assets::classes::AudioClip { name, load_type: 0, channels: 1, frequency: 8000, length, resource: Default::default(), compression_format: 0 };
     let pcm = crate::assets::audio::Pcm { channels: 1, frequency: 8000, data };
     std::sync::Arc::new(super::audio::Clip { asset: crate::assets::db::ObjRef { file: usize::MAX, path_id: id as i64 }, clip, pcm: Some(std::sync::Arc::new(pcm)), stream: None })
 }

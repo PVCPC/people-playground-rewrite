@@ -1872,6 +1872,25 @@ const CALLS: &[(&str, Call)] = &[
     // The recorder's plain signal (channel 0, direct) is dropped from the args: the target is the last one.
     ("Activations.SendOnce", |g, c| { let n = c.args.len(); let t = c.with(n)?.p_usize(g, n - 1)?; g.activations_send_once(t); VOID }),
     // fc41 r6: BalloonBehaviour.Shot starts WaitAFrame: " st=bw:<its wait>" (FnTiny.R4Of); a " balpop=1" case runs it on to Pop.
+    // fc41 r8: SoapBehaviour.Clean; a seeded case (" scs=1") has the hit controller's decal alphas after (FnTiny StateOf st=sc:).
+    ("SoapBehaviour.Clean", |g, c| {
+        let w = c.with(2)?;
+        let (s, hit) = (w.p_usize(g, 0)?, w.p_int(1)?);
+        g.soap_clean(s, hit);
+        if c.s.of("FnCase").next().and_then(|r| r.get("scs")) != Some("1") { return VOID }
+        let q = *g.soap_decal_physicals(hit).first().ok_or("scs case: no decal-holding physical on the hit")?;
+        let [dc] = &g.physicals[q].decal_controllers[..] else { return Err(format!("scs case: physical #{} has {} decal controllers", g.physicals[q].id, g.physicals[q].decal_controllers.len())) };
+        Ok(format!(" st=sc:{}", dc.decals.iter().map(|d| format!("{:08x}", d.colour[3].to_bits())).collect::<Vec<_>>().join(",")))
+    }),
+    // fc41 r7: SyringeBehaviour.Shot as Balloon.Shot: the WaitAFrame's wait (st=bw), on recordings whose case has " syw=1".
+    ("SyringeBehaviour.Shot", |g, c| {
+        let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?;
+        let seq = g.coroutine_seq;
+        g.syringe_shot(i);
+        if c.s.of("FnCase").next().and_then(|r| r.get("syw")) != Some("1") { return Ok(String::new()) }
+        let Some(k) = g.coroutines.iter().position(|x| x.seq > seq && x.owner == c.id) else { return Ok(" st=bw:none".into()) };
+        Ok(format!(" st=bw:{:08x}", ((g.coroutines[k].at - g.time.dynamicTimeAsDouble) as f32).to_bits()))
+    }),
     ("BalloonBehaviour.Shot", |g, c| {
         let i = g.balloons.iter().position(|x| x.id == c.id).ok_or("no balloons entry")?;
         let seq = g.coroutine_seq;
@@ -2259,7 +2278,7 @@ const CALLS: &[(&str, Call)] = &[
         let p = phys_by_id(g, c.sid)?;
         let clip = c.args[0].strip_prefix('@').and_then(|x| x.rsplit_once('#')).map(|(n, _)| std::sync::Arc::new(super::super::audio::Clip {
             asset: Default::default(),
-            clip: crate::assets::classes::AudioClip { name: n.to_string(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
+            clip: crate::assets::classes::AudioClip { name: n.to_string(), load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
             pcm: None,
             stream: None,
         }));
@@ -2282,7 +2301,10 @@ const CALLS: &[(&str, Call)] = &[
         let s = g.splats.iter().position(|s| s.id == sp).ok_or_else(|| format!("no splat #{sp}"))?;
         let b = match g.blood_puffs.iter().position(|p| p.splat == s) { Some(b) => b, None => { g.blood_puffs.push(crate::game::misc::BloodPuff { active: true, splat: s, emitter_active: true, off: Vec::new() }); g.blood_puffs.len() - 1 } };
         g.blood_impact_set_color(b, w.p_arr::<4>(0)?); VOID }),
-    ("PseudoBloodImpactHelper.OnImpactCreated", |g, c| { let h = g.pseudo_blood_helpers.iter().position(|h| h.0 == c.sid).ok_or("no pseudo_blood_helpers entry")?; let gm = impact_gm(g, c)?; g.pseudo_blood_impact_on_impact_created(h, gm); VOID }),
+    ("PseudoBloodImpactHelper.OnImpactCreated", |g, c| { let h = g.pseudo_blood_helpers.iter().position(|h| h.0 == c.sid).ok_or("no pseudo_blood_helpers entry")?; if c.args.first().is_some_and(|a| matches!(*a, "null" | "destroyed")) { return crate::game::menu::throw("NullReferenceException: Object reference not set to an instance of an object") } let gm = impact_gm(g, c)?; g.pseudo_blood_impact_on_impact_created(h, gm);
+        // fc41 r8: a seeded puff case (" pbs=1") has the puff's DecalColourMultiplier after the call (FnTiny StateOf st=dcm:).
+        if c.s.of("FnCase").next().and_then(|r| r.get("pbs")) != Some("1") { return VOID }
+        Ok(format!(" st=dcm:{}", gm.map_or("none".into(), |b| g.splats[g.blood_puffs[b].splat].DecalColourMultiplier.map(|v| format!("{:08x}", v.to_bits())).join(",")))) }), // fc41 r7: gm.TryGetComponent on a null/destroyed gm (fc41_13_gen)
     // Affect(Collider2D coll): the collider's id (no record of its own) and its physical.
     // batch2 r4: HealthGunBehaviour.Affect the same way (the generated entry took the collider for a limb record).
     ("HealthGunBehaviour.Affect", |g, c| { let i = g.effect_guns.iter().position(|x| x.id == c.sid).ok_or("no effect_guns entry")?; let col = reference(c.args.first().ok_or("no collider")?).ok_or("null collider")?; let p = g.physicals.iter().position(|p| p.colliders.contains(&col)); g.effect_gun_affect(i, p, col); VOID }),
@@ -2898,7 +2920,7 @@ const CALLS: &[(&str, Call)] = &[
         let a = c.args[0].strip_prefix('[').and_then(|x| x.strip_suffix(']')).ok_or("PlaySound arg not an array")?;
         let set: Vec<_> = a.split(';').map(|x| x.strip_prefix('@').and_then(|x| x.rsplit_once('#')).map(|(n, _)| std::sync::Arc::new(super::super::audio::Clip {
             asset: Default::default(),
-            clip: crate::assets::classes::AudioClip { name: n.to_string(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
+            clip: crate::assets::classes::AudioClip { name: n.to_string(), load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
             pcm: None,
             stream: None,
         }))).collect();
