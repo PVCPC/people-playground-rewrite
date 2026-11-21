@@ -145,7 +145,7 @@ Parameter name: index");
         let g = [self.world.gravity.x, self.world.gravity.y];
         // Physics2D.gravity.magnitude * rigidbody.gravityScale
         let num = mathf::magnitude2(g) * rb.gravity_scale(&self.world);
-        if num > f32::EPSILON {
+        if num > mathf::EPSILON {
             let vector = [g[0] / num, g[1] / num];
             // base.transform.InverseTransformDirection(vector): the inverse rotations only, no scale.
             let v3 = self.anchored_inverse_direction(p, [vector[0], vector[1], 0.0]);

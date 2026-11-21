@@ -560,7 +560,7 @@ impl Game {
             let ease = decal_drip_streak_ease_out(mathf::clamp01(streak.t));
             streak.scale = [streak.radius + ease * streak.length, streak.radius];
             streak.z = z;
-            if streak.t > 1.0 || num <= f32::EPSILON {
+            if streak.t > 1.0 || num <= mathf::EPSILON {
                 self.active_streaks.swap_remove(i);
             }
         }

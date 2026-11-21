@@ -580,7 +580,7 @@ impl Game {
         for (q, collider) in hits.into_iter().take(16) {
             // PhysicalObjectsInWorldByTransform.TryGetValue(collider.transform): the collider sits on the physical's own object.
             let Some(q) = q.filter(|&q| self.physicals[q].in_world && !self.physicals[q].destroyed && Some(self.physical_game_object(q)) == self.world.collider_game_object(collider)) else { continue };
-            if !(mathf::clamp01(self.properties[self.physicals[q].Properties].MagneticAttractionIntensity) > f32::EPSILON) {
+            if !(mathf::clamp01(self.properties[self.physicals[q].Properties].MagneticAttractionIntensity) > mathf::EPSILON) {
                 continue;
             }
             let a = self.magnetic_attract(m, q, Pole::North);
@@ -1749,7 +1749,7 @@ impl Game {
 
     /// DrippingBloodParticleController.Set
     pub fn dripping_blood_set(&mut self, d: usize, color: [f32; 4], amount: f32) {
-        if !(amount <= f32::EPSILON) {
+        if !(amount <= mathf::EPSILON) {
             let x = &mut self.v45.drips[d];
             for k in 0..4 {
                 x.Colour[k] = (x.Colour[k] * x.Amount + color[k] * amount) / (amount + x.Amount);

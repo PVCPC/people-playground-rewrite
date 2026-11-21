@@ -162,8 +162,14 @@ impl Game {
                 let (s, item) = g.pool_request_prefab(prefab, position).unwrap_or_else(|| crate::game::menu::throw("NullReferenceException: Object reference not set to an instance of an object"));
                 let root = g.generic_pools[s].items[item].root;
                 let dir = g.archelix_barrel_direction(c);
+                let before = g.with_component_instance(root, |_, inst, o| inst.rotation(o));
                 g.tr_set_right(Xf::Object(root), [dir[0], dir[1], 0.0]);
+                let turned = g.with_component_instance(root, |_, inst, o| inst.rotation(o)) != before;
                 if let Some(b) = g.archelix_bolt_of_clone(root) {
+                    // The trail sees a Transform change only when the rotation really changed: a barrel this
+                    // close to level gives FromToRotation's identity, the new clone's own (the recordings:
+                    // 1.28.41's tilted caster 1 point, 1.28.52's level one 0).
+                    g.archelix_bolts[b].trail_dirty |= turned;
                     let caster = &mut g.archelix_casters[c];
                     caster.phaseOffset = !caster.phaseOffset;
                     let phase = if caster.phaseOffset { std::f32::consts::PI / 2.0 } else { 0.0 };
@@ -222,12 +228,15 @@ impl Game {
         self.archelix_bolts[b].isDespawning = false;
         let id = self.archelix_bolts[b].id;
         self.ps_field_play_stop(id, "ParticleSystem", true);
-        self.archelix_bolts[b].trail_dirty = true;
         let position = self.with_component_instance(self.archelix_bolts[b].id, |_, inst, o| inst.position(o));
         let at = [position[0], position[1]];
-        // A new bolt's trail also keeps the point where the pool made it; a reused bolt's trail takes only its
-        // Request position, at the frame's renderer update (`archelix_trails_update`).
-        if !std::mem::replace(&mut self.archelix_bolts[b].initialised, true) {
+        // A reused bolt's trail takes only its Request position, at the frame's renderer update
+        // (`archelix_trails_update`). A new bolt's Instantiate placed it before its renderer watched the Transform:
+        // its trail waits for a real change (its own Update, or the caster turning it) and then also keeps the
+        // point where the pool made it.
+        if std::mem::replace(&mut self.archelix_bolts[b].initialised, true) {
+            self.archelix_bolts[b].trail_dirty = true;
+        } else {
             self.archelix_bolts[b].trail_start = Some(at);
         }
     }

@@ -932,7 +932,7 @@ impl super::Game {
             let (x_min, y_min, x_max, y_max) = (rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]);
             let factor = if v[0] >= x_min && v[0] < x_max && v[1] >= y_min && v[1] < y_max {
                 1.0
-            } else if max_distance <= f32::EPSILON {
+            } else if max_distance <= super::mathf::EPSILON {
                 0.0
             } else {
                 let c = [super::mathf::clamp(v[0], x_min, x_max) - v[0], super::mathf::clamp(v[1], y_min, y_max) - v[1]];
@@ -941,7 +941,7 @@ impl super::Game {
             // Utils.MapRange(0, 1, MinVolume, MaxVolume, factor)
             let num = min_volume + (max_volume - min_volume) * factor;
             if auto {
-                if num <= f32::EPSILON {
+                if num <= super::mathf::EPSILON {
                     if self.audio.is_playing(source) {
                         self.audio.stop(source);
                     }

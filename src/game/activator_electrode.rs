@@ -121,7 +121,7 @@ impl Game {
             let mut c = self.sprite_color(g);
             c[3] = (super::d(c[3]) - super::d(self.time.deltaTime) * 4.0f32).f();
             self.set_sprite_color(g, c);
-            if c[3] <= f32::EPSILON {
+            if c[3] <= super::mathf::EPSILON {
                 self.set_sprite_enabled(g, false);
             }
         }
