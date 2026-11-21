@@ -112,6 +112,8 @@ pub struct Substep {
     pub emit: Option<f32>,
     /// max(0, accumulatedDt / d - 1): StartParticles' rewind for the passes still to come.
     pub left: f32,
+    /// Update1Incremental's end of a non-looping run (1801c53cb) came at this pass, before its update.
+    pub ended: bool,
     /// accumulatedDt during the pass (before its d comes off): the timeAlive of the sub-emitter commands it records.
     pub accumulated: f32,
 }
@@ -207,7 +209,8 @@ impl Clock {
             }
             let left = self.accumulated / d - 1.0;
             let left = if left <= 0.0 { 0.0 } else { left };
-            if !s.looping && !self.stop_emitting && s.length <= self.t {
+            let ended = !s.looping && !self.stop_emitting && s.length <= self.t;
+            if ended {
                 self.stop_emitting = true;
             }
             let mut emit = None;
@@ -220,7 +223,7 @@ impl Clock {
                 }
                 emit = Some(e);
             }
-            pass(&Substep { d, from, to: self.t, emit, left, accumulated: self.accumulated });
+            pass(&Substep { d, from, to: self.t, emit, left, ended, accumulated: self.accumulated });
             self.accumulated -= d;
             last = d;
         }

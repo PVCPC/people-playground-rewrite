@@ -281,6 +281,8 @@ pub struct Run {
     /// Its place in ParticleSystemManager's lists, and playState == kStopped (set by EndUpdateAll).
     id: u32,
     halted: bool,
+    /// keep_updating_subs made it kPlaying this BeginUpdate: its job's deltaTime is 0.
+    revived: bool,
     /// The clone it was played in (0: none) and its prefab object with that object's ancestors (empty: none).
     group: u32,
     chain: Vec<usize>,
@@ -1430,13 +1432,13 @@ fn step(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, frame: 
         return;
     }
     let ended = run.clock.stop_emitting;
-    step_inner(run, systems, drive, g, frame, rng);
+    let cleared = step_inner(run, systems, drive, g, frame, rng);
     if !ended && run.clock.stop_emitting {
-        run.stop_time = g.time.timeAsDouble;
+        run.stop_time = if cleared { 0.0 } else { g.time.timeAsDouble };
     }
 }
 
-fn step_inner(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, frame: f32, rng: &mut Rng) {
+fn step_inner(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, frame: f32, rng: &mut Rng) -> bool {
     let s = &systems[run.sys];
     let ps = &s.ps;
     // emitterVelocity from the move since the last frame (Update2 keeps oldPosition; the first update starts it
@@ -1454,6 +1456,7 @@ fn step_inner(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, f
     let spec = crate::game::particle_clock::Spec::of(ps, 0.0);
     let mut clock = std::mem::take(&mut run.clock);
     let began = if run.fixed { clock.begin_step(&spec, frame, |_| g.time.fixedDeltaTime) } else { clock.begin(&spec, frame, s.max_step) };
+    let mut cleared = false;
     if let Some((dt, step)) = began {
         let on = !(drive.is_some_and(|d| !d.enabled) || run.emission.is_some_and(|e| !e.enabled) || run.stopped || !ps.emission_enabled);
         // The scripts' writes: Bleeding's rateOverTimeMultiplier (the scalar, its mode kept); PhysicalBehaviour's
@@ -1484,6 +1487,10 @@ fn step_inner(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, f
             ring_copy(run, systems, g, first, acc, rng);
         }
         clock.substeps(&spec, step, |pass| {
+            // 1801c53f8: the run ends with no particle: Clear (1801b6cf0) then and there, kStopped as it stops emitting.
+            if pass.ended && run.particles.is_empty() {
+                cleared = true;
+            }
             modules(run, systems, drive, g, 0, pass.to, pass.d, pass.accumulated, rng);
             if let Some(e) = pass.emit.filter(|e| *e > 0.0 && on) {
                 if let Some((n, total)) = run.emitted.as_mut().map(|st| st.over_time(&rate, &ps.bursts, pass.from, pass.to, length)) {
@@ -1505,10 +1512,18 @@ fn step_inner(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, f
         update_bounds(run, s, g);
     }
     run.clock = clock;
-    // CollectSubEmittersRecursive (1801b7130): each sub system's update job runs after its parent's.
+    if cleared {
+        run.halted = true;
+        run.cull_time = 0.0;
+        run.ring = 0;
+    }
+    // CollectSubEmittersRecursive (1801b7130): each sub system's update job runs after its parent's, with deltaTime 0
+    // (1801b721f) when it was not kPlaying as it was collected, before KeepUpdating revived it.
     for child in &mut run.children {
+        let frame = if std::mem::take(&mut child.revived) { 0.0 } else { frame };
         step(child, systems, None, g, frame, rng);
     }
+    cleared
 }
 
 /// A script's module writes on a system (None: not written): emission.rateOverTimeMultiplier and
@@ -3283,10 +3298,15 @@ fn play(run: &mut Run, systems: &[Sys], manager: &mut Manager) {
 /// with the root's; `out` takes the ones that join the manager. An empty one leaves again at the frame's EndUpdateAll.
 fn keep_updating_subs(run: &mut Run, systems: &[Sys], out: &mut Vec<u32>) {
     let s = &systems[run.sys];
+    // GetSubEmitterPtrs sorts the entries by (type, emitter instance id) (1801ff5f0); a clone's ids count down along its
+    // prefab's objects, so a later object comes first.
     let mut order = Vec::new();
     for t in [0, 2] {
-        for sub in s.subs.iter().filter(|x| x.1 == t) {
-            let c = child_index(s, sub.0);
+        let mut of_type: Vec<usize> = s.subs.iter().filter(|x| x.1 == t).map(|sub| child_index(s, sub.0)).collect();
+        if of_type.iter().all(|&c| !run.children[c].chain.is_empty()) {
+            of_type.sort_by_key(|&c| std::cmp::Reverse(run.children[c].chain[0]));
+        }
+        for c in of_type {
             if !order.contains(&c) {
                 order.push(c);
             }
@@ -3296,6 +3316,7 @@ fn keep_updating_subs(run: &mut Run, systems: &[Sys], out: &mut Vec<u32>) {
         let child = &mut run.children[c];
         if child.halted {
             child.halted = false;
+            child.revived = true;
             child.clock.stop_emitting = true;
             out.push(child.id);
         }
@@ -4113,6 +4134,7 @@ fn render(g: &Game, w: &mut World, all: &HashMap<u32, Emitter>) -> Vec<u32> {
         last: bool,
         sub: bool,
         push: bool,
+        light: bool,
     }
     let now = g.time.timeAsDouble;
     let mut info = HashMap::new();
@@ -4122,7 +4144,7 @@ fn render(g: &Game, w: &mut World, all: &HashMap<u32, Emitter>) -> Vec<u32> {
             let s = &w.library.systems[r.sys];
             // RendererBecameInvisible's push to inactiveEmittersWithStopActions, culled at `now`.
             let push = all[&r.id].stop_action != 0 && ((!r.halted && still_playing(r, &s.ps, now, now)) || !all_children_stopped(all, r.id));
-            info.insert(r.id, Seen { invalid: r.invalid, culled: r.culled, cull: s.first_cull, now: seen(g, r, s), last: r.seen, sub, push });
+            info.insert(r.id, Seen { invalid: r.invalid, culled: r.culled, cull: s.first_cull, now: seen(g, r, s), last: r.seen, sub, push, light: s.game_layer == crate::lights::LIGHT_SPRITE });
             stack.extend(r.children.iter().map(|c| (c, true)));
         }
     }
@@ -4146,12 +4168,16 @@ fn render(g: &Game, w: &mut World, all: &HashMap<u32, Emitter>) -> Vec<u32> {
         r.cull_time = now;
     }
     let mut acts = Vec::new();
-    for id in manager.nodes.clone() {
-        let Some(i) = info.get(&id) else { continue };
-        if i.now && !i.last {
-            let r = run_by_id(runs, bleeds, attached, embedded, id).unwrap();
-            if became_visible(r, &library.systems, i.sub, g, manager, rng) && all[&id].stop_action != 0 {
-                acts.push(id);
+    // UpdateVisibility (1805ef290) runs per camera's culling, each in node order: LightsCamera (the LightSprite layer)
+    // renders before Main Camera.
+    for light in [true, false] {
+        for id in manager.nodes.clone() {
+            let Some(i) = info.get(&id) else { continue };
+            if i.now && !i.last && i.light == light {
+                let r = run_by_id(runs, bleeds, attached, embedded, id).unwrap();
+                if became_visible(r, &library.systems, i.sub, g, manager, rng) && all[&id].stop_action != 0 {
+                    acts.push(id);
+                }
             }
         }
     }

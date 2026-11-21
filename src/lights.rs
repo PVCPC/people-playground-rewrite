@@ -18,7 +18,7 @@ use bevy::{
 };
 
 /// GameObject layer LightSprite (LightsCamera's cullingMask).
-const LIGHT_SPRITE: i32 = 15;
+pub(crate) const LIGHT_SPRITE: i32 = 15;
 /// GameObject layer ScreenUI (On screen UI camera's cullingMask).
 const SCREEN_UI: i32 = 16;
 /// The render layer of On screen UI camera (the bloom passes take 5 and up).
