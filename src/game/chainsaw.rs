@@ -109,7 +109,7 @@ impl Game {
             self.audio.stop(rev);
         }
         if self.audio.is_playing(rev) {
-            self.audio.get_mut(rev).volume = mathf::clamp01(speed);
+            self.audio.get_mut(rev).set_volume(mathf::clamp01(speed));
         }
         self.chainsaw_process(i, flag, if flag { 2.0 } else { 500.0 });
         let (id, key) = (self.chainsaws[i].id, self.chainsaws[i].SawCollider);

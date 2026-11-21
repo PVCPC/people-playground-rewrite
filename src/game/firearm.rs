@@ -185,7 +185,7 @@ impl Game {
             });
             let volume = if rotating { 0.0 } else { self.firearms[f].ShotVolume };
             let source = self.firearms[f].audio_source;
-            self.audio.get_mut(source).volume = volume;
+            self.audio.get_mut(source).set_volume(volume);
         }
         let g = &self.firearms[f];
         let layers = g.LayersToHit;

@@ -7,8 +7,8 @@ use super::{d, mathf, Game};
 pub struct EyeAnimation {
     /// Behaviour.enabled (the scene's starts off).
     pub enabled: bool,
-    oV: f32,
-    sV: f32,
+    pub(crate) oV: f32,
+    pub(crate) sV: f32,
     /// Gradient, Duration, Offset, UseSinWave, OffsetVaration, SpeedVaration, Randomisation (None without the scene's data).
     pub(crate) wave: Option<(super::visual::Gradient, f32, f32, bool, f32, f32, f32)>,
     /// EyeImage's Image.color; its sprite is EyeClosed while the tools are invisible.

@@ -1243,7 +1243,9 @@ impl Game {
         let (id, min, max) = (x.id, x.min_distance, x.max_distance);
         let src = self.audio.source_field(id, "Source").unwrap_or_else(|| super::menu::throw("NullReferenceException: Object reference not set to an instance of an object"));
         let s = self.audio.get_mut(src);
-        (s.rolloff_mode, s.min_distance, s.max_distance) = (0, min, max);
+        s.rolloff_mode = 0;
+        s.set_min_distance(min);
+        s.set_max_distance(max);
     }
 
     /// BuzzerBehaviour.OnWillRenderObject: presentation (compared with real 1.28.45: reference-probe/game/v45vis_1.txt): Diaphragm.localScale is (1, 1, 1) while Source is silent, else y = 1 + the mean

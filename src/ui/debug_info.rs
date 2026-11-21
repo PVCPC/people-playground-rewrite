@@ -32,6 +32,15 @@ pub(crate) struct Version {
 // GameInfo..cctor: the Version const below (the static field's only initialiser).
 pub(crate) const VERSION: Version = Version { _Major: 1, _Minor: 28, _Build: 41, _Revision: -1 };
 
+/// GameInfo.Version as (major, minor, build): VERSION, or the newer build's GameInfo..cctor (new Version(1, 28, 52)).
+pub fn version() -> (i32, i32, i32) {
+    if crate::assets::il::is_1_28_45() {
+        let n = |k: usize| crate::assets::il::get().i4("GameInfo::.cctor", k);
+        return (n(0), n(1), n(2));
+    }
+    (VERSION._Major, VERSION._Minor, VERSION._Build)
+}
+
 /// ExportGameDebugInfoBehaviour.GetDebugInfoString: StringBuilder.AppendLine ends a line with Environment.NewLine (CRLF on Windows); no
 /// mods are loaded, so the mod list is empty.
 pub fn get_debug_info_string(sys: &SystemInfo) -> String {
@@ -39,12 +48,7 @@ pub fn get_debug_info_string(sys: &SystemInfo) -> String {
     let mut s = String::new();
     s.push_str(crate::il!(str "ExportGameDebugInfoBehaviour::GetDebugInfoString" 0));
     // GameInfo.Version (Version.ToString: major.minor.build); IntPtr.Size is 8 in the 64 bit player.
-    let Version { _Major: mut major, _Minor: mut minor, _Build: mut build, .. } = VERSION;
-    if crate::assets::il::is_1_28_45() {
-        // The newer build's GameInfo..cctor: new Version(1, 28, 52).
-        let n = |k: usize| crate::assets::il::get().i4("GameInfo::.cctor", k);
-        (major, minor, build) = (n(0), n(1), n(2));
-    }
+    let (major, minor, build) = version();
     s.push_str(&format!("## People Playground [v{major}.{minor}.{build}] [{} bit]\n", if cfg!(target_pointer_width = "64") { "64" } else { "32" }));
     s.push_str(nl);
     s.push_str(crate::il!(str "ExportGameDebugInfoBehaviour::GetDebugInfoString" 4));

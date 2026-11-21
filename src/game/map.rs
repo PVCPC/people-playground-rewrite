@@ -430,7 +430,7 @@ impl Game {
                     *c = refs;
                 }
                 if let Some(id) = source {
-                    self.audio.get_mut(id).volume = volume;
+                    self.audio.get_mut(id).set_volume(volume);
                 }
             }
         }

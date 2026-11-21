@@ -94,6 +94,12 @@ pub(super) const CALLS: &[(&str, Call)] = &[
         let i = injectable(g, c)?;
         let e = g.injectable_find_particles(i);
         g.v45.injectables[i].ImbueParticles = e;
+        // The case's pspre (ImbueParticles:<isEmitting>...) was read before this entry made the injectable: applied here, as
+        // the generic pspre load does (fncheck.rs ps_field).
+        if let (Some(e), Some(v)) = (e, c.field("pspre").and_then(|v| v.strip_prefix("ImbueParticles:"))) {
+            let call = if v.starts_with('1') { crate::game::PsCall::Play } else { crate::game::PsCall::Stop(g.time.timeAsDouble) };
+            g.ps_calls.push((e, call));
+        }
         let victim = phys_by_id(g, c.rec::<i32>("Stab(", "victim")?)?;
         let p = g.v45.injectables[i].phys.unwrap();
         g.injectable_lodged_on(p, victim);

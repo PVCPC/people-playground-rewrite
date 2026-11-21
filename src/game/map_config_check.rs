@@ -126,7 +126,7 @@ impl Game {
                 }
             }
             if let (Some(id), true) = (o.OptionalAudioSource, p[5] != "-") {
-                self.audio.get_mut(id).volume = hx(p[5])?;
+                self.audio.get_mut(id).set_volume(hx(p[5])?);
             }
             self.map_overlays[k] = Some(o);
         }

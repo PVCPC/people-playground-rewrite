@@ -146,7 +146,7 @@ impl Game {
                 if !self.audio.is_playing(src) {
                     self.audio.play(src);
                 }
-                self.audio.get_mut(src).volume = mathf::clamp01(num * num * mul);
+                self.audio.get_mut(src).set_volume(mathf::clamp01(num * num * mul));
             } else if self.audio.is_playing(src) {
                 self.audio.stop(src);
             }

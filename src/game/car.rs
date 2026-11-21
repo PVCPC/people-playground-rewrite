@@ -274,8 +274,8 @@ impl Game {
     pub fn car_awake(&mut self, car: usize, inst: &Instance, o: usize) {
         self.cars[car].IsBrakeEngaged = true;
         let mut s = self.cars[car].engine_proto.clone();
-        s.min_distance = self.cars[car].EngineLoudness;
-        s.max_distance = 100.0;
+        s.set_min_distance(self.cars[car].EngineLoudness);
+        s.set_max_distance(100.0);
         s.doppler_level = 0.0;
         s.set_spatial_blend(1.0);
         s.play_on_awake = false;
@@ -474,7 +474,7 @@ impl Game {
         // engineAudioSource.volume = Max(Abs(num) / WheelJoints.Length / Abs(MotorSpeed), 0.2f)
         let c = &self.cars[car];
         let v = super::mathf::max(sum.abs() / c.WheelJoints.len() as f32 / c.MotorSpeed.abs(), 0.2);
-        self.audio.get_mut(c.engine).volume = v;
+        self.audio.get_mut(c.engine).set_volume(v);
     }
 
     /// CarBehaviour.Use: channel 1 reverses the gear; else the engine toggles .

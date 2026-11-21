@@ -351,6 +351,12 @@ Your script should either check if it is null or you should not destroy the obje
 
     /// Transform.rotation = q on a running physical, as physical_set_position does it.
     pub(super) fn physical_set_rotation(&mut self, p: usize, q: [f32; 4]) {
+        // Transform.set_rotation to the rotation it has already marks nothing changed: no sync moves an interpolated body
+        // to its (interpolated) transform. fnv52_6_gen CrossbowBehaviour.OnAfterDeserialise: ConnectSyringe on a connected
+        // syringe sets its own rotation again and the new FixedJoint2D's referenceAngle stays 0.
+        if self.physicals[p].transform.rotation == q {
+            return;
+        }
         if self.is_recording() {
             // No clone: the next sync (SyncTransforms) takes the body's angle from the new rotation, with the position of any move queued before.
             // fnv52 r2: and a kept local rotation (CrossbowBehaviour.ConnectSyringe's transform.rotation: the syringe's lossy scale

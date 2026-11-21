@@ -2472,7 +2472,9 @@ const CALLS: &[(&str, Call)] = &[
     ("PhysicalBehaviour.GetSharpEnd", |g, c| { let a = super::fnmaped::sharp_axis(c.args.first().ok_or("no SharpAxis")?)?; Ok(Enc::enc(g.get_sharp_end(c.phys(g)?, &a))) }),
     // fnmaped round 12: HandleStabbing and DoStab on a knife set against a limb (MapConfigProbe.PokeCase), IsInsideOf on a
     // limb's own non-trigger colliders.
-    ("PhysicalBehaviour.HandleStabbing", |g, c| { let col = c.with(3)?.p_collision(1)?; let ct = super::fnmaped::contact_point(c.args.get(1).ok_or("no ContactPoint2D")?)?; let p = c.phys(g)?; if crate::assets::il::is_1_28_45() { super::all_property_clips(g)?; } let r = g.handle_stabbing(p, &col, &ct); if crate::assets::il::is_1_28_45() { Ok(bit(r)) } else { VOID } }),
+    // v52h r3: an item's PhysicalBehaviour has no record of its private previousVelocity (a limb's has): its last ManagedLateUpdate's, taken
+    // as the body's velocity now (no physics step between that and the case; fnv52_1b_gen's knife keeps its -0.196 y in the game).
+    ("PhysicalBehaviour.HandleStabbing", |g, c| { let col = c.with(3)?.p_collision(1)?; let ct = super::fnmaped::contact_point(c.args.get(1).ok_or("no ContactPoint2D")?)?; let p = c.phys(g)?; if crate::assets::il::is_1_28_45() { super::all_property_clips(g)?; } if !c.s.of("PhysicalBehaviour").any(|r| r.id == g.physicals[p].id) { let v = g.physicals[p].rigidbody.velocity(&g.world); g.physicals[p].previousVelocity = v; } let r = g.handle_stabbing(p, &col, &ct); if crate::assets::il::is_1_28_45() { Ok(bit(r)) } else { VOID } }),
     ("PhysicalBehaviour.DoStab", |g, c| { c.with(4)?; let p = c.phys(g)?; let other = c.arg_phys(g, 0)?; let a = super::fnmaped::sharp_axis(c.args[1])?; let pen = super::fnmaped::fresh_penetration(g, c.args[2])?; g.do_stab(p, other, a, pen); VOID }),
     // fnmaped r15: MapConfigProbe.Seed sets SpawnSpawnParticles on even cases, off on odd ones (the PI record holds it).
     ("PhysicalBehaviour.SetupSpawnPrefab", |g, c| { c.with(1)?; let p = c.phys(g)?; g.physical_setup_spawn_prefab(p); VOID }),
@@ -3144,6 +3146,24 @@ const CALLS: &[(&str, Call)] = &[
         g.eye_animation_on_disable();
         let k = g.eye.color;
         Ok(format!(" st=ucw:{},{},{},{}", hex(k[0]), hex(k[1]), hex(k[2]), hex(k[3])))
+    }),
+    // v52h r3: UiColorWave.Update (the eye's) from " stpre=ucw:<Renderer.color>,<oV>,<sV>,<Time.unscaledTime>", the colour it sets after.
+    ("UiColorWave.Update", |g, c| {
+        g.load_eye_alone()?;
+        // stpre "ucw:" r,g,b,a, oV, sV, Time.unscaledTime, then Duration, Offset, OffsetVaration, SpeedVaration, Randomisation (hex) and UseSinWave
+        // (0/1): the recorder's Drive/Fuzz set the wave's fields on odd cases.
+        let pre = st_pre(c).and_then(|v| v.strip_prefix("ucw:")).ok_or("no stpre=ucw: (a recording before v52h r3)")?;
+        let v: Vec<&str> = pre.split(',').collect();
+        let [r, gg, b, a, ov, sv, t, dur, off, ovv, svv, rnd] = std::array::from_fn(|k| v.get(k).and_then(|x| u32::from_str_radix(x, 16).ok()).map_or(f32::NAN, f32::from_bits));
+        let sin = *v.get(12).ok_or("stpre=ucw: no wave fields (a recording before v52h r3b)")? == "1";
+        if let Some(w) = g.eye.wave.as_mut() {
+            (w.1, w.2, w.3, w.4, w.5, w.6) = (dur, off, sin, ovv, svv, rnd);
+        }
+        (g.eye.color, g.eye.oV, g.eye.sV, g.eye.enabled) = ([r, gg, b, a], ov, sv, true);
+        g.time.unscaledTimeAsDouble = f64::from(t);
+        g.eye_animation_update();
+        let (k, w) = (g.eye.color, g.eye.wave.as_ref().ok_or("the eye without its wave")?);
+        Ok(format!(" st=ucw:{},{},{},{},{},{},{},{},{},{},{},{},{}", hex(k[0]), hex(k[1]), hex(k[2]), hex(k[3]), hex(g.eye.oV), hex(g.eye.sV), hex(t), hex(w.1), hex(w.2), hex(w.4), hex(w.5), hex(w.6), w.3 as u8))
     }),
     // batch1 r10: ChainsawBehaviour.SoftConnect(otherPhys, coll, connectionStrength) on the loaded softConnections.
     ("ChainsawBehaviour.SoftConnect", |g, c| {
@@ -5273,6 +5293,6 @@ fn gb27_load(g: &mut Game, sid: i32, v: &str) -> Result<(), String> {
     } else {
         g.audio.stop(id);
     }
-    g.audio.get_mut(id).volume = f32::from_bits(u32::from_str_radix(vol, 16).map_err(|_| "gb27pre volume")?);
+    g.audio.get_mut(id).set_volume(f32::from_bits(u32::from_str_radix(vol, 16).map_err(|_| "gb27pre volume")?));
     Ok(())
 }

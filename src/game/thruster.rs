@@ -85,12 +85,11 @@ impl Game {
     pub(crate) fn thrusterbed_update_audio(&mut self, i: usize, progress: f32) {
         let (low, high) = self.thrusterbed_sources(i);
         let charge = self.thrusterbed_boost(i);
-        // AudioSource.volume's setter clamps to 0..1 (1.28.52 recording: 43.85 reads back 1); minDistance's to 0..maxDistance (1922 reads back 100).
-        // ponytail: clamped here only; the other `.volume =` sites write 0..1 values already.
+        // AudioSource's volume and minDistance setters clamp (AudioSource::set_volume / set_min_distance).
         let a = self.audio.get_mut(high);
-        a.volume = super::mathf::clamp01(progress * charge);
-        a.min_distance = (10.0 + progress * charge).max(0.0).min(a.max_distance);
-        self.audio.get_mut(low).volume = super::mathf::clamp01(progress);
+        a.set_volume(progress * charge);
+        a.set_min_distance(10.0 + progress * charge);
+        self.audio.get_mut(low).set_volume(progress);
     }
 
     /// ThrusterbedBehaviour.UpdateActivated

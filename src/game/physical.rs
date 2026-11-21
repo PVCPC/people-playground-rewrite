@@ -1237,7 +1237,7 @@ impl Game {
         let a = self.audio.get_mut(source);
         // AudioSource.volume's setter clamps to [0, 1].
         if a.volume <= volume {
-            a.volume = mathf::clamp01(mathf::lerp(a.volume, volume, weight));
+            a.set_volume(mathf::clamp01(mathf::lerp(a.volume, volume, weight)));
         }
         if !self.audio.is_playing(source) {
             // A replay has no game assets (no clips, muted); the game always has Audio/fire_loop. A recording's act
@@ -1262,7 +1262,7 @@ impl Game {
             let (true, Some(s)) = (c.dirty, c.source) else { continue };
             let a = self.audio.get_mut(s);
             if a.volume > 0.05 {
-                a.volume = mathf::clamp01((d(a.volume) - d(smooth) * 1.0f32).f());
+                a.set_volume(mathf::clamp01((d(a.volume) - d(smooth) * 1.0f32).f()));
                 continue;
             }
             self.audio.stop(s);
@@ -1380,7 +1380,7 @@ impl Game {
             if self.physicals[p].PlaySliderSound && self.audio.is_playing(id) {
                 let target = if self.physicals[p].isSliding { self.physicals[p].slideIntensity } else { 0.0 };
                 let s = self.audio.get_mut(id);
-                s.volume = mathf::lerp(s.volume, target, 0.5);
+                s.set_volume(mathf::lerp(s.volume, target, 0.5));
             }
         } else if self.audio.get(id).enabled {
             self.audio.stop(id);

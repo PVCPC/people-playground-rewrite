@@ -254,7 +254,7 @@ impl Game {
         // generatorAudioSource.volume = Charge / TargetCharge * 0.2f
         let s = &self.generators[i];
         if let Some(src) = self.audio.source_field(s.id, "generatorAudioSource") {
-            self.audio.get_mut(src).volume = self.physicals[p].Charge() / target * 0.2;
+            self.audio.get_mut(src).set_volume(self.physicals[p].Charge() / target * 0.2);
         }
     }
 

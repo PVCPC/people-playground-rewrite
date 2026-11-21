@@ -1630,7 +1630,7 @@ impl Game {
                     let (id, vol) = v.split_once(',').ok_or_else(bad)?;
                     let id: i32 = id.parse().map_err(|_| bad())?;
                     g.fire_loop_add_source(at, id);
-                    g.audio.get_mut(id).volume = hex(vol)?;
+                    g.audio.get_mut(id).set_volume(hex(vol)?);
                     let ts = g.time.timeScale;
                     g.audio.add_time_scaled(id, ts, false);
                     g.audio.set_active(id, r.req("active")? == "1");
@@ -1712,7 +1712,7 @@ impl Game {
         // BloodPuff's systems by GetComponentsInChildren position; a DeleteAfterTime clone's (SpawnParticles) leaves at
         // its Destroy; any other (a bleed's Trail and water_puff) is a placeholder that leaves at the first EndUpdateAll.
         let psm = |t: &str| t.parse::<i32>().map_err(|_| format!("bad psm {t}"));
-        for r in s.of("Clone") {
+        for r in s.of("Clone").filter(|r| !pasted_twin(s, r)) {
             let Some(i) = r.get("psm").map(psm).transpose()?.filter(|&i| i >= 0) else { continue };
             let comps = r.req("comps")?;
             let listed = if comps.contains("BleedingParticleBehaviour:") {
@@ -1969,7 +1969,7 @@ impl Game {
         // One no prefab is found for stays without a clone (a level object, a recorder helper the catalog lacks).
         if let Some(rs) = &restored {
             let mut kinds: Vec<&str> = Vec::new();
-            for r in s.of("Clone") {
+            for r in s.of("Clone").filter(|r| !pasted_twin(s, r)) {
                 if let Some(k) = r.get("root").filter(|k| (k.starts_with("Spawned:") || k.starts_with("Pasted:")) && !kinds.contains(k)) {
                     kinds.push(k);
                 }
@@ -4930,4 +4930,10 @@ mod tests {
         assert_eq!(key_value("<IsOnFloor>k__BackingField=0"), ("IsOnFloor".into(), "0".into()));
         assert_eq!(super::super::circulation::liquid("BLOOD"), 0);
     }
+}
+
+/// A recorder-pasted root (`root=Pasted:<id>`) is a new scene root too, so the recorder lists it again as
+/// `root=Spawned:<id>`: that twin is the same object (v52h_15_gen: the Acid Syringe's SpawnParticles, psm 13).
+fn pasted_twin(s: &Snapshot, r: &Record) -> bool {
+    r.get("root").and_then(|k| k.strip_prefix("Spawned:")).is_some_and(|id| s.of("Clone").any(|x| x.get("root").and_then(|k| k.strip_prefix("Pasted:")) == Some(id)))
 }

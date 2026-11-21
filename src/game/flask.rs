@@ -248,7 +248,7 @@ impl Game {
     pub fn liquid_container_update(&mut self, c: usize) {
         if self.liquid_no_need_to_simulate(c) {
             let s = self.sloshing_source(c);
-            self.audio.get_mut(s).volume = 0.0;
+            self.audio.get_mut(s).set_volume(0.0);
             return;
         }
         let t = (d(1.0f32) - mathf::pow(0.00025, self.time.deltaTime)).f();
@@ -481,6 +481,6 @@ impl Game {
         let target = self.liquid_transform_sound_volume(c, (d(self.liquid_containers[c].SloshingIntensity) * (d(num2) / 16.0f32)).f());
         let s = self.sloshing_source(c);
         let a = self.audio.get_mut(s);
-        a.volume = mathf::lerp(a.volume, target, 0.6);
+        a.set_volume(mathf::lerp(a.volume, target, 0.6));
     }
 }

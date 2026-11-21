@@ -145,7 +145,7 @@ impl Game {
             mathf::magnitude2(v) * 0.05 + 0.3
         };
         let volume = self.audio.get(src).volume;
-        self.audio.get_mut(src).volume = mathf::lerp(volume, target, 0.5);
+        self.audio.get_mut(src).set_volume(mathf::lerp(volume, target, 0.5));
         if !self.drone_is_alive(i) {
             self.physicals[p].charge = 3.0;
             return;

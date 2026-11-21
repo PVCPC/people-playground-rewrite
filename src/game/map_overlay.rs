@@ -140,7 +140,7 @@ impl Game {
                 }
             }
             if let Some(id) = o.OptionalAudioSource {
-                self.audio.get_mut(id).volume = o.Visiblity;
+                self.audio.get_mut(id).set_volume(o.Visiblity);
             }
         }
         self.map_overlays[k] = Some(o);

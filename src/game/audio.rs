@@ -341,6 +341,21 @@ impl Default for AudioSource {
 }
 
 impl AudioSource {
+    /// AudioSource.set_volume: Unity clamps every write to 0..1 (1.28.52 recording v52h_11_gen: 43.85 reads back 1).
+    pub fn set_volume(&mut self, v: f32) {
+        self.volume = super::mathf::clamp01(v);
+    }
+
+    /// AudioSource.set_minDistance: clamped to 0..maxDistance on every write (v52h_11_gen: 1922 reads back 100).
+    pub fn set_min_distance(&mut self, v: f32) {
+        self.min_distance = v.max(0.0).min(self.max_distance);
+    }
+
+    /// AudioSource.set_maxDistance: AudioSource::SetMaxDistance (UnityPlayer 180ab0890) keeps it at least minDistance (a NaN gives minDistance).
+    pub fn set_max_distance(&mut self, v: f32) {
+        self.max_distance = v.max(self.min_distance);
+    }
+
     /// A serialized AudioSource (prefab or scene) under `anchor`/`chain`, active as its GameObject is.
     pub fn from_component(s: &crate::assets::components::AudioSource, clip: Option<ClipRef>, group: Option<&str>, anchor: BareAnchor, chain: Vec<Trs>, ancestors: Vec<i32>, active: bool) -> Self {
         Self {
@@ -886,7 +901,7 @@ impl super::Game {
             let min_y = center[1] - extents[1];
             let mut num = super::mathf::max(0.0, (min_y - point[1]).abs()) / (extents[1] * 2.0);
             num *= num;
-            self.audio.get_mut(source).volume = super::mathf::clamp01((soft_range - magnitude) * num);
+            self.audio.get_mut(source).set_volume(super::mathf::clamp01((soft_range - magnitude) * num));
         }
     }
 
@@ -930,7 +945,7 @@ impl super::Game {
                     self.audio.play(source);
                 }
             }
-            self.audio.get_mut(source).volume = num;
+            self.audio.get_mut(source).set_volume(num);
         }
     }
 

@@ -88,7 +88,7 @@ impl Game {
     /// `field.volume = v` of the lift's AudioSource (a null one throws).
     fn map_lift_volume(&mut self, i: usize, field: &str, v: f32) {
         let src = self.audio_src(self.map_lifts[i].id, field);
-        self.audio.get_mut(src).volume = v;
+        self.audio.get_mut(src).set_volume(v);
     }
 
     /// MapLiftBehaviour.FixedUpdate

@@ -234,7 +234,7 @@ impl Game {
         let target = if self.hovercars[h].isOnGround && self.hovercars[h].Activated { 1.0 } else { 0.0 };
         let f = mathf::lerp_factor_dt(0.9, self.time.deltaTime);
         let a = self.audio.get_mut(acc);
-        a.volume = mathf::lerp(a.volume, target, f);
+        a.set_volume(mathf::lerp(a.volume, target, f));
     }
 
     /// HovercarBehaviour.Use (when enabled): channel 1 reverses BaseSpeed, any other toggles Activated.

@@ -816,6 +816,7 @@ fn page(p: &mut Kids, ui: &Ui, settings: &Settings, controls: &Controls, art: &U
             // The pause screen shows no logo (Main.unity's Logo(Text) is inactive).
             if ui.mode != Mode::Pause {
                 logo(p);
+                main_version(p);
             }
         }
         Page::Maps => maps(p, ui, art),
@@ -832,8 +833,8 @@ fn page(p: &mut Kids, ui: &Ui, settings: &Settings, controls: &Controls, art: &U
                 text(c, &scene::text("Menu", INFO_TEXT), scene::font_size("Menu", INFO_TEXT), INFO_TEXT);
                 // VersionDisplay.Start
                 let bits = if cfg!(target_pointer_width = "64") { "64" } else { "32" };
-                let v = super::debug_info::VERSION;
-                text(c, &format!("version <b>{}.{}.{} ({bits} bit for Windows)</b>\nusing Unity <b>{UNITY_VERSION}</b>", v._Major, v._Minor, v._Build), 28.0, INFO_VERSION);
+                let (a, b, d) = super::debug_info::version();
+                text(c, &format!("version <b>{a}.{b}.{d} ({bits} bit for Windows)</b>\nusing Unity <b>{UNITY_VERSION}</b>"), 28.0, INFO_VERSION);
                 text(c, &scene::text("Menu", INFO_LINKS), scene::font_size("Menu", INFO_LINKS), INFO_LINKS);
                 for (text, act) in [("Export game debug info", Act::ExportDebugInfo), ("Open source libraries", Act::Nav(Page::Licenses))] {
                     info_button(c, text, act);
@@ -943,6 +944,23 @@ fn logo(p: &mut Kids) {
         p.spawn((at(x, y), Pickable::IGNORE, NotCompared("the outline"))).with_children(|c| label(c, TEXT, SIZE, BLACK));
     }
     p.spawn((at(0.0, 0.0), Pickable::IGNORE)).with_children(|c| label(c, TEXT, SIZE, WHITE));
+}
+
+// VersionDisplay.Start: JustShowVersion (the newer build's Canvas/Main/version info) shows GameInfo.Version.ToString().
+fn main_version(p: &mut Kids) {
+    const PATH: &str = "Canvas/Main/version info";
+    if !scene::has("Menu", PATH) || !scene::active("Menu", PATH) || scene::number("Menu", PATH, "VersionDisplay", "JustShowVersion") == 0.0 {
+        return;
+    }
+    let (a, b, d) = super::debug_info::version();
+    // m_HorizontalAlignment: 1 Left, 2 Center, 4 Right; m_VerticalAlignment: 256 Top, 512 Middle, 1024 Bottom.
+    let h = scene::number("Menu", PATH, "TextMeshProUGUI", "m_HorizontalAlignment");
+    let v = scene::number("Menu", PATH, "TextMeshProUGUI", "m_VerticalAlignment");
+    let justify = if h == 4.0 { JustifyContent::FlexEnd } else if h == 2.0 { JustifyContent::Center } else { JustifyContent::FlexStart };
+    let align = if v == 256.0 { AlignItems::FlexStart } else if v == 1024.0 { AlignItems::FlexEnd } else { AlignItems::Center };
+    let color = scene::color_field("Menu", PATH, "TextMeshProUGUI", "m_fontColor");
+    p.spawn((Node { display: Display::Flex, justify_content: justify, align_items: align, ..super::scrollbar::rect_node(scene::rect("Menu", PATH)) }, Pickable::IGNORE))
+        .with_children(|c| label(c, format!("{a}.{b}.{d}"), scene::font_size("Menu", PATH), color));
 }
 
 /// A MenuController list: the buttons the scene shows, in order, the last one set apart.
