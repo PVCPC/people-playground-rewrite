@@ -1574,6 +1574,22 @@ const CALLS: &[(&str, Call)] = &[
         g.disk_logger_on_destroy();
         Ok(format!(" st={}", g.disk_logger_state()))
     }),
+    // fc41 r2: PersonBehaviour.OnDestroy: RemoveFromDictionary, st=pal:<AliveByTransform holds it> (the recorder puts the
+    // entry back before each case).
+    ("PersonBehaviour.OnDestroy", |g, c| {
+        let p = c.with(1)?.p_usize(g, 0)?;
+        if st_pre(c) != Some("pal:1") { return Err(format!("PersonBehaviour.OnDestroy stpre {:?}", st_pre(c))) }
+        g.people[p].alive_entry = true;
+        g.person_on_destroy(p);
+        Ok(format!(" st=pal:{}", g.people[p].alive_entry as u8))
+    }),
+    // fc41 r2: BloodTankBehaviour.OnDestroy: OnCollide -= OnParticleCollide (lis=<before>,<after>, MapConfigProbe GenListeners).
+    ("BloodTankBehaviour.OnDestroy", |g, c| {
+        let i = c.with(1)?.p_usize(g, 0)?;
+        let pre = g.blood_tank_listeners(i);
+        g.blood_tank_on_destroy(i);
+        Ok(format!("lis={pre},{}", g.blood_tank_listeners(i)))
+    }),
     ("UISoundBehaviour.Start", |g, c| {
         c.with(0)?;
         let this = g.ui_sound.take().ok_or("no UISoundBehaviour.Main in ours")?;
@@ -1855,6 +1871,8 @@ const CALLS: &[(&str, Call)] = &[
     // batch4 r10: Transmit(name, content): FnTiny's content is new ActivationPropagation(root, 0[, gameObject]) (the record's
     // `signal:0,0,0` drops the path), so it is rebuilt from the self's root.
     ("TransmitterBehaviour.Transmit", |g, c| { let w = c.with(3)?; let t = w.p_usize(g, 0)?; let name = w.p_string(1)?; let root = g.root_id(g.transmitters[t].phys); let content = g.signal_from(root, 0); g.transmitter_transmit(t, &name, &content); VOID }),
+    // UseContinuous(ActivationPropagation): GenRun's `signal:<direct>,<channel>,<target>` (the gen entry read it as the self).
+    ("TransmitterBehaviour.UseContinuous", |g, c| { let t = c.record_index(g, c.sid)?.1; let (direct, channel, _) = signal_arg(c.args.first().copied().unwrap_or("signal"))?; let act = g.signal_direct(direct, channel); g.transmitter_use_continuous(t, &act); VOID }),
     ("TransmitterBehaviour.Blink", |g, c| { let t = c.with(1)?.p_usize(g, 0)?; let mut r = g.transmitter_blink_routine(t); Ok(routine_step(g, &mut r)) }),
     // FixedUpdate() of the self: the generated entry passed the component id as a game arg.
     ("TruckDoorBehaviour.FixedUpdate", |g, c| { let t = c.with(1)?.p_usize(g, 0)?; let id = g.truck_doors[t].0; g.truck_door_fixed_update(t, id); VOID }),
@@ -2048,6 +2066,14 @@ const CALLS: &[(&str, Call)] = &[
     ("CirculationBehaviour.OnImpactCreated", |g, c| { let l = c.comp("CirculationBehaviour")?; let gm = impact_gm(g, c)?; g.circulation_on_impact_created(l, gm);
         // fnbatch r6: a BloodPuff gm's splat DecalColourMultiplier after SetColor (the recorder's " dcm=").
         Ok(gm.map_or(String::new(), |b| format!(" dcm={}", g.splats[g.blood_puffs[b].splat].DecalColourMultiplier.map(|v| format!("{:08x}", v.to_bits())).join(",")))) }),
+    // SetColor(color): self's blood_puffs entry is the one whose splat is its FancyBloodSplatController link (record_index counts
+    // ItemScript rows, not the pool's createdObjects order).
+    ("BloodImpactBehaviour.SetColor", |g, c| { let w = c.with(1)?; let r = c.s.of("ItemScript").find(|r| r.id == c.sid).ok_or("no BloodImpactBehaviour record")?;
+        let sp = reference(r.req("FancyBloodSplatController")?).ok_or("null FancyBloodSplatController")?;
+        // The item load (link_recording_item) makes the emitter's splat but no blood_puffs entry: add the puff for it.
+        let s = g.splats.iter().position(|s| s.id == sp).ok_or_else(|| format!("no splat #{sp}"))?;
+        let b = match g.blood_puffs.iter().position(|p| p.splat == s) { Some(b) => b, None => { g.blood_puffs.push(crate::game::misc::BloodPuff { active: true, splat: s, emitter_active: true, off: Vec::new() }); g.blood_puffs.len() - 1 } };
+        g.blood_impact_set_color(b, w.p_arr::<4>(0)?); VOID }),
     ("PseudoBloodImpactHelper.OnImpactCreated", |g, c| { let h = g.pseudo_blood_helpers.iter().position(|h| h.0 == c.sid).ok_or("no pseudo_blood_helpers entry")?; let gm = impact_gm(g, c)?; g.pseudo_blood_impact_on_impact_created(h, gm); VOID }),
     // Affect(Collider2D coll): the collider's id (no record of its own) and its physical.
     // batch2 r4: HealthGunBehaviour.Affect the same way (the generated entry took the collider for a limb record).

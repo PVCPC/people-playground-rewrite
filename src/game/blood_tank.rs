@@ -183,4 +183,17 @@ impl super::Game {
     pub fn blood_tank_awake(&mut self, i: usize) {
         self.blood_tanks[i].phys = Some(self.blood_tanks[i].physical);
     }
+
+    /// BloodTankBehaviour.OnDestroy: PhysicalParticles.OnCollide -= OnParticleCollide.
+    pub fn blood_tank_on_destroy(&mut self, i: usize) {
+        let s = self.blood_tanks[i].splat;
+        if self.splats[s].on_collide == Some(Owner::BloodTank(i)) {
+            self.splats[s].on_collide = None;
+        }
+    }
+
+    /// The tank's listeners on its splat's OnCollide.
+    pub fn blood_tank_listeners(&self, i: usize) -> u32 {
+        (self.splats[self.blood_tanks[i].splat].on_collide == Some(Owner::BloodTank(i))) as u32
+    }
 }

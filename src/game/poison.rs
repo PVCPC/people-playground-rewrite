@@ -438,7 +438,8 @@ impl Game {
         self.limbs[l].DoStumble ^= fp!() > 0.7;
         self.limbs[l].Numbness += fp!();
         let v = fp!();
-        self.limbs[l].ShotDamageMultiplier += v * 5.0;
+        // `x += fp * 5f` is one double expression in Mono, rounded at the store (fc41_4_gen: 4 ulp off in f32).
+        self.limbs[l].ShotDamageMultiplier = (d(self.limbs[l].ShotDamageMultiplier) + d(v) * 5.0f32).f();
         if fp!() > 0.95 {
             self.break_bone(l);
         }
@@ -446,12 +447,12 @@ impl Game {
             self.limb_crush(l);
         }
         let v = fp!();
-        let acid = self.skins[l].acidProgress + v * 0.05;
+        let acid = (d(self.skins[l].acidProgress) + d(v) * 0.05f32).f();
         self.skins[l].set_acid(acid);
         let v = fp!();
         self.skins[l].intensityMultiplier += v * 0.5;
         let v = fp!();
-        let rotten = self.skins[l].rottenProgress + v * 0.05;
+        let rotten = (d(self.skins[l].rottenProgress) + d(v) * 0.05f32).f();
         self.skins[l].set_rotten(rotten);
         if fp!() > 0.9 {
             let position = self.physicals[p].transform.position;
@@ -461,7 +462,7 @@ impl Game {
         let v = fp!();
         self.circulations[l].BleedingRate *= v.abs();
         let v = fp!();
-        self.circulations[l].BloodLossRateMultiplier += v * 0.2;
+        self.circulations[l].BloodLossRateMultiplier = (d(self.circulations[l].BloodLossRateMultiplier) + d(v) * 0.2f32).f();
         self.circulations[l].IsPump ^= fp!() > 0.9;
         self.circulations[l].WasInitiallyPumping ^= fp!() > 0.7;
         self.physicals[p].AbsorbsLasers ^= fp!() > 0.0;

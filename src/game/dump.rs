@@ -468,6 +468,12 @@ fn map_clone_splats(s: &Snapshot) -> HashSet<i32> {
 /// A FancyBloodSplatController record over `sp`: its fields, particles, local rotation and collision mask.
 fn load_splat(sp: &mut FancyBloodSplat, r: &Record) -> Result<(), String> {
     load_fields(sp.fields(), r)?;
+    load_splat_particles(sp, r)?;
+    load_splat_links(sp, r)
+}
+
+/// A FancyBloodSplatController record's particles (an item's splat too: its ItemScript record carries them).
+fn load_splat_particles(sp: &mut FancyBloodSplat, r: &Record) -> Result<(), String> {
     // From dump16 on: the HashSet's slots, each "VelocityX,VelocityY,PositionX,PositionY,Life" or "-" (free),
     // then "free=" and its free list; before, the particles' type names.
     let text = r.req("particles")?;
@@ -485,6 +491,10 @@ fn load_splat(sp: &mut FancyBloodSplat, r: &Record) -> Result<(), String> {
         None if list(text).is_empty() => {}
         None => return Err("splat particles without their slots".into()),
     }
+    Ok(())
+}
+
+fn load_splat_links(sp: &mut FancyBloodSplat, r: &Record) -> Result<(), String> {
     // A bleeding particle's splat (that particle maybe destroyed since: the splat lives on unparented), a pooled
     // BloodPuff's Extra decal emitter (wired to its puff with the pools), or a loose one (an effect's extra decals,
     // such as a Gorse ball's Alien_Blood_Explosion: no parent wiring, it splats where its particles land).

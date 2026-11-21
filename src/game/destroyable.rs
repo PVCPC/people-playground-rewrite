@@ -402,6 +402,7 @@ impl Game {
 
     /// PersonBehaviour.OnDestroy: RemoveFromDictionary (AliveBehaviour.AliveByTransform.Remove), the person's `destroyed` flag.
     pub(crate) fn person_on_destroy(&mut self, i: usize) {
+        self.people[i].alive_entry = false;
         self.people[i].destroy_at = None;
         self.people[i].destroyed = true;
     }

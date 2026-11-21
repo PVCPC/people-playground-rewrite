@@ -148,6 +148,11 @@ Parameter name: source");
 
     /// JukeboxBehaviour.ShowPlayingNotification: the current track's name without its extension.
     pub(crate) fn jukebox_show_playing_notification(&mut self, j: usize) {
+        // audioSource.clip.name: no clip throws in the try and again in the catch.
+        if self.audio.get(self.jukebox_source(j)).clip.is_none() {
+            crate::game::menu::throw("NullReferenceException: JukeboxBehaviour.audioSource.clip");
+        }
+        // ponytail: the name is tracks[trackIndex], the clip Play set; read the clip's own name if they ever differ.
         let s = &self.jukeboxes[j];
         let name = &s.tracks[s.trackIndex as usize];
         // Path.GetFileNameWithoutExtension

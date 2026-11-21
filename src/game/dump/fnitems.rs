@@ -75,7 +75,6 @@ pub(super) const ITEM_CALLS: &[(&str, Call)] = &[
     // Awake/OnDestroy: phys = GetComponent and the PhysicalParticles.OnCollide (un)subscription, which the rewrite's
     // particle collisions route to every tank: nothing to run.
     ("BloodTankBehaviour.Awake", |g, c| { let i = g.blood_tanks.iter().position(|x| x.id == c.id).ok_or("no blood_tanks entry")?; g.blood_tank_awake(i); Ok(String::new()) }),
-    ("BloodTankBehaviour.OnDestroy", |g, c| { g.blood_tanks.iter().position(|x| x.id == c.id).ok_or("no blood_tanks entry")?; Ok(String::new()) }),
     // `public override bool AllowsOverflow => false;`
     ("BloodTankBehaviour.get_AllowsOverflow", |g, c| { g.blood_tanks.iter().position(|x| x.id == c.id).ok_or("no blood_tanks entry")?; Ok("0".into()) }),
     ("BloodTankBehaviour.NextMode", |g, c| { let i = g.blood_tanks.iter().position(|x| x.id == c.id).ok_or("no blood_tanks entry")?; g.blood_tank_next_mode(i); Ok(String::new()) }),
@@ -447,6 +446,8 @@ pub(super) const ITEM_CALLS: &[(&str, Call)] = &[
     ("StickyGrenadeBehaviour.StartBlinking", |g, c| { let i = g.sticky_grenades.iter().position(|x| x.id == c.id).ok_or("no sticky_grenades entry")?; g.sticky_start_blinking(i); Ok(String::new()) }),
     ("StunnerBehaviour.Update", |g, c| { let i = g.stunners.iter().position(|x| x.id == c.id).ok_or("no stunners entry")?; g.stunner_update(i); Ok(String::new()) }),
     ("SyringeBehaviour.Awake", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.syringe_awake(i); Ok(String::new()) }),
+    // fc41 r2: Break(velocity) is BreakSyringe() (no syringe overrides Break).
+    ("SyringeBehaviour.Break", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.break_syringe(i); Ok(String::new()) }),
     ("SyringeBehaviour.BreakSyringe", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.break_syringe(i); Ok(String::new()) }),
     ("SyringeBehaviour.ExitShot", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.syringe_exit_shot(i); Ok(String::new()) }),
     ("SyringeBehaviour.FixedUpdate", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.syringe_fixed_update(i); Ok(String::new()) }),

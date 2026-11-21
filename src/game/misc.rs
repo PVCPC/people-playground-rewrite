@@ -874,6 +874,8 @@ pub enum PendingStart {
     UnderwaterExplosion(i32, crate::assets::db::ObjRef, usize, i64, i32),
     /// ExistByChance.Start: the component's instance id and its Chance.
     ExistByChance(i32, f32),
+    /// ExistifUnderwater.Start of (component, Offset, Space is Self, Invert).
+    ExistifUnderwater(i32, [f32; 2], bool, bool),
     /// OnlyExplosionBehaviour.Start with ExplodeOnStart: the component's instance id and its ExplosionParameters.
     OnlyExplosion(i32, super::explosion::ExplosionParameters),
     Explosive(usize),
@@ -1598,6 +1600,7 @@ impl Game {
                 PendingStart::DoAtTimeOnce(d) => self.do_at_time_once_execute_sequence(d),
                 PendingStart::UnderwaterExplosion(root, splash, near, distant, audio) => self.underwater_explosion_start(root, splash, near, distant, audio),
                 PendingStart::ExistByChance(id, chance) => self.exist_by_chance_start(id, chance),
+                PendingStart::ExistifUnderwater(id, offset, self_space, invert) => self.existif_underwater_start(id, offset, self_space, invert),
                 // OnlyExplosionBehaviour.Start
                 PendingStart::OnlyExplosion(id, ex) => self.only_explosion_start(id, ex),
                 PendingStart::Explosive(e) => self.explosive_start(e),

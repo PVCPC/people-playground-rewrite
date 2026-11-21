@@ -412,7 +412,7 @@ impl Game {
     }
 
     /// TransformVector over a chain (root first).
-    fn transform_vector_of(chain: &[crate::unity::transform::Trs], local: [f32; 2]) -> [f32; 2] {
+    pub(super) fn transform_vector_of(chain: &[crate::unity::transform::Trs], local: [f32; 2]) -> [f32; 2] {
         let mut v = [local[0], local[1], 0.0, 0.0];
         for node in chain.iter().rev() {
             let node = crate::unity::transform::Trs { t: [0.0; 4], ..*node };

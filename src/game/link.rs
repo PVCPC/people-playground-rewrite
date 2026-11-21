@@ -1002,7 +1002,7 @@ pub(super) fn colliders_in_children(inst: &Instance, o: usize) -> Vec<(i32, usiz
 pub(super) fn check_rewritten(class: &str) {
     match class {
         "PhysicalBehaviour" | "LimbBehaviour" | "CirculationBehaviour" | "PersonBehaviour" | "SkinMaterialHandler" | "ConnectedNodeBehaviour" | "ReturnToPoolAfterTime"
-        | "GoreStringBehaviour" | "GripBehaviour" | "HingeJointLimitAutofixBehaviour" | "MapLightBehaviour" | "MapConfig" | "BoundingBoxBehaviour"
+        | "GoreStringBehaviour" | "ExistifUnderwater" | "GripBehaviour" | "HingeJointLimitAutofixBehaviour" | "MapLightBehaviour" | "MapConfig" | "BoundingBoxBehaviour"
         | "ActivateIfTutorial" | "WaterBehaviour" | "PlayAudioAtRandom" | "PlayAtRandom" | "ShatteredObjectGenerator"
         | "JointBreakSoundBehaviour" | "DamagableMachineryBehaviour" | "DestroyableBehaviour" | "VaseBehaviour" | "ExplosionSoundBehviour" | "ActOnDestroy"
         | "DestroyWhenAllChildrenDestroyed" | "InstantiateObjectBehaviour" | "DetachFromParentOnStart" | "RandomForceAtStart" | "DoAtTimeOnce" | "RandomSpriteBehaviour" | "LavaBehaviour" | "RandomPrefabSpawnerBehaviour"
@@ -8568,6 +8568,11 @@ impl Game {
                 "PhysicalRopeCreator" if !flag("CreateOnStart") => continue,
                 "PhysicalRopeCreator" => PendingStart::Rope(inst.objects[o].components[c]),
                 "ExistByChance" => PendingStart::ExistByChance(inst.objects[o].components[c], float(v, "Chance")?),
+                // fc41 r2: ExistifUnderwater.Start of a linked clone (a pooled BloodPuff's are misc.rs's BloodPuff*Water).
+                "ExistifUnderwater" => {
+                    let space = field(v, "Space")?.i64().ok_or("ExistifUnderwater.Space")?;
+                    PendingStart::ExistifUnderwater(inst.objects[o].components[c], floats::<2>(field(v, "Offset")?)?, space == 1, flag("Invert"))
+                }
                 "UnderwaterExplosionBehaviour" => {
                     // SplashAudio: the ExplosionSoundBehviour that waits for Play; Splash is its object.
                     let splash = (0..prefab.objects.len())

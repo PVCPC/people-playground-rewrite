@@ -941,6 +941,19 @@ impl Game {
         // gapA r2: the compound ItemScript fields a Field link cannot hold (compound_fields shows them for the compare).
         for (class, r) in script_records(s) {
             match class {
+                // fc41 r2: an item's splat's particles (LiquidOutletBehaviour's extraDecals): the fields came with the link.
+                "FancyBloodSplatController" if r.get("particles").is_some() => {
+                    let Some(sp) = self.splats.iter_mut().find(|x| x.id == r.id) else { continue };
+                    super::load_splat_particles(sp, r)?;
+                }
+                // fc41 r2: an item's PseudoBloodImpactHelper (the Worm Staff's; PrepareGoreBits adds one to each shard).
+                "PseudoBloodImpactHelper" => {
+                    let color = super::floats::<4>(r.req("Color")?);
+                    match self.pseudo_blood_helpers.iter_mut().find(|h| h.0 == r.id) {
+                        Some(h) => h.1 = color,
+                        None => self.pseudo_blood_helpers.push((r.id, color)),
+                    }
+                }
                 "LiquidContainerController" => {
                     let Some(&(_, crate::game::Behaviour::LiquidContainer(i))) = self.behaviour_of.get(&r.id) else { continue };
                     let x = &mut self.liquid_containers[i];

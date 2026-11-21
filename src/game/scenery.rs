@@ -308,6 +308,22 @@ impl Game {
     }
 
     /// ExistByChance.Start of the component `id`: SetActive(false) of its object.
+    /// ExistifUnderwater.Start: gameObject.SetActive(Invert ^ WaterBehaviour.IsPointUnderWater(GetPoint())). GetPoint: the
+    /// position plus Offset (Space.Self: plus TransformVector(Offset)). Start runs on an active object, so only a false deactivates.
+    pub fn existif_underwater_start(&mut self, id: i32, offset: [f32; 2], self_space: bool, invert: bool) {
+        self.with_component_instance(id, |g, inst, o| {
+            if !inst.objects[o].active {
+                return;
+            }
+            let p = inst.position(o);
+            // inst.chain is the object first; transform_vector_of takes the root first.
+            let d = if self_space { Game::transform_vector_of(&inst.chain(o).into_iter().rev().collect::<Vec<_>>(), offset) } else { offset };
+            if !(invert ^ g.is_point_under_water([p[0] + d[0], p[1] + d[1]])) {
+                g.set_active_scripts(inst, o, false);
+            }
+        });
+    }
+
     pub fn exist_by_chance_start(&mut self, id: i32, chance: f32) {
         self.with_component_instance(id, |g, inst, o| {
             if inst.objects[o].active && g.exist_by_chance_loses(chance) {
