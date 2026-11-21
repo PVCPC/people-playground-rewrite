@@ -511,8 +511,15 @@ impl Game {
     /// OnWillRenderObject of ColorWave for each drawn one (`view` as `Game::input.view`).
     pub fn visual_will_render(&mut self) {
         for v in 0..self.visuals.len() {
-            if matches!(self.visuals[v].kind, Kind::Hologram { .. }) {
-                self.hologram_will_render(v);
+            if let Kind::Hologram { own, .. } = self.visuals[v].kind {
+                // Unity calls OnWillRenderObject only for a renderer that draws.
+                let drawn = match own {
+                    HologramOwn::Sprite(s) => self.sprite_drawn(s),
+                    HologramOwn::Text(t) => self.text_drawn(t),
+                };
+                if drawn {
+                    self.hologram_will_render(v);
+                }
                 continue;
             }
             if let Kind::SortingChild { sprite, line, .. } = self.visuals[v].kind {
@@ -681,14 +688,10 @@ impl Game {
         *Multiply = c;
     }
 
-    /// HologramJitter.OnWillRenderObject, when its object's renderer is drawn.
+    /// HologramJitter.OnWillRenderObject (visual_will_render calls it for a drawn renderer).
     pub(crate) fn hologram_will_render(&mut self, v: usize) {
-        let Kind::Hologram { text, sprite, own, ref Colors, Multiply, JitterIntensity, offset, mut local, ref refs, ref text_refs } = self.visuals[v].kind else { unreachable!() };
-        let drawn = match own {
-            HologramOwn::Sprite(s) => self.sprite_drawn(s),
-            HologramOwn::Text(t) => self.text_drawn(t),
-        };
-        if !drawn || self.destroyed_components.contains(&self.visuals[v].id) {
+        let Kind::Hologram { text, sprite, ref Colors, Multiply, JitterIntensity, offset, mut local, ref refs, ref text_refs, .. } = self.visuals[v].kind else { unreachable!() };
+        if self.destroyed_components.contains(&self.visuals[v].id) {
             return;
         }
         let (Colors, refs, text_refs) = (Colors.clone(), refs.clone(), text_refs.clone());

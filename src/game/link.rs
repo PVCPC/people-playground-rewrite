@@ -2351,9 +2351,11 @@ impl Game {
             x.DetailViewLabel = self.text_field(&l, v, "DetailViewLabel")?;
             // gapC r26: clapperTransform, the clapper SpriteRenderer's object (Update sets its local rotation).
             let cl = field(v, "clapperSpriteRenderer")?.pptr().ok_or("clapperSpriteRenderer")?;
-            if let Some(&(co, _)) = l.prefab.index.get(&ObjRef { file: l.file, path_id: cl.path_id }).filter(|_| cl.file == 0) {
+            if let Some(&(co, cc)) = l.prefab.index.get(&ObjRef { file: l.file, path_id: cl.path_id }).filter(|_| cl.file == 0) {
                 x.clapper = Some(inst.objects[co].components[0]);
+                x.clapper_sprite = inst.objects[co].components[cc];
             }
+            x.ColourGradient = super::visual::Gradient::read(field(v, "ColourGradient")?)?;
             universal_bells.insert(o, self.universal_bells.len());
             self.universal_bells.push(x);
         }

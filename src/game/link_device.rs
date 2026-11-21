@@ -46,6 +46,8 @@ pub struct PhaseLink {
     /// The line (`Game::lines`) on "link source" and the end SpriteRenderers (`Game::renderers`), from Start.
     pub line: Option<usize>,
     pub end_renderers: [Option<usize>; 2],
+    /// The "link source" and "link target" GameObjects' instance ids (0: a loaded link, whose ids are not kept).
+    pub end_objects: [i32; 2],
     /// The line's two world positions at its last SetPosition (the enabled updates); lineRenderer.bounds of a
     /// useWorldSpace line holds them while the renderer is disabled.
     pub last_line: Option<[[f32; 3]; 2]>,
@@ -240,6 +242,7 @@ impl Game {
         let ids: Vec<i32> = (0..11).map(|_| self.allocate_instance_id()).collect();
         let other = self.phase_links[l].Other.unwrap();
         self.phase_link_visuals(l, other, ids[3], [ids[4], ids[9]]);
+        self.phase_links[l].end_objects = [ids[0], ids[6]];
         // VisualDeletableDetachedToolBehaviour.Awake: spriteRenderer = GetComponent<SpriteRenderer>(). Execution order 0.
         // ExistInDetailView.Start runs with the other Starts before any Update: the ends update only while ShowLimbStatus is on.
         for end in 0..2 {
@@ -598,7 +601,38 @@ impl Game {
         if self.hovering == Some(id) {
             self.hovering = None;
         }
+        // Destroy(fromSpriteRenderer.gameObject), Destroy(toSpriteRenderer.gameObject): queued (phase_link_end_destroy runs
+        // them); DestroyObjectFromScripting disables their renderers and behaviours now.
         self.phase_link_set_active(l, false);
+        for end in 0..2 {
+            let go = self.phase_links[l].end_objects[end];
+            if go != 0 {
+                self.destroy_object(go);
+            }
+        }
+    }
+
+    /// The link whose "link source" or "link target" GameObject is `go`: (link, end).
+    pub(super) fn phase_link_end_object(&self, go: i32) -> Option<(usize, usize)> {
+        (go != 0).then(|| self.phase_links.iter().enumerate().find_map(|(l, x)| x.end_objects.iter().position(|&o| o == go).map(|e| (l, e)))).flatten()
+    }
+
+    /// DestroyObjectFromScripting of a link end's GameObject: its VisualDeletableDetachedToolBehaviour is disabled (it leaves
+    /// the Update list). The renderers were hidden by OnDestroy.
+    pub(super) fn phase_link_end_disable(&mut self, l: usize, end: usize) {
+        if let Some((_, b)) = self.behaviour_of.remove(&self.phase_links[l].ends[end]) {
+            self.behaviours.remove(b);
+        }
+    }
+
+    /// The delayed destroy of a link end's GameObject: the object and its components (GameObject, Transform, Optout, [the
+    /// source's LineRenderer], SpriteRenderer, ExistInDetailView, VisualDeletableDetachedToolBehaviour) are gone.
+    pub(super) fn phase_link_end_destroy(&mut self, l: usize, end: usize) {
+        self.phase_link_end_disable(l, end);
+        let go = self.phase_links[l].end_objects[end];
+        // Start's ids, two apart: the source's six (ids[0..6]), the target's five (ids[6..11]).
+        let n = if end == 0 { 6 } else { 5 };
+        self.destroyed_components.extend((0..n).map(|k| go - 2 * k).chain([self.phase_links[l].ends[end]]));
     }
 
     /// The links on a GameObject that is being destroyed: its PhysicalBehaviour is gone, so OnDestroy does nothing.

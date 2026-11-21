@@ -2464,6 +2464,8 @@ pub struct Game {
     pub serialisation_helpers: Vec<shake::SerialisationHelper>,
     /// The scripts' Play, Stop and Emit calls on `embedded_ps` since the particles' last update, in call order.
     pub ps_calls: Vec<(usize, PsCall)>,
+    /// Each `ps_calls` entry's `effect_stamp`.
+    pub ps_call_at: Vec<(usize, u64)>,
     pub gorse_droolings: Vec<gorse::GorseDrooling>,
     /// ParticleSystems inside spawned prefabs that a script plays or switches (particles.rs draws them).
     pub embedded_ps: Vec<EmbeddedPs>,
@@ -3055,6 +3057,11 @@ pub struct Game {
     /// SetActive(false) of a pooled clone's child, by name, for the particle systems.
     /// Each with its `effect_stamp` (the Start pass that ran it, between the FixedUpdates' Instantiates).
     pub pooled_child_off: Vec<(Pooled, &'static str, (usize, u64))>,
+    /// BleedingParticleBehaviour.Start's Object.Destroy(WaterPuffSystem) as it ran, by bleeding index, with its `effect_stamp`.
+    pub bleed_puff_off: Vec<(usize, (usize, u64))>,
+    /// BleedingParticleBehaviour.Update's WaterPuffSystem calls since the last BeginUpdate: (bleeding, under-water rate,
+    /// startColor, time, `effect_stamp`).
+    pub bleed_puff_updates: Vec<(usize, Option<f32>, Option<[f32; 4]>, f64, (usize, u64))>,
     /// Counter behind `effect_stamp`.
     pub effect_seq: u64,
     /// A recording's ParticleSystemManager active list (psm=, index order): the first particle update builds it.

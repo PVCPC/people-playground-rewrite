@@ -291,6 +291,13 @@ fn load_links(g: &mut Game, s: &Snapshot) -> Result<(), String> {
         g.phase_link_load_visuals(l, target);
         g.phase_links[l].started = true;
         g.phase_links[l].ends = ids;
+        // The "link source" and "link target" GameObjects: the Clone records holding each VisualDeletableDetachedToolBehaviour.
+        for end in 0..2 {
+            let comp = format!("VisualDeletableDetachedToolBehaviour:{}", ids[end]);
+            if let Some(e) = s.of("Clone").find(|o| o.get("comps").is_some_and(|x| x.trim_matches(['[', ']']).split(';').any(|x| x == comp))) {
+                g.phase_links[l].end_objects[end] = e.id;
+            }
+        }
         if let Some((a, b)) = r.req("linePos")?.split_once(';') {
             let line = [floats::<3>(a), floats::<3>(b)];
             g.phase_links[l].last_line = Some(line);

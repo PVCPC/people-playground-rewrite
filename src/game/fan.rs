@@ -280,8 +280,15 @@ impl Game {
         }
         r.vel = mathf::lerp(r.vel, 0.0, mathf::lerp_factor_dt(1.0 - r.Dampening, dt));
         r.rot = (d(r.rot) + d(r.vel) * dt).f();
-        // transform.localEulerAngles about Axis = rot: presentation.
+        // transform.localRotation = Quaternion.Euler about Axis (X, Y, else Z) by rot.
         rt::presentation_pose(Xf::this(r.this_physical, r.this_physics));
+        let (axis, rot, id) = (r.Axis, r.rot, r.this_id);
+        let q = super::menu::euler_rotation(match axis {
+            0 => [rot, 0.0, 0.0],
+            1 => [0.0, rot, 0.0],
+            _ => [0.0, 0.0, rot],
+        });
+        self.with_component_instance(id, |_, inst, o| inst.set_local_rotation(o, q));
     }
 
     /// CosmeticRotationBehaviour.get_CurrentSpeed

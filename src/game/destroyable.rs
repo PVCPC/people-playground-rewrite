@@ -315,6 +315,9 @@ impl Game {
         if self.destroyed_components.contains(&id) {
             return;
         }
+        if let Some((l, end)) = self.phase_link_end_object(id) {
+            return self.phase_link_end_disable(l, end);
+        }
         if !self.unsynced.iter().chain(&self.retained).any(owns) {
             // On a checked-out clone: run when it is back. A recording's item without a clone has nothing to disable.
             if self.clones_checked_out > 0 || !self.is_recording() {
@@ -462,6 +465,9 @@ impl Game {
         self.object_destroys.retain(|&(_, i)| i != id);
         if self.destroyed_components.contains(&id) {
             return;
+        }
+        if let Some((l, end)) = self.phase_link_end_object(id) {
+            return self.phase_link_end_destroy(l, end);
         }
         // A SetupSpawnPrefab SpawnParticles(Clone) (its Transform `id`, no clone object kept): its GameObject and
         // components go, and it leaves its parent's children; its DeleteAfterTime drops out at its next Update.

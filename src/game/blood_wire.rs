@@ -713,6 +713,8 @@ impl Game {
             super::stats::with_stats(|s| s.increment("WIRES_LAID", 1.0));
             self.blood_wire_tool_on_joint_create(owner, f);
         }
+        // lineRenderer.enabled = false: the tool's own field, null until its first OnToolChosen.
+        self.tool_line_or_throw(self.wire_tool.chosen || self.wire_tool.created.contains(&self.wire_tool.kind));
         self.wire_tool.hasDragged = false;
     }
 
@@ -741,6 +743,10 @@ impl Game {
         // SliderTool.OnToolChosen: wire_tool_choose; the LineRenderer's default WireColor, WireWidth, numCapVertices 0, Top order 2, SlidePiston and Stretch are wires.rs `WireLine::Tool`.
         // SliderTool.Awake: the material "Materials/SlidePiston" (`WireKind::material`) and WireWidth 0.1 (`WireKind::width`).
         // SliderTool.constructor: AllowNothingConnection = true, so OnDeselect's test always passes.
+        // SliderTool.OnDeselect's own `if (!hasDragged) return;` (wire_on_deselect checks it too; fn-check calls this directly).
+        if !self.wire_tool.hasDragged {
+            return;
+        }
         let m = self.MousePosition;
         let (start, end) = (self.wire_tool.startPos, [m[0], m[1]]);
         let end_body = self.slider_tool_get_end_object();
@@ -778,6 +784,8 @@ impl Game {
             // are the tool's (blood_wire_tool_on_joint_create), typedJoint is the joint.
             self.blood_wire_tool_on_joint_create(owner, f);
         }
+        // lineRenderer.enabled = false: the tool's own field, null until its first OnToolChosen.
+        self.tool_line_or_throw(self.wire_tool.chosen || self.wire_tool.created.contains(&self.wire_tool.kind));
         self.wire_tool.hasDragged = false;
     }
 
@@ -828,6 +836,8 @@ impl Game {
             let endpoint = if end_body.is_some() && connected.is_none() { start } else { end };
             self.fixed_wire_tool_on_joint_create(owner, f, endpoint);
         }
+        // lineRenderer.enabled = false: the tool's own field, null until its first OnToolChosen.
+        self.tool_line_or_throw(self.wire_tool.chosen || self.wire_tool.created.contains(&self.wire_tool.kind));
         self.wire_tool.hasDragged = false;
     }
 

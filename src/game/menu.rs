@@ -712,18 +712,26 @@ impl ColourBox {
 /// halves it and takes the CRT sinf and cosf (x, y, z in turn; x and y give 0 and 1). The products and sums are the native ones in
 /// order: they decide a zero's sign (Euler(0, 0, -0), a flipped spawn at 0 degrees, is (0, 0, +0, 1)).
 pub fn euler_z_rotation(z: f32) -> [f32; 4] {
-    let h = z * (std::f32::consts::PI / 180.0) * 0.5;
-    let (sx, cx, sy, cy, sz, cz) = (0.0f32, 1.0f32, 0.0f32, 1.0f32, crate::unity::sinf(h), crate::unity::cosf(h));
-    let f3 = ((sx * cy + cx * 0.0) + sy * 0.0) - 0.0;
-    let f1 = ((cx * sy + cy * 0.0) + sx * 0.0) - 0.0;
-    let f6 = ((cx * cy - sx * 0.0) - sy * 0.0) - 0.0;
-    let f2 = ((cy * 0.0 + cx * 0.0) + 0.0) - sx * sy;
-    [
-        ((cz * f3 + f6 * 0.0) + sz * f1) - f2 * 0.0,
-        ((cz * f1 + f6 * 0.0) + f2 * 0.0) - sz * f3,
-        ((cz * f2 + sz * f6) + f3 * 0.0) - f1 * 0.0,
-        ((cz * f6 - f3 * 0.0) - f1 * 0.0) - sz * f2,
-    ]
+    euler_rotation([0.0, 0.0, z])
+}
+
+/// Quaternion.Euler(x, y, z): each degree times (PI / 180), halved, the CRT sinf/cosf per axis, then the native
+/// EulerToQuaternion (18073d0c0, kOrderUnityDefault) products (qy * qx) * qz, each sum in the native order.
+pub fn euler_rotation(e: [f32; 3]) -> [f32; 4] {
+    let [(sx, cx), (sy, cy), (sz, cz)] = e.map(|d| {
+        let h = d * (std::f32::consts::PI / 180.0) * 0.5;
+        (crate::unity::sinf(h), crate::unity::cosf(h))
+    });
+    // l * r: ((l.x r.w + l.w r.x) + l.y r.z) - l.z r.y, and the same rotation for y and z; w = ((l.w r.w - l.x r.x) - l.y r.y) - l.z r.z.
+    let mul = |l: [f32; 4], r: [f32; 4]| {
+        [
+            ((l[0] * r[3] + l[3] * r[0]) + l[1] * r[2]) - l[2] * r[1],
+            ((l[1] * r[3] + l[3] * r[1]) + l[2] * r[0]) - l[0] * r[2],
+            ((l[2] * r[3] + l[3] * r[2]) + l[0] * r[1]) - l[1] * r[0],
+            ((l[3] * r[3] - l[0] * r[0]) - l[1] * r[1]) - l[2] * r[2],
+        ]
+    };
+    mul(mul([0.0, sy, 0.0, cy], [sx, 0.0, 0.0, cx]), [0.0, 0.0, sz, cz])
 }
 
 #[test]

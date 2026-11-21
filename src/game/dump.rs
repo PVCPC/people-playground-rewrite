@@ -3063,6 +3063,9 @@ impl Game {
         self.constraints_update();
         // PreLateUpdate.ParticleSystemBeginUpdateAll, after the constraints and before ScriptRunBehaviourLateUpdate.
         crate::particles::begin_update_all(self);
+        // ScriptRunBehaviourLateUpdate first runs the Starts of the clones the delayed-call pass made (the game's
+        // ExplosionSoundBehviour.Start comes after BeginUpdate's AddToManager).
+        self.run_pending_starts();
         // LimbBehaviour.ManagedLateUpdate: empty
         // LateUpdate: ContinuousActivationBehaviour (execution order -10) first; LimbBehaviour.ManagedLateUpdate is empty.
         self.continuous_activation_late_update();

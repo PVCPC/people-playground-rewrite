@@ -2080,7 +2080,7 @@ impl Game {
     pub(crate) fn ps_field_call(&mut self, sid: i32, field: &str, children: bool, call: crate::game::PsCall) {
         self.adopt_field_ps(sid, field);
         for i in self.field_ps_tree(sid, field, children) {
-            self.ps_calls.push((i, call));
+            self.push_ps_call((i, call));
         }
     }
 
@@ -2135,7 +2135,7 @@ impl Game {
     pub(crate) fn ps_field_emit_n(&mut self, sid: i32, field: &str, n: i32) {
         if let Some(i) = self.field_ps(sid, field) {
             let (p, q, _) = self.embedded_pose(i);
-            self.ps_calls.push((i, crate::game::PsCall::Emit(n, p, q)));
+            self.push_ps_call((i, crate::game::PsCall::Emit(n, p, q)));
         }
     }
 
@@ -2153,7 +2153,7 @@ impl Game {
     pub(crate) fn ps_call(&mut self, which: impl Fn(&crate::game::EmbeddedPs) -> bool, call: crate::game::PsCall) {
         for i in 0..self.embedded_ps.len() {
             if which(&self.embedded_ps[i]) {
-                self.ps_calls.push((i, call));
+                self.push_ps_call((i, call));
             }
         }
     }
@@ -2163,7 +2163,7 @@ impl Game {
         for i in 0..self.embedded_ps.len() {
             if which(&self.embedded_ps[i]) {
                 let (p, q, _) = self.embedded_pose(i);
-                self.ps_calls.push((i, crate::game::PsCall::Emit(n, p, q)));
+                self.push_ps_call((i, crate::game::PsCall::Emit(n, p, q)));
             }
         }
     }
@@ -2173,7 +2173,7 @@ impl Game {
         for i in 0..self.embedded_ps.len() {
             if which(&self.embedded_ps[i]) {
                 let (p, q, _) = self.embedded_pose(i);
-                self.ps_calls.push((i, crate::game::PsCall::EmitParams(params, p, q)));
+                self.push_ps_call((i, crate::game::PsCall::EmitParams(params, p, q)));
             }
         }
     }
@@ -3025,25 +3025,26 @@ fn attached_systems(
 /// The ParticleSystems scripts play inside their prefab (FireworksBehaviour, GorseDroolingBehaviour): the system follows
 /// its Transform and goes with its owner.
 #[allow(clippy::too_many_arguments)]
-fn embedded_systems(
+/// A script's Play, Stop or Emit call since the last update: it acts on the system at once (manager.rand draws and list
+/// order follow the calls), Emit at the pose its caller saw.
+#[allow(clippy::too_many_arguments)]
+fn embedded_call(
     g: &crate::game::Game,
     db: &AssetDb,
     library: &mut Library,
     embedded: &mut HashMap<usize, (Run, Option<(Vec3, Quat)>, u32)>,
-    calls: Vec<(usize, crate::game::PsCall)>,
-    dt: f32,
+    i: usize,
+    call: crate::game::PsCall,
     rng: &mut Rng,
     manager: &mut Manager,
 ) {
-    use crate::game::{EmbeddedDrive, PsCall};
-    // The scripts' Play, Stop and Emit calls since the last update, in call order: each acts on the system at once
-    // (manager.rand draws and list order follow the calls), Emit at the pose its caller saw.
-    for (i, call) in calls {
+    use crate::game::PsCall;
+    {
         let e = &g.embedded_ps[i];
         if g.destroyed_components.contains(&e.owner) {
-            continue;
+            return;
         }
-        let Some(sys) = library.system(db, e.go, Quat::IDENTITY) else { continue };
+        let Some(sys) = library.system(db, e.go, Quat::IDENTITY) else { return };
         let on_awake = library.systems[sys].ps.play_on_awake;
         match call {
             // A system not updated yet: its Awake's Play (playOnAwake) or this one creates it; a Play after Awake's
@@ -3081,14 +3082,7 @@ fn embedded_systems(
                     embedded.insert(i, (run, None, 0));
                 }
                 if let Some((run, ..)) = embedded.get_mut(&i) {
-                    run.stopped = true;
-                    run.was_stopped = true;
-                    run.stop_time = now;
-                    // Clear: cullTime and stopTime reset; its tail call UpdateBounds.
-                    if run.particles.is_empty() {
-                        (run.cull_time, run.stop_time) = (0.0, 0.0);
-                        update_bounds(run, &library.systems[run.sys], g);
-                    }
+                    stop(run, &library.systems[run.sys], g, now);
                 }
             }
             PsCall::Emit(..) | PsCall::EmitParams(..) => {
@@ -3119,6 +3113,18 @@ fn embedded_systems(
             }
         }
     }
+}
+
+fn embedded_systems(
+    g: &crate::game::Game,
+    db: &AssetDb,
+    library: &mut Library,
+    embedded: &mut HashMap<usize, (Run, Option<(Vec3, Quat)>, u32)>,
+    dt: f32,
+    rng: &mut Rng,
+    manager: &mut Manager,
+) {
+    use crate::game::EmbeddedDrive;
     for (i, e) in g.embedded_ps.iter().enumerate() {
         // Destroy(owner's object): the system goes with it.
         if g.destroyed_components.contains(&e.owner) {
@@ -3213,6 +3219,41 @@ fn reset_seeds(run: &mut Run, systems: &[Sys], manager: &mut Manager) {
 /// listed; out of inactiveEmittersWithStopActions).
 /// A scripting module setter (e.g. EmissionModule set_rateOverTimeMultiplier, 0x180367b70): after the write,
 /// `if (!IsStopped()) m_State->invalidateProcedural = true`.
+/// BleedingParticleBehaviour.Update on its WaterPuffSystem (ShouldBecomeSmokeInWater): main.startColor = color; under
+/// water emission.rateOverTimeMultiplier = rate and `if (!isPlaying) Play()`, else `if (isPlaying) Stop()`.
+fn puff_update(run: &mut Run, systems: &[Sys], g: &Game, manager: &mut Manager, rate: Option<f32>, color: Option<[f32; 4]>, now: f64) {
+    // isPlaying: not kStopped, and emitting or still holding particles.
+    let playing = !run.halted && !((run.stopped || run.clock.stop_emitting) && run.particles.is_empty());
+    if let Some(c) = color {
+        run.color = Some(c);
+        written(run);
+    }
+    match rate {
+        Some(r) => {
+            run.writes.rate = Some(r);
+            written(run);
+            if !playing {
+                play(run, systems, manager);
+            }
+        }
+        None if playing => stop(run, &systems[run.sys], g, now),
+        None => {}
+    }
+}
+
+/// ParticleSystem.Stop (1801c4830): needRestart, stopEmitting, stopTime; Clear when there is no particle (only its
+/// UpdateBounds shows).
+fn stop(run: &mut Run, s: &Sys, g: &Game, now: f64) {
+    run.stopped = true;
+    run.was_stopped = true;
+    run.stop_time = now;
+    // Clear: cullTime and stopTime reset; its tail call UpdateBounds.
+    if run.particles.is_empty() {
+        (run.cull_time, run.stop_time) = (0.0, 0.0);
+        update_bounds(run, s, g);
+    }
+}
+
 fn written(run: &mut Run) {
     run.invalid |= !run.halted;
 }
@@ -3457,6 +3498,9 @@ impl Default for World {
 pub fn begin_update_all(g: &mut Game) {
     let log = std::mem::take(&mut g.effect_log);
     let calls = std::mem::take(&mut g.ps_calls);
+    let call_at = std::mem::take(&mut g.ps_call_at);
+    // Calls pushed past `push_ps_call` (tests) have no stamps: all go after the frame's clones.
+    let calls: Vec<_> = if call_at.len() == calls.len() { calls.into_iter().zip(call_at).collect() } else { calls.into_iter().map(|c| (c, (usize::MAX, 0))).collect() };
     let recorded_active = std::mem::take(&mut g.recorded_active);
     let Some(mut db) = g.assets.take() else { return };
     let mut w = g.particle_world.take().unwrap_or_default();
@@ -3486,22 +3530,62 @@ pub fn begin_update_all(g: &mut Game) {
     }
     fresh.sort_by_key(|f| g.bleeding[f.0].log_at);
     let mut reserved = HashMap::new();
-    let (mut o, mut f) = (0, 0);
+    // BleedingParticleBehaviour.Start's Object.Destroy(WaterPuffSystem) where its delayed destroy ran: RemoveFromManager.
+    let puffs_off = std::mem::take(&mut g.bleed_puff_off);
+    let puff_updates = std::mem::take(&mut g.bleed_puff_updates);
+    // A new bleed's puff calls before its run exists: applied once it is made below.
+    let mut early: HashMap<usize, Vec<(Option<f32>, Option<[f32; 4]>, f64)>> = HashMap::new();
+    let mut puff_gone = std::collections::HashSet::new();
+    let (mut o, mut f, mut q, mut k, mut u) = (0, 0, 0, 0, 0);
     for j in 0..=log.len() {
         loop {
+            // The scripts' Play, Stop and Emit calls on embedded systems in the same order (their Play joins the manager there).
+            let next_call = calls.get(k).map(|x| x.1).filter(|at| at.0 <= j);
+            let next_update = puff_updates.get(u).map(|x| x.4).filter(|at| at.0 <= j);
             let next_off = offs.get(o).filter(|x| x.2 .0 <= j).map(|x| x.2);
             let next_bleed = fresh.get(f).map(|x| g.bleeding[x.0].log_at).filter(|at| at.0 <= j);
-            match (next_off, next_bleed) {
-                (Some(a), b) if b.is_none_or(|b| a < b) => {
+            let next_puff = puffs_off.get(q).map(|x| x.1).filter(|at| at.0 <= j);
+            let first = [next_off, next_bleed, next_puff, next_call, next_update].into_iter().enumerate().filter_map(|(k, s)| s.map(|s| (s, k))).min().map(|x| x.1);
+            match first {
+                Some(0) => {
                     child_off(runs, manager, offs[o].0, offs[o].1);
                     o += 1;
                 }
-                (_, Some(_)) => {
+                Some(1) => {
                     let (i, sys, puff) = fresh[f];
                     reserved.insert(i, awake_order(&[sys].into_iter().chain(puff).collect::<Vec<_>>(), &library.systems, manager));
                     f += 1;
                 }
-                _ => break,
+                Some(4) => {
+                    let (i, rate, color, now, _) = puff_updates[u];
+                    u += 1;
+                    let Some(ps) = puff_sys(library, &mut db, g.bleeding[i].prefab) else { continue };
+                    match bleeds.get_mut(&i).and_then(|r| r.children.iter_mut().find(|c| c.sys == ps)) {
+                        Some(c) => puff_update(c, &library.systems, g, manager, rate, color, now),
+                        None => early.entry(i).or_default().push((rate, color, now)),
+                    }
+                }
+                Some(3) => {
+                    let (i, call) = calls[k].0.clone();
+                    k += 1;
+                    embedded_call(g, &db, library, embedded, i, call, rng, manager);
+                }
+                Some(_) => {
+                    let i = puffs_off[q].0;
+                    q += 1;
+                    let Some(ps) = puff_sys(library, &mut db, g.bleeding[i].prefab) else { continue };
+                    // Not made yet: its reserved slot leaves, and the run starts without it.
+                    if !puff_off(bleeds, manager, i, ps) {
+                        if let Some(id) = reserved.get(&i).and_then(|r: &HashMap<usize, (crate::game::particle_rand::Seeds, u32)>| r.get(&ps)).map(|x| x.1) {
+                            if let Some(k) = manager.active.iter().position(|&x| x == id) {
+                                manager.active.swap_remove(k);
+                            }
+                            manager.remove_node(id);
+                            puff_gone.insert(i);
+                        }
+                    }
+                }
+                None => break,
             }
         }
         let Some(e) = log.get(j) else { break };
@@ -3513,6 +3597,9 @@ pub fn begin_update_all(g: &mut Game) {
     }
     for &(p, name, _) in &offs[o..] {
         child_off(runs, manager, p, name);
+    }
+    for ((i, call), _) in calls[k..].iter().cloned() {
+        embedded_call(g, &db, library, embedded, i, call, rng, manager);
     }
     for sw in shockwaves.iter_mut() {
         sw.log = None;
@@ -3625,11 +3712,13 @@ pub fn begin_update_all(g: &mut Game) {
                 }
             } else if let Some(p) = puff {
                 if b.water_puff {
-                    // BleedingParticleBehaviour.Start destroys it before the clone's first EndUpdateAll, which removes it
-                    // with the stopped Trail (one walk from the last).
+                    // Plays until Update's Stop (out of water; the walk drops it) or Start's Destroy (`puffs_off`).
                     let mut puff = start_with(p, Vec3::ZERO, Quat::IDENTITY, 1.0, &library.systems, manager, &mut pre);
-                    puff.clock.stop_emitting = true;
                     puff.invalid = true;
+                    puff.halted = puff_gone.contains(&i);
+                    for (rate, color, now) in early.remove(&i).unwrap_or_default() {
+                        puff_update(&mut puff, &library.systems, g, manager, rate, color, now);
+                    }
                     run.children.push(puff);
                 } else {
                     // ActivateIfFancyEffects.Awake: SetActive(false) right after its AwakeFromLoad.
@@ -3711,7 +3800,7 @@ pub fn begin_update_all(g: &mut Game) {
         }
     }
     attached_systems(g, &mut db, library, attached, dt, rng, manager);
-    embedded_systems(g, &db, library, embedded, calls, dt, rng, manager);
+    embedded_systems(g, &db, library, embedded, dt, rng, manager);
     let mut r = std::mem::take(runs);
     for run in &mut r {
         if run.root.is_some_and(|root| g.destroyed_components.contains(&root)) {
@@ -3772,6 +3861,20 @@ pub fn begin_update_all(g: &mut Game) {
 }
 
 /// SetActive(false) of pooled clones (a return that is not their own stop): their systems stop and clear.
+/// A bleeding particle prefab's water puff system.
+fn puff_sys(library: &mut Library, db: &mut AssetDb, prefab: Option<ObjRef>) -> Option<usize> {
+    let go = db.prefab_cached(prefab?).ok()?.objects.iter().find(|o| o.name == "water puff")?.game_object;
+    library.system(&*db, go, Quat::IDENTITY)
+}
+
+/// The Destroy of bleed `i`'s water puff (system `ps`) once its run exists: RemoveFromManager.
+fn puff_off(bleeds: &mut HashMap<usize, Run>, manager: &mut Manager, i: usize, ps: usize) -> bool {
+    let Some(c) = bleeds.get_mut(&i).and_then(|r| r.children.iter_mut().find(|c| c.sys == ps)) else { return false };
+    c.halted = true;
+    manager.forget(c);
+    true
+}
+
 fn deactivate(runs: &mut Vec<Run>, manager: &mut Manager, clones: &[crate::game::Pooled]) {
     runs.retain(|r| {
         let gone = r.pooled.is_some_and(|p| clones.contains(&p));
@@ -3844,6 +3947,22 @@ fn for_runs(w: &mut World, f: &mut impl FnMut(&mut Run)) {
 pub fn end_update_all(g: &mut Game) -> Vec<crate::game::Pooled> {
     let Some(mut w) = g.particle_world.take() else { return Vec::new() };
     deactivate(&mut w.runs, &mut w.manager, &std::mem::take(&mut g.pooled_deactivated));
+    // The Starts after BeginUpdate (LateUpdate's, of the clones the Update made) and their delayed destroys: in order,
+    // before the walk (the stamps order the two kinds).
+    let mut late: Vec<((usize, u64), Option<(crate::game::Pooled, &'static str)>, usize)> = std::mem::take(&mut g.pooled_child_off).into_iter().map(|(p, n, at)| (at, Some((p, n)), 0)).collect();
+    late.extend(std::mem::take(&mut g.bleed_puff_off).into_iter().map(|(i, at)| (at, None, i)));
+    late.sort_by_key(|x| x.0);
+    for (_, off, i) in late {
+        match off {
+            Some((p, name)) => child_off(&mut w.runs, &mut w.manager, p, name),
+            None => {
+                let prefab = g.bleeding[i].prefab;
+                if let Some(ps) = g.assets.as_mut().and_then(|db| puff_sys(&mut w.library, db, prefab)) {
+                    puff_off(&mut w.bleeds, &mut w.manager, i, ps);
+                }
+            }
+        }
+    }
     let mut all = HashMap::new();
     {
         let World { runs, bleeds, attached, embedded, library, .. } = &*w;

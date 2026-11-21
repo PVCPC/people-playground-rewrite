@@ -1884,6 +1884,7 @@ impl Game {
         due.extend(self.person_due_destroys(now).into_iter().map(|(t, p)| (t, 3, p)));
         due.extend(self.frozen_in_ice_due_destroys(now).into_iter().map(|(t, i)| (t, 4, i)));
         due.extend(self.object_due_destroys(now).into_iter().map(|(t, id)| (t, 5, id as usize)));
+        due.extend(self.bleeding.iter().enumerate().filter_map(|(b, p)| p.puff_destroy_at.filter(|&t| t <= now).map(|t| (t, 12, b))));
         due.extend(self.joint_due_destroys(now).into_iter().map(|(t, f)| (t, 7, f)));
         for h in 0..self.hinges.len() {
             if let Some(t) = self.hinges[h].destroy_at.filter(|&t| t <= now) {
@@ -1908,6 +1909,7 @@ impl Game {
                 4 => self.frozen_in_ice[l].destroy_at == Some(t),
                 10 => self.hinges[l].destroy_at == Some(t),
                 11 => self.map_lights[l].wake == Some(t),
+                12 => self.bleeding[l].puff_destroy_at == Some(t),
                 _ => true,
             };
             if !pending {
@@ -1921,6 +1923,11 @@ impl Game {
                 }
             } else if kind == 11 {
                 self.map_light_resume(l);
+            } else if kind == 12 {
+                // The water puff's ParticleSystem goes: RemoveFromManager at this point of the particles' replay.
+                self.bleeding[l].puff_destroy_at = None;
+                let at = self.effect_stamp();
+                self.bleed_puff_off.push((l, at));
             } else if kind == 10 {
                 self.run_hinge_destroy(l);
             } else if kind == 9 {

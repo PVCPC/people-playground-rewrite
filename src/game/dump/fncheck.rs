@@ -1932,6 +1932,53 @@ const CALLS: &[(&str, Call)] = &[
         VOID
     }),
     // fc41 r16: the FnTiny seed (emn: the nodes; the mesh lists cleared); st=em:<enabled>,<vertices>,<colours>,<indices>,<FNV of the bits>.
+    // fc41 r18: the case's fuzzed fields (its ItemScript record): the private cursorStartPos, barStartPos and barSize and
+    // CursorMaxDistance, ThresholdPercentage and MaxPower, which the gate loaded from another case keeps.
+    ("GateBehaviour.OnWillRenderObject", |g, c| {
+        c.with(0)?;
+        let i = g.gates.iter().position(|x| x.id == c.sid).ok_or("no gates entry")?;
+        let id = c.sid.to_string();
+        let rec = c.s.of("ItemScript").find(|r| r.id.to_string() == id && r.get("class") == Some("GateBehaviour")).ok_or("no GateBehaviour record")?;
+        let hex = |v: &str| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string());
+        let one = |k: &str| rec.req(k).and_then(hex);
+        let three = |k: &str| -> Result<[f32; 3], String> {
+            let v: Vec<f32> = rec.req(k)?.split(',').map(hex).collect::<Result<_, _>>()?;
+            v.try_into().map_err(|_| format!("{k}: not 3 values"))
+        };
+        let x = &mut g.gates[i];
+        (x.CursorMaxDistance, x.ThresholdPercentage, x.MaxPower) = (one("CursorMaxDistance")?, one("ThresholdPercentage")?, one("MaxPower")?);
+        (x.cursorStartPos, x.barStartPos, x.barSize) = (three("cursorStartPos")?, three("barStartPos")?, three("barSize")?);
+        g.gates_will_render();
+        VOID
+    }),
+    // fc41 r18: the case's fuzzed private `time` (its ItemScript record), which the loaded explosion keeps as a link.
+    ("SeismicChargeExplosionBehaviour.FixedUpdate", |g, c| {
+        let i = g.seismic_explosions.iter().position(|x| x.id == c.id).ok_or("no seismic_explosions entry")?;
+        let id = c.id.to_string();
+        let t = c.s.of("ItemScript").find(|r| r.id.to_string() == id && r.get("class") == Some("SeismicChargeExplosionBehaviour")).and_then(|r| r.get("time")).and_then(|x| u32::from_str_radix(x, 16).ok()).map(f32::from_bits);
+        if let Some(t) = t { g.seismic_explosions[i].time = t }
+        // " mag=" (recordings from fc41 r18 on): Magnet.enabled at the call, which no snapshot record holds (an earlier
+        // case's FixedUpdate turned it off).
+        if let Some(m) = c.s.of("FnCase").next().and_then(|r| r.get("mag")) {
+            let magnet = g.seismic_explosions[i].Magnet;
+            g.effector_set_enabled(magnet, m == "1");
+        }
+        g.seismic_explosion_fixed_update(i);
+        Ok(String::new())
+    }),
+    // fc41 r17: the case's fuzzed JitterIntensity and offset (its ItemScript record), which the visual's loaded kind lacks.
+    ("HologramJitter.OnWillRenderObject", |g, c| {
+        let v = { let c = c.with(1)?; c.p_visual(g, 0)? };
+        let id = g.visuals[v].id.to_string();
+        let rec = c.s.of("ItemScript").find(|r| r.id.to_string() == id && r.get("class") == Some("HologramJitter"));
+        let hex = |k: &str| rec.and_then(|r| r.get(k)).and_then(|x| u32::from_str_radix(x, 16).ok()).map(f32::from_bits);
+        if let crate::game::visual::Kind::Hologram { JitterIntensity, offset, .. } = &mut g.visuals[v].kind {
+            if let Some(x) = hex("JitterIntensity") { *JitterIntensity = x }
+            if let Some(x) = hex("offset") { *offset = x }
+        }
+        g.hologram_will_render(v);
+        VOID
+    }),
     ("EnergySwordMotionBlur.UpdateMesh", |g, c| {
         let i = { let c = c.with(1)?; c.p_usize(g, 0)? };
         let case = c.s.of("FnCase").next();
@@ -1943,10 +1990,16 @@ const CALLS: &[(&str, Call)] = &[
             nodes.push(crate::game::energy_sword::BlurNode { Life: 0.1 * k as f32, A: [v[0], v[1], v[2]], B: [v[3], v[4], v[5]] });
         }
         let old = std::mem::replace(&mut g.energy_blurs[i].nodes, nodes);
+        // The case's fuzzed MakeBottomColorTransparent (its ItemScript record at the call), which the loaded blur lacks.
+        let me = case.and_then(|r| r.get("self")).map(|s| s.to_string());
+        let mb = c.s.of("ItemScript").find(|r| Some(r.id.to_string()) == me && r.get("class") == Some("EnergySwordMotionBlur")).and_then(|r| r.get("MakeBottomColorTransparent")).map(|v| v == "1");
+        let old_mb = g.energy_blurs[i].MakeBottomColorTransparent;
+        if let Some(m) = mb { g.energy_blurs[i].MakeBottomColorTransparent = m }
         { let b = &mut g.energy_blurs[i]; b.vertices.clear(); b.colors.clear(); b.indices.clear(); }
         g.energy_blur_update_mesh(i);
         let b = &mut g.energy_blurs[i];
         b.nodes = old;
+        b.MakeBottomColorTransparent = old_mb;
         let fnv = |xs: &mut dyn Iterator<Item = u32>| xs.fold(2166136261u32, |h, x| (h ^ x).wrapping_mul(16777619));
         let hv = fnv(&mut b.vertices.iter().flatten().map(|f| f.to_bits()));
         let hc = fnv(&mut b.colors.iter().flatten().map(|f| f.to_bits()));
@@ -2212,7 +2265,7 @@ const CALLS: &[(&str, Call)] = &[
             let get = |k: &str| e.split(' ').find_map(|w| w.strip_prefix(k)).map(|v| v.strip_suffix(')').unwrap_or(v)).ok_or_else(|| format!("softConnections entry without {k}: {e}"));
             let phys = phys_by_id(g, reference(get("phys=")?).ok_or("null phys")?)?;
             let coll = reference(get("coll=")?).unwrap_or(0);
-            // ponytail: joint usize::MAX, no FrictionJoint2D record; record the joints if a check ever reads them.
+            // A checker seed, not the rewrite: joint usize::MAX (the recorder writes no FrictionJoint2D; see above).
             let mut sc = crate::game::soft_connect::SoftConnection::new(usize::MAX, phys, coll);
             sc.should_be_deleted = get("shouldBeDeleted=")? == "1";
             conns.add(phys, sc);
@@ -2976,6 +3029,8 @@ const CALLS: &[(&str, Call)] = &[
         match Game::get_spawnable(db, &n) { Err(_) => Ok("null".into()), Ok(_) => Err("checker limit: a found SpawnableAsset's instance id".into()) }
     }),
     ("ResizeHandles.CheckForDragStart", |g, c| { c.with(0)?; g.recorded_resize_handles()?; g.resize_check_for_drag_start(); VOID }),
+    // fc41 r18: HandleMultiDrag reads transform.position of the scene's handles, which a recording has none of.
+    ("ResizeHandles.HandleMultiDrag", |g, c| { c.with(0)?; g.recorded_resize_handles()?; g.resize_handle_multi_drag(); VOID }),
     ("ResizeHandles.set_IsHovering", |g, c| { c.with(1)?; g.resize.IsHovering = c.arg::<bool>(0)?; VOID }),
     // gapB r25: SmoothLineControllerBehaviour.CalculateVertices (UpdateLine's From/To; the vertices are its links, loaded and compared).
     ("SmoothLineControllerBehaviour.CalculateVertices", |g, c| {

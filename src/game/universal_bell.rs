@@ -29,6 +29,9 @@ script! {
         DetailViewLabel: Option<usize> = None,
         /// clapperTransform (clapperSpriteRenderer.transform in Start): its object's Transform id.
         clapper: Option<i32> = None,
+        /// clapperSpriteRenderer's instance id (SetBellIndex colours it), and ColourGradient ([SkipSerialisation]).
+        clapper_sprite: i32 = 0,
+        ColourGradient: super::visual::Gradient = Default::default(),
     }
 }
 
@@ -91,6 +94,13 @@ impl Game {
 Parameter name: index");
         }
         let p = self.universal_bells[b].physical;
+        // clapperSpriteRenderer.color = spriteRenderer.color = ColourGradient.Evaluate((float)i / (float)BellClips.Count)
+        let c = self.universal_bells[b].ColourGradient.evaluate(i as f32 / self.bell_clips.len() as f32);
+        let own = self.item_sprite(self.physicals[p].sprite_id).unwrap_or_else(|| crate::game::menu::throw("NullReferenceException: UniversalBellBehaviour.spriteRenderer"));
+        self.set_sprite_color(own, c);
+        if let Some(s) = self.item_sprite(self.universal_bells[b].clapper_sprite) {
+            self.set_sprite_color(s, c);
+        }
         self.physicals[p].OverrideImpactSounds = 1;
         self.physicals[p].OverrideShotSounds = 1;
         let clip = self.bell_clip_refs[self.universal_bells[b].BellClipIndex as usize].clone();

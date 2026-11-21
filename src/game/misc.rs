@@ -257,6 +257,8 @@ script! {
         collision: bool = false,
         /// Its Instantiate among the frame's effect clones (`Game::effect_stamp`): its systems join the manager there.
         log_at: (usize, u64) = (0, 0),
+        /// Start's Object.Destroy(WaterPuffSystem): its queued time until the delayed destroy runs.
+        puff_destroy_at: Option<f64> = None,
     }
 }
 
@@ -641,10 +643,10 @@ impl super::Game {
             };
             if self.script_enabled(id, enabled) && self.particle_machines[m] && emit[k] {
                 if !deactivating {
-                    self.ps_calls.push((i, super::PsCall::Play));
+                    self.push_ps_call((i, super::PsCall::Play));
                 }
             } else {
-                self.ps_calls.push((i, super::PsCall::Stop(self.time.timeAsDouble)));
+                self.push_ps_call((i, super::PsCall::Stop(self.time.timeAsDouble)));
             }
         }
     }
@@ -822,6 +824,8 @@ pub enum PendingStart {
     Splat(usize),
     /// BloodTankBehaviour.Start (blood_tank.rs).
     BloodTank(usize),
+    /// BleedingParticleBehaviour.Start by bleeding index.
+    Bleeding(usize),
     /// PhysicalRopeCreator.Start by its component id.
     Rope(i32),
     Glow(usize),
@@ -1263,6 +1267,13 @@ impl Game {
     }
 
     /// BleedingParticleBehaviour.Update
+    /// Update's WaterPuffSystem calls for particles.rs (`puff_update`, which reads isPlaying): under water (`rate`) the
+    /// emission write and Play, else Stop; `color` its startColor write.
+    fn bleed_puff_update(&mut self, b: usize, rate: Option<f32>, color: Option<[f32; 4]>) {
+        let (now, at) = (self.time.timeAsDouble, self.effect_stamp());
+        self.bleed_puff_updates.push((b, rate, color, now, at));
+    }
+
     pub fn bleeding_update(&mut self, b: usize) {
         // A child of its limb: no Update once the limb is deactivated (disintegrated).
         let parent = self.bleeding[b].Parent;
@@ -1308,10 +1319,15 @@ impl Game {
             }
             let bp = &mut self.bleeding[b];
             let mut flag2 = bp.DripSounds.is_some() && bp.visible && (d(num4) * bp.RateMultiplier).0 >= bp.DripSoundRateThreshold as f64;
-            // The puff system (its colour, rate, Play and Stop are presentation) takes over under water: no drip sounds.
-            if bp.ShouldBecomeSmokeInWater && bp.WaterPuffSystem && flag {
-                flag2 = false;
+            // WaterPuffSystem: startColor = color; under water rateOverTimeMultiplier = num4 and Play() unless isPlaying
+            // (no drip sounds), else Stop() if isPlaying.
+            if bp.ShouldBecomeSmokeInWater && bp.WaterPuffSystem {
+                if flag {
+                    flag2 = false;
+                }
+                self.bleed_puff_update(b, flag.then_some(num4), Some(color));
             }
+            let bp = &mut self.bleeding[b];
             if !flag2 {
                 return;
             }
@@ -1326,6 +1342,10 @@ impl Game {
                 i += 1;
             }
         } else {
+            // if (ShouldBecomeSmokeInWater && (bool)WaterPuffSystem && WaterPuffSystem.isPlaying) WaterPuffSystem.Stop();
+            if self.bleeding[b].ShouldBecomeSmokeInWater && self.bleeding[b].WaterPuffSystem {
+                self.bleed_puff_update(b, None, None);
+            }
             let bp = &mut self.bleeding[b];
             bp.startSpeedMultiplier = 0.0;
             bp.rateOverTimeMultiplier = 0.0;
@@ -1510,6 +1530,14 @@ impl Game {
                 PendingStart::Valve(v) => self.valve_start(v),
                 PendingStart::ActivatorElectrode(e) => self.activator_electrode_start(e),
                 PendingStart::BloodTank(t) => self.blood_tank_start(t),
+                // BleedingParticleBehaviour.Start: if (!ShouldBecomeSmokeInWater && (bool)WaterPuffSystem) Object.Destroy(WaterPuffSystem),
+                // queued like a DestroyObjectDelayed (an inactive puff object's system was never listed).
+                PendingStart::Bleeding(b) => {
+                    let p = &self.bleeding[b];
+                    if !p.ShouldBecomeSmokeInWater && p.WaterPuffSystem && p.water_puff && p.puff_destroy_at.is_none() {
+                        self.bleeding[b].puff_destroy_at = Some(self.time.fixedTimeAsDouble.min(self.time.timeAsDouble));
+                    }
+                }
                 PendingStart::Splat(s) => {
                     if !self.splats[s].started && !self.splats[s].destroyed {
                         self.splat_start(s);

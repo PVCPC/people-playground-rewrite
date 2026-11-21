@@ -1144,7 +1144,7 @@ impl Game {
         for r in s.of("ItemParticleMachine") {
             for (k, e) in r.req("emitting")?.split(',').enumerate() {
                 if let Some(i) = self.particle_machine_ps(r.id, k) {
-                    self.ps_calls.push((i, if e == "1" { crate::game::PsCall::Play } else { crate::game::PsCall::Stop(self.time.timeAsDouble) }));
+                    self.push_ps_call((i, if e == "1" { crate::game::PsCall::Play } else { crate::game::PsCall::Stop(self.time.timeAsDouble) }));
                 }
             }
         }

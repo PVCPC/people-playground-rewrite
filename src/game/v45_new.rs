@@ -753,7 +753,7 @@ impl Game {
         x.imbue_color = color;
         x.imbue_playing = true;
         if let Some(i) = self.field_ps(self.v45.crossbows[c].id, "ImbueEffect") {
-            self.ps_calls.push((i, super::PsCall::Play));
+            self.push_ps_call((i, super::PsCall::Play));
         }
         // syringe.gameObject.SetLayer(10)
         self.v45_set_layer(sp, 10);
@@ -818,7 +818,7 @@ impl Game {
         x.lastDisconnectTime = self.time.time;
         x.hasSyringe = false;
         if let Some(i) = self.field_ps(self.v45.crossbows[c].id, "ImbueEffect") {
-            self.ps_calls.push((i, super::PsCall::Stop(self.time.timeAsDouble)));
+            self.push_ps_call((i, super::PsCall::Stop(self.time.timeAsDouble)));
         }
     }
 
@@ -973,8 +973,8 @@ impl Game {
         let found = self.injectable_find_particles(i);
         self.v45.injectables[i].ImbueParticles = found;
         if let Some(e) = found {
-            self.ps_calls.push((e, super::PsCall::Writes(crate::particles::PsWrites { color: Some(fx), ..Default::default() })));
-            self.ps_calls.push((e, super::PsCall::Play));
+            self.push_ps_call((e, super::PsCall::Writes(crate::particles::PsWrites { color: Some(fx), ..Default::default() })));
+            self.push_ps_call((e, super::PsCall::Play));
         }
     }
 
@@ -1020,7 +1020,7 @@ impl Game {
                 }
             }
             if let Some(e) = self.v45.injectables[i].ImbueParticles {
-                self.ps_calls.push((e, super::PsCall::Stop(self.time.timeAsDouble)));
+                self.push_ps_call((e, super::PsCall::Stop(self.time.timeAsDouble)));
             }
             // Object.Destroy(this): queued (end of frame) like the others; the entry counts as spent at once.
             self.v45.injectables[i].destroyed = true;
