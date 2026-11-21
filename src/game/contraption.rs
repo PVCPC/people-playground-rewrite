@@ -1085,6 +1085,17 @@ pub fn parse_build_index(input: &str) -> Result<i32, String> {
     Ok(if total != -1 { total } else { i32::MAX })
 }
 
+/// ItemButtonBehaviour.<OnPointerDown>g__load|12_0's notification when LoadContraption throws: "corrupted" for a save of
+/// this version, else the incompatible-version text (1.28.45: Current GameInfo.Version, 1.28.41: the literal "1.28").
+pub fn load_failure_notification(meta: &ContraptionMetaData) -> String {
+    if meta.IsCurrentVersion() {
+        crate::il_v!(str "ItemButtonBehaviour::<OnPointerDown>g__load|12_0" 2, "ItemButtonBehaviour::<OnPointerDown>g__load|12_0" 1).to_string()
+    } else {
+        format!("This contraption is incompatible with your current version
+Target {}, Current {}", meta.version(), current_version())
+    }
+}
+
 /// The version text the game writes and compares saves by: the literal "1.28" in 1.28.41's code, GameInfo.Version.ToString()
 /// (Major.Minor.Build, 1.28.52) from 1.28.45 (the newer build) on.
 pub fn current_version() -> &'static str {

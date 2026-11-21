@@ -532,7 +532,14 @@ pub(super) const BIGB_CALLS: &[(&str, Call)] = &[
     // LaunchRoutine: WaitForFixedUpdate, then the launch (launcher_launch_routine).
     ("ProjectileLauncherBehaviour.LaunchRoutine", |g, c| {
         let l = g.launchers.iter().position(|x| x.id == c.id).ok_or("no launchers entry")?;
+        let before = g.unsynced.len();
         g.launcher_launch_routine(l);
-        Ok(steps(&["WaitForFixedUpdate".into()]))
+        // v52h r9 (tools/recorder/BigProbeB.cs): the launched projectile's root carries a DebrisComponent (1.28.45), as
+        // a component of the clone and in debris_added (what ClearDebrisBehaviour.Clear finds).
+        let debris = g.unsynced.get(before..).unwrap_or(&[]).iter().any(|inst| {
+            let root = inst.objects[0].components[0];
+            g.debris_added.contains(&root) && inst.prefab.objects[0].components.iter().any(|(_, c)| matches!(c, crate::assets::db::Component::Script { class, .. } if class == "DebrisComponent"))
+        });
+        Ok(format!("{};debris={}", steps(&["WaitForFixedUpdate".into()]), debris as u8))
     }),
 ];

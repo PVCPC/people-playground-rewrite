@@ -94,12 +94,7 @@ impl Ui {
             Err(e) => {
                 eprintln!("{e}");
                 // UISoundBehaviour.Main.Error() is audio.
-                self.open_dialog(DialogView::notification(if meta.IsCurrentVersion() {
-                    crate::il_v!(str "ItemButtonBehaviour::<OnPointerDown>g__load|12_0" 2, "ItemButtonBehaviour::<OnPointerDown>g__load|12_0" 1).to_string()
-                } else {
-                    format!("This contraption is incompatible with your current version
-Target {}, Current {}", meta.version(), crate::game::contraption::current_version())
-                }));
+                self.open_dialog(DialogView::notification(contraption::load_failure_notification(&meta)));
             }
         }
         self.dirty = true;

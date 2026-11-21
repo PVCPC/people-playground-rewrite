@@ -1008,6 +1008,7 @@ const PURE_LEGACY: &[(&str, PureCall)] = &[
     ("ContraptionSavePoint.Serialise", sp_serialise),
     ("ObjectState.CreateNew", sp_create_new),
     ("ObjectState.LinkReferences", sp_link_references),
+    ("ItemButtonBehaviour.<OnPointerDown>g__load|12_0", sp_item_load),
     ("ModAPI.SerialiseJSON", m_json),
     ("ModAPI.DeleteJSON", m_json),
     ("ModAPI.DeserialiseJSON", m_json),
@@ -1260,6 +1261,14 @@ fn sp_load(c: &Case) -> Result<(ContraptionMetaData, Vec<super::super::save::Obj
 fn sp_load_row(c: &Case) -> Result<String, String> {
     let (meta, states, msgs) = sp_load(c)?;
     Ok(format!("{},{};{}", m_b64e(&ct::serialise_states(&states)?), m_s(meta.DisplayName.as_deref()), m_l(msgs.warnings.iter().map(|w| m_s(Some(&format!("Warning:{w}")))))))
+}
+/// v52h r9: ItemButtonBehaviour.<OnPointerDown>g__load|12_0 on a contraption whose LoadContraption throws (SaveProbe.cs's
+/// "v52h old" / "v52h bad"): the notifications it opens (catalog.rs load_selected_contraption's Err arm).
+fn sp_item_load(c: &Case) -> Result<String, String> {
+    let mut meta = sp_meta(c)?;
+    sp_game(|_| Ok(()))?;
+    let r = ct::load_contraption(&mut meta, &mut ct::LoadMessages::default());
+    Ok(m_l(r.err().map(|_| m_s(Some(&ct::load_failure_notification(&meta))))))
 }
 fn sp_save(c: &Case) -> Result<String, String> {
     let (meta, states, _) = sp_load(c)?;
