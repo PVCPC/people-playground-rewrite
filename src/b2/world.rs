@@ -1516,6 +1516,20 @@ impl World {
         id
     }
 
+    /// After a restore: m_staticBodies and m_nonStaticBodies in the game's order, by each body's recorded m_worldIndex
+    /// (b2Body + 0xb8; DestroyBody 180bb9360 and SetType 180bba4c0 swap-remove, so it is not creation order).
+    pub(crate) fn restore_world_indices(&mut self, index: &std::collections::HashMap<BodyId, i32>) {
+        for list in [&mut self.static_bodies, &mut self.non_static_bodies] {
+            list.sort_by_key(|b| index.get(b).copied().unwrap_or(i32::MAX));
+        }
+    }
+
+    /// b2Body::m_worldIndex: the body's slot in m_staticBodies or m_nonStaticBodies.
+    pub fn world_index(&self, id: BodyId) -> i32 {
+        let list = if self.body(id).kind == BodyType::Static { &self.static_bodies } else { &self.non_static_bodies };
+        list.iter().position(|&b| b == id).map_or(-1, |i| i as i32)
+    }
+
     /// After a restore (contact flags and manager indices set): Unity's contact arrays by the CONTINUOUS flag in
     /// manager-index order, and the dumped move buffer, e_newFixture and m_inv_dt0.
     pub(crate) fn finish_restore(&mut self, inv_dt0: f32, new_fixture: bool, moves: Vec<i32>) -> Result<(), String> {

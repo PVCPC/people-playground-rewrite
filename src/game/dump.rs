@@ -364,6 +364,14 @@ fn f(text: &str) -> f32 {
     f32::from_bits(u32::from_str_radix(text, 16).unwrap_or_else(|_| panic!("bad float {text}")))
 }
 
+/// The PlayAudioAtRandom records in Update order (`ambient_audio`'s): level1's WORLD emitter (a scene object, positive
+/// id) before the map's own, as load_main and load_map list them; the recorder writes FindObjectsOfType's order.
+fn ambient_records(s: &Snapshot) -> Vec<&Record> {
+    let mut v: Vec<&Record> = s.of("PlayAudioAtRandom").collect();
+    v.sort_by_key(|r| r.id < 0);
+    v
+}
+
 fn words(text: &str) -> Vec<u32> {
     text.split(',').map(|w| u32::from_str_radix(w, 16).unwrap_or_else(|_| panic!("bad word {w} in {}", &text[..text.len().min(120)]))).collect()
 }
@@ -1625,7 +1633,7 @@ impl Game {
         }
         // Older recordings lack the map scripts.
         let array_len = |text: &str| if text == "null" { None } else { Some(list(text).len()) };
-        for r in s.of("PlayAudioAtRandom") {
+        for r in ambient_records(s) {
             let mut a = super::PlayAudioAtRandom::default();
             load_fields(a.fields(), r)?;
             a.clips = array_len(r.req("Clips")?);
@@ -2398,7 +2406,7 @@ impl Game {
         }
         // The ambience emitter's AudioSource.isPlaying: the mixer ends a clip on the wall clock (between frames, not on a
         // recorded time), so the replay reads it as an input.
-        for (a, r) in self.ambient_audio.iter_mut().zip(s.of("PlayAudioAtRandom")) {
+        for (a, r) in self.ambient_audio.iter_mut().zip(ambient_records(s)) {
             a.isPlaying = r.get("playing") == Some("1");
         }
     }
@@ -3739,7 +3747,7 @@ pub fn compare(g: &mut Game, s: &Snapshot) -> Vec<String> {
             }
         }
     }
-    for (x, r) in g.ambient_audio.iter_mut().zip(s.of("PlayAudioAtRandom")) {
+    for (x, r) in g.ambient_audio.iter_mut().zip(ambient_records(s)) {
         check(format!("PlayAudioAtRandom {}", r.name), x.fields(), r);
     }
     // A destroyed map's lights (MapLoaderBehaviour.Load's, deactivated on the spot) are not in the game's snapshot.

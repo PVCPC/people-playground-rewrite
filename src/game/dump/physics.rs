@@ -192,6 +192,11 @@ pub fn restore(s: &Snapshot, gravity: V) -> Result<Restored, String> {
             }
         }
     }
+    // Recordings with m_worldIndex (the 11th mass word): the island seeds (b2World::Solve's m_nonStaticBodies) in the game's order.
+    let index: HashMap<BodyId, i32> = bodies.iter().filter_map(|(n, &id)| Some((id, *words(edges[n.as_str()].req("mass").ok()?).get(10)? as i32))).collect();
+    if index.len() == bodies.len() {
+        world.restore_world_indices(&index);
+    }
     proxies.sort_by_key(|p| p.0);
     let state = s.of("b2World").next().unwrap();
     // From dump29 on the game's whole b2DynamicTree is dumped, so tree order (queries, pairs) is the game's own;
@@ -894,6 +899,11 @@ pub fn compare_world(r: &Restored, s: &Snapshot) -> Result<Vec<String>, String> 
         for (k, o) in [(0usize, b.mass), (1, b.inv_mass), (4, b.i), (5, b.inv_i)] {
             if mw[k] != o.to_bits() {
                 out.push(format!("b2Body {}.mass{k}: game {:08x} ours {:08x}", e.name, mw[k], o.to_bits()));
+            }
+        }
+        if let Some(&g) = mw.get(10) {
+            if g as i32 != w.world_index(id) {
+                out.push(format!("b2Body {}.worldIndex: game {} ours {}", e.name, g as i32, w.world_index(id)));
             }
         }
         let sleep = words(e.req("mass")?)[9];
