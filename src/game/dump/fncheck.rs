@@ -2486,9 +2486,9 @@ const CALLS: &[(&str, Call)] = &[
     ("PhysicalBehaviour.GetSharpEnd", |g, c| { let a = super::fnmaped::sharp_axis(c.args.first().ok_or("no SharpAxis")?)?; Ok(Enc::enc(g.get_sharp_end(c.phys(g)?, &a))) }),
     // fnmaped round 12: HandleStabbing and DoStab on a knife set against a limb (MapConfigProbe.PokeCase), IsInsideOf on a
     // limb's own non-trigger colliders.
-    // v52h r3: an item's PhysicalBehaviour has no record of its private previousVelocity (a limb's has): its last ManagedLateUpdate's, taken
-    // as the body's velocity now (no physics step between that and the case; fnv52_1b_gen's knife keeps its -0.196 y in the game).
-    ("PhysicalBehaviour.HandleStabbing", |g, c| { let col = c.with(3)?.p_collision(1)?; let ct = super::fnmaped::contact_point(c.args.get(1).ok_or("no ContactPoint2D")?)?; let p = c.phys(g)?; if crate::assets::il::is_1_28_45() { super::all_property_clips(g)?; } if !c.s.of("PhysicalBehaviour").any(|r| r.id == g.physicals[p].id) { let v = g.physicals[p].rigidbody.velocity(&g.world); g.physicals[p].previousVelocity = v; } let r = g.handle_stabbing(p, &col, &ct); if crate::assets::il::is_1_28_45() { Ok(bit(r)) } else { VOID } }),
+    // v52h r4: the private previousVelocity HandleStabbing reads, from the recorder's " stpre=pv:<x>,<y>" (FnTiny.R4Of); a recording
+    // from before it (the 1.28.41 fnmaped ones) leaves the loaded value.
+    ("PhysicalBehaviour.HandleStabbing", |g, c| { let col = c.with(3)?.p_collision(1)?; let ct = super::fnmaped::contact_point(c.args.get(1).ok_or("no ContactPoint2D")?)?; let p = c.phys(g)?; if crate::assets::il::is_1_28_45() { super::all_property_clips(g)?; } if let Some(v) = st_pre(c).and_then(|v| v.strip_prefix("pv:")) { let w: Vec<f32> = v.split(',').filter_map(|x| u32::from_str_radix(x, 16).ok()).map(f32::from_bits).collect(); g.physicals[p].previousVelocity = [w[0], w[1]]; } let r = g.handle_stabbing(p, &col, &ct); if crate::assets::il::is_1_28_45() { Ok(bit(r)) } else { VOID } }),
     ("PhysicalBehaviour.DoStab", |g, c| { c.with(4)?; let p = c.phys(g)?; let other = c.arg_phys(g, 0)?; let a = super::fnmaped::sharp_axis(c.args[1])?; let pen = super::fnmaped::fresh_penetration(g, c.args[2])?; g.do_stab(p, other, a, pen); VOID }),
     // fnmaped r15: MapConfigProbe.Seed sets SpawnSpawnParticles on even cases, off on odd ones (the PI record holds it).
     ("PhysicalBehaviour.SetupSpawnPrefab", |g, c| { c.with(1)?; let p = c.phys(g)?; g.physical_setup_spawn_prefab(p); VOID }),

@@ -850,7 +850,7 @@ fn page(p: &mut Kids, ui: &Ui, settings: &Settings, controls: &Controls, art: &U
         }
         Page::Mods => {
             side(p, "Canvas/Mods/Menu", back);
-            mods_page(p, ui, art);
+            mods_page(p, ui, settings, art);
         }
         // Rewrite feature: local achievements (no Steam). Read from the user's Steam schema cache; unlocks are local.
         Page::Achievements => {
@@ -1014,7 +1014,7 @@ fn entries(p: &mut Kids, ui: &Ui) {
 /// and shows NoModsFoundText when there are none: the LuaModLoader of 1.28 has none, so the list is the "No mods found" text
 /// behind the content. ExistIfSteam (SteamIsNotInitialised) keeps "Steam is not initialised" (SteamworksInitialiser has no
 /// Steam). The legacy "Mod entry" template and "Force reload" are inactive.
-fn mods_page(p: &mut Kids, ui: &Ui, art: &UiArt) {
+fn mods_page(p: &mut Kids, ui: &Ui, settings: &Settings, art: &UiArt) {
     const PANEL: &str = "Canvas/Mods/Panel";
     const LIST: &str = "Canvas/Mods/Panel/mod list";
     const CONTENT: &str = "Canvas/Mods/Panel/mod list/viewport/content";
@@ -1108,6 +1108,12 @@ fn mods_page(p: &mut Kids, ui: &Ui, art: &UiArt) {
                     let desc = format!("{DESC}/viewport/content/mod desc");
                     let text = scene::text("Menu", &desc).replace("<align=center>", "").replace("<alpha=#50>", "");
                     c.spawn((Node { flex_shrink: 0.0, justify_content: JustifyContent::Center, ..default() }, BackgroundColor(scene::image_color("Menu", &format!("{DESC}/viewport/content"))))).with_children(|b| label(b, text, scene::font_size("Menu", &desc), Color::srgba(1.0, 1.0, 1.0, 80.0 / 255.0)));
+                    // Rewrite extra: the extras' own settings (`EXTRAS`; the game has no settings for mods) under the description.
+                    c.spawn((Node { flex_shrink: 0.0, padding: UiRect::top(px(20)), ..column(20.0) }, NotCompared("rewrite extra"))).with_children(|x| {
+                        for i in tab_rows(super::tables::EXTRAS_CATEGORY) {
+                            setting_row(x, i, settings, true);
+                        }
+                    });
                 });
             });
             t.spawn((Node { height: px(s(LAYOUT)[1]), flex_shrink: 0.0, flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, ..default() }, BackgroundColor(scene::image_color("Menu", LAYOUT)))).with_children(|l| {
@@ -1185,7 +1191,7 @@ fn maps(p: &mut Kids, ui: &Ui, art: &UiArt) {
 fn settings_page(p: &mut Kids, ui: &Ui, settings: &Settings) {
     side(p, "Canvas/Settings/Menu", |s| {
         for &(object, key) in SETTINGS_MENU {
-            let name = &if key == "Mods" { "Mods".to_string() } else { scene::label("Menu", &format!("Canvas/Settings/Menu/{object}")) };
+            let name = &scene::label("Menu", &format!("Canvas/Settings/Menu/{object}"));
             match key {
                 "Controls" => text_button(s, name, 28.0, Some(Act::Nav(Page::Controls)), Sel::None, "", menu_node()),
                 "Back" => {
@@ -1203,7 +1209,7 @@ fn settings_page(p: &mut Kids, ui: &Ui, settings: &Settings) {
         // Content: a vertical layout, spacing 20, padding right 7.
         scroll_area(c, ui, 1, Node { row_gap: px(20), padding: UiRect::right(px(7)), ..scroll_node() }, |s| {
             for i in tab_rows(ui.tab) {
-                setting_row(s, i, settings);
+                setting_row(s, i, settings, false);
             }
         });
     });
@@ -1216,13 +1222,15 @@ fn settings_page(p: &mut Kids, ui: &Ui, settings: &Settings) {
 // SettingTemplateBehaviour.SetTitle: Label.text = the title (`bold(m, def.title, ..)` in setting_row).
 // SettingTemplateBehaviour.SetDescription: Description shown with the text, or its GameObject inactive when IsNullOrWhiteSpace (setting_row).
 /// SettingsGeneratorBehaviour.CreateNewSetting: the setting template, the name over its control on the left, the description on the right.
-fn setting_row(s: &mut Kids, i: usize, settings: &Settings) {
+/// `wrap` (rewrite extra, the narrow Mods page): the description goes under the control when they don't fit side by side.
+fn setting_row(s: &mut Kids, i: usize, settings: &Settings, wrap: bool) {
     let def = &SETTINGS[i];
     let translucent = Color::srgba(0.0, 0.0, 0.0, 0.15);
     // The template: a horizontal layout (padding 5, spacing 5) of Main (flexible 569.8, a vertical layout of padding 5 and
     // spacing 18.5) and the Description (preferred 1300, flexible 1 by the force expand): the Description keeps its 1300
     // and the width over it goes 569.8 : 1 to them.
-    s.spawn((Node { width: percent(100), min_height: px(119.9), flex_shrink: 0.0, padding: UiRect::all(px(5)), column_gap: px(5), ..default() }, BackgroundColor(translucent))).with_children(|r| {
+    let flex_wrap = if wrap { FlexWrap::Wrap } else { FlexWrap::NoWrap };
+    s.spawn((Node { width: percent(100), min_height: px(119.9), flex_shrink: 0.0, padding: UiRect::all(px(5)), column_gap: px(5), flex_wrap, ..default() }, BackgroundColor(translucent))).with_children(|r| {
         r.spawn(Node { flex_basis: px(0), flex_grow: 569.8, min_width: px(0), padding: UiRect::all(px(5)), ..column(18.5) }).with_children(|m| {
             // Setting name keeps its rect's height (the layout does not control heights).
             m.spawn(Node { height: px(scene::rect("SettingTemplate", "Main/Setting name").size_delta[1]), flex_shrink: 0.0, ..default() }).with_children(|n| bold(n, def.title, 28.0, WHITE));

@@ -58,12 +58,10 @@ pub struct Setting {
 }
 
 /// SettingCategory.
-/// Rewrite extra: "Mods" (after the game's), the extras' own settings (the game has no settings for mods).
-pub static CATEGORIES: LazyLock<&'static [&'static str]> = LazyLock::new(|| {
-    let mut c = crate::assets::il::get().enum_names("SettingCategory").to_vec();
-    c.push("Mods");
-    c.leak()
-});
+pub static CATEGORIES: LazyLock<&'static [&'static str]> = LazyLock::new(|| crate::assets::il::get().enum_names("SettingCategory"));
+
+/// Rewrite extra: the `category` of `EXTRAS`, past the game's (not a settings tab; the main menu's Mods page lists them).
+pub const EXTRAS_CATEGORY: usize = 6;
 
 // Preferences..ctor: the field initialisers are each Setting's `default` here and Prefs::default's (game/mod.rs) for the fields the simulation reads
 // StepAttribute..ctor: Step = step, a Kind's `step` (0 for a field with no Step attribute: `snap` leaves the value alone, as the null stepAttr does).
@@ -97,13 +95,13 @@ pub static SETTINGS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
         .collect()
 });
 
-/// Rewrite extras' settings (not Preferences fields), in the "Mods" category.
-const EXTRAS: &[Setting] = &[Setting { field: "PortalSize", category: 6, title: "Portal size", description: "The length of the portal gun's openings, times the default. Applies to the next portal shot.", kind: Kind::Float { min: 0.5, max: 3.0, step: 0.05 }, default: 1.0, fmt: Some(Fmt::new("{0}x", 1.0, 2)), menu: true },
-    Setting { field: "PortalGlow", category: 6, title: "Portal glow", description: "How brightly the portals and the portal gun glow, times the original.", kind: Kind::Float { min: 0.5, max: 3.0, step: 0.05 }, default: 1.5, fmt: Some(Fmt::new("{0}x", 1.0, 2)), menu: true },
+/// Rewrite extras' settings (not Preferences fields), in `EXTRAS_CATEGORY`, shown on the main menu's Mods page.
+const EXTRAS: &[Setting] = &[Setting { field: "PortalSize", category: EXTRAS_CATEGORY, title: "Portal size", description: "The length of the portal gun's openings, times the default. Applies to the next portal shot.", kind: Kind::Float { min: 0.5, max: 3.0, step: 0.05 }, default: 1.0, fmt: Some(Fmt::new("{0}x", 1.0, 2)), menu: true },
+    Setting { field: "PortalGlow", category: EXTRAS_CATEGORY, title: "Portal glow", description: "How brightly the portals and the portal gun glow, times the original.", kind: Kind::Float { min: 0.5, max: 3.0, step: 0.05 }, default: 1.5, fmt: Some(Fmt::new("{0}x", 1.0, 2)), menu: true },
     // Rewrite extras: what a portal shot into a person does (mishap_glue.rs); several on: one at random, none: it fizzles.
-    Setting { field: "PortalMishapSuperposition", category: 6, title: "Portal mishap: superposition", description: "A portal shot into a person splits them into two flickering copies, here and at the other portal, that collapse after a few seconds.", kind: Kind::Bool, default: 1.0, fmt: None, menu: true },
-    Setting { field: "PortalMishapFold", category: 6, title: "Portal mishap: spatial fold", description: "A portal shot into a person folds space around the limb it hits: it comes out of another limb through tiny portals, still attached.", kind: Kind::Bool, default: 1.0, fmt: None, menu: true },
-    Setting { field: "PortalMishapPhase", category: 6, title: "Portal mishap: phase loss", description: "A portal shot into a person makes them drift through things until each limb snaps back into reality, crushing whatever it is inside.", kind: Kind::Bool, default: 1.0, fmt: None, menu: true },
+    Setting { field: "PortalMishapSuperposition", category: EXTRAS_CATEGORY, title: "Portal mishap: superposition", description: "A portal shot into a person splits them into two flickering copies, here and at the other portal, that collapse after a few seconds.", kind: Kind::Bool, default: 1.0, fmt: None, menu: true },
+    Setting { field: "PortalMishapFold", category: EXTRAS_CATEGORY, title: "Portal mishap: spatial fold", description: "A portal shot into a person folds space around the limb it hits: it comes out of another limb through tiny portals, still attached.", kind: Kind::Bool, default: 1.0, fmt: None, menu: true },
+    Setting { field: "PortalMishapPhase", category: EXTRAS_CATEGORY, title: "Portal mishap: phase loss", description: "A portal shot into a person makes them drift through things until each limb snaps back into reality, crushing whatever it is inside.", kind: Kind::Bool, default: 1.0, fmt: None, menu: true },
 ];
 
 fn leak(s: String) -> &'static str {
@@ -248,8 +246,6 @@ pub const SETTINGS_MENU: &[(&str, &str)] = &[
     ("ui settings", "UserInterface"),
     ("audio settings", "Audio"),
     ("video settings", "Video"),
-    // Rewrite extra: not in the scene, drawn like the tabs above.
-    ("mods settings", "Mods"),
     ("back", "Back"),
 ];
 

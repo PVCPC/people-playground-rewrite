@@ -1480,7 +1480,12 @@ impl Game {
             let mut x = super::syringe::Syringe::default();
             load_fields(x.fields(), r)?;
             x.id = r.id;
-            x.Phys = g.physicals.iter().position(|p| p.name == r.name).ok_or("a syringe without a PhysicalBehaviour")?;
+            // The PhysicalBehaviour on the syringe's own object (its Clone record's comps hold the syringe class's id; v52h r4: fnv52_4_gen has two Acid_Syringes), else by name.
+            let me = format!(":{}", r.id);
+            let own = s.of("Clone").filter_map(|c| c.get("comps")).find(|v| v.trim_matches(['[', ']']).split(';').any(|e| e.ends_with(&me)))
+                .and_then(|v| v.trim_matches(['[', ']']).split(';').find_map(|e| e.strip_prefix("PhysicalBehaviour:")?.parse::<i32>().ok()))
+                .and_then(|id| g.physicals.iter().position(|p| p.id == id));
+            x.Phys = own.or_else(|| g.physicals.iter().position(|p| p.name == r.name)).ok_or("a syringe without a PhysicalBehaviour")?;
             let class = r.req("class")?;
             if class == "PinkSyringe" {
                 x.pink = true;

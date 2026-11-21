@@ -1273,7 +1273,9 @@ mod tests {
         let general: Vec<_> = tab_rows(0).map(|i| SETTINGS[i].field).collect();
         assert_eq!(general.first(), Some(&"CollisionQuality"));
         assert!(!general.contains(&"ShowTutorial"), "hidden fields stay out of the menu");
-        assert_eq!(SETTINGS_MENU.iter().map(|e| e.1).collect::<Vec<_>>(), ["General", "Controls", "Gore", "VisualEffects", "UserInterface", "Audio", "Video", "Mods", "Back"]);
+        assert_eq!(SETTINGS_MENU.iter().map(|e| e.1).collect::<Vec<_>>(), ["General", "Controls", "Gore", "VisualEffects", "UserInterface", "Audio", "Video", "Back"]);
+        assert_eq!(CATEGORIES.len(), super::super::tables::EXTRAS_CATEGORY, "the extras sit past the game's tabs");
+        assert_eq!(tab_rows(super::super::tables::EXTRAS_CATEGORY).count(), 5, "the extras on the Mods page");
         for c in 0..CATEGORIES.len() {
             assert!(tab_rows(c).count() > 0, "{c}");
         }
