@@ -179,13 +179,14 @@ fn sync(g: &mut crate::game::Game, l: usize, blood: &mut [f32; 4], layout: &Layo
         blood[i] = (blood[i] + (computed[i] - blood[i]) * t.clamp(0.0, 1.0)).clamp(0.0, 1.0);
     }
     blood[3] = 1.0;
+    g.skins[l].colours[4] = Some(*blood);
     let ph = &g.physicals[p];
     let k = &g.skins[l];
     let charge = ph.Charge() / 25.0;
     put_f32(cb, layout.electrocution, charge);
     put_vec(cb, BLOOD_COLOR, to_linear(*blood));
     // PersonBehaviour.SetShaderColour: _BruiseColor, _SecondBruiseColor, _ThirdBruiseColor and _Zombie.
-    for (i, c) in g.skins[l].colours.iter().enumerate() {
+    for (i, c) in g.skins[l].colours[..4].iter().enumerate() {
         if let Some(c) = c {
             put_vec(cb, 32 + i * 16, to_linear(*c));
         }

@@ -143,8 +143,9 @@ script! {
         sprite: Option<usize> = None,
         flesh_texture: Option<crate::assets::db::ObjRef> = None,
         bone_texture: Option<crate::assets::db::ObjRef> = None,
-        /// The material colours PersonBehaviour.SetShaderColour set: _BruiseColor, _SecondBruiseColor, _ThirdBruiseColor, _Zombie.
-        colours: [Option<[f32; 4]>; 4] = [None; 4],
+        /// The material colours PersonBehaviour.SetShaderColour set: _BruiseColor, _SecondBruiseColor, _ThirdBruiseColor, _Zombie,
+        /// and _BloodColor (also set by SkinMaterialHandler.OnWillRenderObject before each draw, limb_material.rs sync).
+        colours: [Option<[f32; 4]>; 5] = [None; 5],
         /// Counts the changes the renderer has to draw (sprite and textures).
         version: u32 = 0,
     }

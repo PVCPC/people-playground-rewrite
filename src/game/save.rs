@@ -966,6 +966,10 @@ impl Game {
                 ("StabReleaseSpeedModifier", ph.StabReleaseSpeedModifier.show()),
                 ("stabWoundCount", ph.stabWoundCount.show()),
             ];
+            // 1.28.45's SelectionPriority (a stored member there, kept among the links: link.rs).
+            if crate::assets::il::is_1_28_45() && !proto.storedFields.iter().any(|(n, _)| n == "SelectionPriority") {
+                proto.storedFields.push(("SelectionPriority".into(), SavedValue::Field(ph.SelectionPriority.show())));
+            }
             let charge = if ph.ForceNoCharge { 0.0 } else { ph.charge };
             let props = [("Charge", charge.show()), ("ShowOutline", ph.showOutline.show()), ("BurnIntensity", ph.burnIntensity.show())];
             for (name, v) in fields {
@@ -1215,6 +1219,19 @@ impl Game {
         for (_, c) in self.runtime_clones(inst.objects[x].components[0]) {
             out.extend((0..c.objects.len()).map(|y| (Some(clones.len()), y)));
             clones.push((x, c));
+        }
+        // An object SetParent put below this one (reparent.rs: an attached firearm attachment under its gun), after the runtime
+        // children; its root keeps its own name (the asset's), not "(Clone)".
+        for a in self.attached_clones.get(&inst.objects[x].components[0]).into_iter().flatten().filter(|a| a.driven) {
+            let Some(mut i) = self.unsynced.iter().chain(&self.retained).find(|i| i.objects[0].components[0] == a.id).cloned() else { continue };
+            i.objects[0].trs = a.local;
+            if let Some(name) = self.object_names.get(&a.id) {
+                let mut prefab = (*i.prefab).clone();
+                prefab.objects[0].name = name.clone();
+                i.prefab = std::sync::Arc::new(prefab);
+            }
+            out.extend((0..i.objects.len()).map(|y| (Some(clones.len()), y)));
+            clones.push((x, i));
         }
     }
 
@@ -1521,6 +1538,7 @@ impl Game {
                         "LooseEndSize" => &mut ph.LooseEndSize,
                         "StabReleaseSpeedModifier" => &mut ph.StabReleaseSpeedModifier,
                         "stabWoundCount" => &mut ph.stabWoundCount,
+                        "SelectionPriority" => &mut ph.SelectionPriority,
                         _ => continue,
                     };
                     let _ = field.parse(t);

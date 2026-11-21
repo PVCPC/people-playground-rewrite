@@ -7376,7 +7376,14 @@ impl Game {
         let mut table = std::collections::HashMap::new();
         for name in assets.iter().flat_map(|a| std::iter::once(a.0.clone()).chain(a.1.clone())) {
             let Some(mut asset) = find(&name) else { continue };
-            if let Some((_, to)) = asset.2.iter().find(|(e, _)| e.IsApplicable(super::contraption::current_version(), true)) {
+            let mut hit = None;
+            for (e, to) in &asset.2 {
+                if e.IsApplicable(super::contraption::current_version(), true)? {
+                    hit = Some(to);
+                    break;
+                }
+            }
+            if let Some(to) = hit {
                 asset = assets.iter().find(|a| a.0 == *to).expect("a migration target is a SpawnableAsset");
             }
             table.entry(name).or_insert_with(|| asset.2.clone());

@@ -21,3 +21,4 @@ __pycache__/
 # Built locally (dotnet build -c Release in tools/recorder); not tracked: every merge conflicted on them.
 tools/recorder/bin/
 tools/recorder/obj/
+*.progress

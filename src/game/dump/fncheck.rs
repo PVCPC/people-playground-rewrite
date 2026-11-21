@@ -540,10 +540,12 @@ fn person_colour(g: &mut Game, c: &Case, call: impl FnOnce(&mut Game, usize) -> 
     let pre: Vec<&str> = pre.split(';').collect();
     if pre.len() != limbs.len() { return Err(format!("pc: stpre has {} limbs, ours {}", pre.len(), limbs.len())) }
     let mut before = Vec::new();
+    // fc41 r10: SetBloodColour's cases list five colours (_BloodColor last), the others four: compare as many as listed.
+    let n = pre.first().map_or(0, |s| s.split('|').count());
     for (&l, s) in limbs.iter().zip(&pre) {
         for (slot, v) in s.split('|').enumerate() {
             let v: [f32; 4] = floats(v);
-            *g.skins[l].colours.get_mut(slot).ok_or("pc: more than four colours")? = Some(v);
+            *g.skins[l].colours.get_mut(slot).ok_or("pc: more than five colours")? = Some(v);
         }
         before.push(g.skins[l].colours);
     }
@@ -551,7 +553,7 @@ fn person_colour(g: &mut Game, c: &Case, call: impl FnOnce(&mut Game, usize) -> 
     // A colour the call set is stored as given and read back through the round trip; an untouched one is what was loaded.
     let read_back = |x: f32| -> f32 { let b = (x * 255.0).round(); if (0.0..=255.0).contains(&b) && b / 255.0 == x { rt[b as usize] } else { x } };
     let hex = |v: Option<[f32; 4]>| v.map_or("null".into(), |v| v.map(|x| format!("{:08x}", x.to_bits())).join(","));
-    let out: Vec<String> = limbs.iter().zip(&before).map(|(&l, was)| g.skins[l].colours.iter().zip(was).map(|(v, w)| hex(if v != w { v.map(|[r, gr, bl, a]| [read_back(r), read_back(gr), read_back(bl), a]) } else { *v })).collect::<Vec<_>>().join("|")).collect();
+    let out: Vec<String> = limbs.iter().zip(&before).map(|(&l, was)| g.skins[l].colours.iter().zip(was).take(n).map(|(v, w)| hex(if v != w { v.map(|[r, gr, bl, a]| [read_back(r), read_back(gr), read_back(bl), a]) } else { *v })).collect::<Vec<_>>().join("|")).collect();
     Ok(format!(" st=pc:{}", out.join(";")))
 }
 
@@ -1892,6 +1894,47 @@ const CALLS: &[(&str, Call)] = &[
     // fc41 r9: PoisonSpreadBehaviour.OnPoisonOther is an empty virtual (no override in Assembly-CSharp); the generated entry
     // called poison_poison (Poison, its caller).
     ("PoisonSpreadBehaviour.OnPoisonOther", |_, _| VOID),
+    // fc41 r10: SyringeBehaviour.Awake on a " sya=1" case: FnTiny put a block of other values in materialProperty and
+    // wrote the renderer's block (not in the dump) as " syb="; the return is materialProperty after (st=sa:, FnTiny.SyBlock).
+    ("SyringeBehaviour.Awake", |g, c| {
+        let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?;
+        let case = c.s.of("FnCase").next();
+        if case.and_then(|r| r.get("sya")) != Some("1") { g.syringe_awake(i); return VOID }
+        let f = |v: &str| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string());
+        let syb: Vec<&str> = case.and_then(|r| r.get("syb")).ok_or("sya case: no syb")?.split(',').collect();
+        let [empty, r, gr, b, a, dir] = syb[..] else { return Err(format!("syb: {} values", syb.len())) };
+        let mut rb = crate::game::props::PropBlock::default();
+        if empty == "0" { rb.set_color("_LiquidColour", [f(r)?, f(gr)?, f(b)?, f(a)?]); rb.set_float("_Direction", f(dir)?); }
+        let at = crate::game::visual::SpriteAt::Physical(g.syringes[i].Phys);
+        g.set_property_block(at, &rb);
+        let mut junk = crate::game::props::PropBlock::default();
+        junk.set_color("_LiquidColour", [0.25, 0.5, 0.75, 0.125]);
+        junk.set_float("_Direction", 7.0);
+        g.syringes[i].materialProperty = junk;
+        g.syringe_awake(i);
+        let mp = &g.syringes[i].materialProperty;
+        let lc = match mp.get("_LiquidColour") { Some(crate::game::props::Prop::Color(v)) => *v, _ => [0.0; 4] };
+        let h = |x: f32| format!("{:08x}", x.to_bits());
+        Ok(format!(" st=sa:{},{},{}", mp.0.is_empty() as u8, lc.map(h).join(","), h(mp.get_float("_Direction"))))
+    }),
+    // fc41 r10: ShockwaveBehaviour.Update; FnTiny sets the private t first and writes it with startSize (" swt=t,startSize").
+    ("ShockwaveBehaviour.Update", |g, c| {
+        let i = g.shockwaves.iter().position(|x| x.id == c.id).ok_or("no shockwaves entry")?;
+        if let Some(v) = c.s.of("FnCase").next().and_then(|r| r.get("swt")) {
+            let f: Vec<f32> = v.split(',').map(|x| u32::from_str_radix(x, 16).map(f32::from_bits).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+            let [t, start] = f[..] else { return Err(format!("swt: {} values", f.len())) };
+            (g.shockwaves[i].t, g.shockwaves[i].startSize) = (t, start);
+        }
+        g.shockwave_update(i);
+        VOID
+    }),
+    // fc41 r10: AerialFaithPlateBehaviour.Use: the generated entry read the ActivationPropagation arg as the self's index;
+    // the self is the case's target (Use ignores the activation).
+    ("AerialFaithPlateBehaviour.Use", |g, c| {
+        let a = g.tr.aerial_faith_plate_behaviour.iter().position(|x| x.this_id == c.id).ok_or("no aerial_faith_plate_behaviour entry")?;
+        g.aerial_faith_plate_behaviour_use(a, crate::game::translated::rt::Activation { Channel: 0 });
+        VOID
+    }),
     // fc41 r7: SyringeBehaviour.Shot as Balloon.Shot: the WaitAFrame's wait (st=bw), on recordings whose case has " syw=1".
     ("SyringeBehaviour.Shot", |g, c| {
         let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?;
@@ -3604,7 +3647,8 @@ const CALLS: &[(&str, Call)] = &[
     ("BloodContainer.get_LowerLimit", |g, c| Ok(hex(g.lower_limit(c.circ_owner()?)))),
     ("BloodContainer.get_UpperLimit", |g, c| Ok(hex(g.upper_limit(c.circ_owner()?)))),
     ("BloodContainer.get_ScaledLiquidAmount", |g, c| Ok(hex(g.scaled_liquid_amount(c.circ_owner()?)))),
-    ("BloodContainer.OnLiquidExit", |g, c| { g.on_liquid_exit(c.circ_owner()?, c.liquid(0)?); VOID }),
+    // fc41 r10: the self's GlowInTheDarkBehaviour from its PI Clone (FnTiny's Tritium cases add one; Tritium's exit destroys it).
+    ("BloodContainer.OnLiquidExit", |g, c| { let o = c.circ_owner()?; glow_pre_on(g, c, o, &c.id.to_string()); g.on_liquid_exit(o, c.liquid(0)?); VOID }),
     ("PersonBehaviour.Update", |g, c| { g.person_update(c.index("PersonBehaviour")?); VOID }),
     ("PersonBehaviour.FixedUpdate", |g, c| { g.person_fixed_update(c.index("PersonBehaviour")?); VOID }),
     ("PersonBehaviour.LateUpdate", |g, c| { g.person_late_update(c.index("PersonBehaviour")?); VOID }),
@@ -3615,7 +3659,7 @@ const CALLS: &[(&str, Call)] = &[
     ("PersonBehaviour.SetBruiseColor", |g, c| person_colour(g, c, |g, p| { g.person_set_bruise_color(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
     ("PersonBehaviour.SetSecondBruiseColor", |g, c| person_colour(g, c, |g, p| { g.person_set_second_bruise_color(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
     ("PersonBehaviour.SetThirdBruiseColor", |g, c| person_colour(g, c, |g, p| { g.person_set_third_bruise_color(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
-    ("PersonBehaviour.SetBloodColour", |g, c| { g.person_set_blood_colour(c.index("PersonBehaviour")?, c.n(0)?, c.n(1)?, c.n(2)?); VOID }),
+    ("PersonBehaviour.SetBloodColour", |g, c| person_colour(g, c, |g, p| { g.person_set_blood_colour(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
     ("PersonBehaviour.SetRottenColour", |g, c| person_colour(g, c, |g, p| { g.person_set_rotten_colour(p, c.n(0)?, c.n(1)?, c.n(2)?); Ok(()) })),
     ("PersonBehaviour.SetShaderColour", |g, c| person_colour(g, c, |g, p| { g.person_set_shader_colour(p, c.arg_str(0)?, c.n(1)?, c.n(2)?, c.n(3)?); Ok(()) })),
     ("PhysicalBehaviour.ManagedUpdate", |g, c| { g.physical_update(c.phys(g)?); VOID }),
@@ -4101,7 +4145,12 @@ fn ps_field(g: &Game, sid: i32, field: &str) -> Option<usize> {
 /// glow on `o` (a seed's AddComponent or an earlier case's OnEnterContainer made it; the calls read only its presence).
 fn glow_pre(g: &mut Game, c: &Case, o: Owner) {
     let Some(arg) = c.args.iter().rev().find_map(|a| reference(a)).map(|v| v.to_string()) else { return };
-    let Some(comps) = c.s.of("Clone").filter_map(|r| r.get("comps")).find(|v| v.split([';', '[', ']']).any(|e| e.rsplit(':').next() == Some(arg.as_str()))) else { return };
+    glow_pre_on(g, c, o, &arg);
+}
+
+/// glow_pre for the Clone holding component `arg` (fc41 r10: OnLiquidExit's self).
+fn glow_pre_on(g: &mut Game, c: &Case, o: Owner, arg: &str) {
+    let Some(comps) = c.s.of("Clone").filter_map(|r| r.get("comps")).find(|v| v.split([';', '[', ']']).any(|e| e.rsplit(':').next() == Some(arg))) else { return };
     let id = comps.split([';', '[', ']']).find_map(|e| e.strip_prefix("GlowInTheDarkBehaviour:")).and_then(|v| v.parse::<i32>().ok());
     g.glows.retain(|x| x.owner != o || Some(x.id) == id);
     if let Some(id) = id && !g.glows.iter().any(|x| x.id == id) {

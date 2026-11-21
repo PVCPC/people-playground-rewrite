@@ -411,6 +411,14 @@ const PURE_MODS: &[(&str, PureCall)] = &[
         let s = ContraptionFolderSource::new(&t.0.join("New").join("Folder"));
         Ok(format!("{},{}", m_rel(&t, &s.Folder), m_b(t.0.join("New").join("Folder").is_dir())))
     }),
+    // v52h r6: DllCheck mods MODS_ONLY=migration: Version;VersionCondition;ToSpawnInstead set;originVersion.
+    ("MigrationEvent.IsApplicable", |c| {
+        use crate::game::contraption::{MigrationCondition as C, MigrationEvent};
+        let cond = [C::OlderThan, C::OlderThanOrEqualTo, C::EqualTo, C::NewerThan, C::NewerThanOrEqualTo][m_arg(c, 1)?.parse::<usize>().map_err(|e| e.to_string())?];
+        let e = MigrationEvent { Version: m_str(m_arg(c, 0)?)?.unwrap_or_default(), VersionCondition: cond };
+        Ok(e.IsApplicable(&m_str(m_arg(c, 3)?)?.unwrap_or_default(), m_arg(c, 2)? == "1").map_or_else(|e| format!("exc:{}", e.split(':').next().unwrap_or("")), m_b))
+    }),
+    ("MigrationEvent.Version", |_| Ok(m_s(Some(&crate::game::contraption::MigrationEvent::default().Version)))),
     ("ContraptionMetaData.get_IsCurrentVersion", |c| m_cmeta_call(c, |_, m| m_b(m.IsCurrentVersion()))),
     ("ContraptionMetaData.get_IsWorkshopItem", |c| m_cmeta_call(c, |_, m| m_b(m.IsWorkshopItem()))),
     ("ContraptionMetaData.get_RequiresMods", |c| m_cmeta_call(c, |_, m| m_b(m.RequiresMods()))),
@@ -984,6 +992,7 @@ const PURE_LEGACY: &[(&str, PureCall)] = &[
     ("ContraptionSerialiser.LoadContraption", sp_load_row),
     ("ContraptionSerialiser.SaveContraption", sp_save),
     ("ObjectStateConverter.Convert", sp_convert),
+    ("ContraptionSavePoint.Serialise", sp_serialise),
     ("ObjectState.CreateNew", sp_create_new),
     ("ObjectState.LinkReferences", sp_link_references),
     ("ModAPI.SerialiseJSON", m_json),
@@ -1338,10 +1347,66 @@ fn sp_fresh_game() -> Result<Game, String> {
     }
     Ok(g)
 }
+/// v52h r6: ContraptionSavePoint.Serialise (PPG_SAVEPROBE_OWN only) after sp_convert's round trip: GameObjectsToSave each made object's
+/// root (its own PhysicalBehaviour), NameToSave "<name> sp", NewOrigin (0.5, -0.25), SaveDirectory a temp folder; the notification,
+/// the metadata json (the folder as @D), the outline file's text and the data file's states as sp_back gives them.
+fn sp_serialise(c: &Case) -> Result<String, String> {
+    let (meta, states, _) = sp_load(c)?;
+    let mut g = sp_fresh_game()?;
+    sp_pause(&mut g);
+    g.random = crate::unity::Random::new(1);
+    let made = g.object_states_convert(&states, [0.0; 3], false);
+    sp_seed(&mut g);
+    sp_paused_frames(&mut g)?;
+    sp_back(&mut g, &made, [0.0; 3])?;
+    let at = |g: &Game, t: i32| (0..g.physicals.len()).find(|&p| !g.physicals[p].destroyed && g.physicals[p].transform_id == t);
+    let mut roots = Vec::new();
+    for &t in &made {
+        if let Some(p) = at(&g, t) {
+            let r = g.root_id(p);
+            if !roots.contains(&r) {
+                roots.push(r);
+            }
+        }
+    }
+    let selected = roots.iter().map(|&r| at(&g, r).ok_or("a root without its own PhysicalBehaviour")).collect::<Result<Vec<_>, _>>()?;
+    let name = format!("{} sp", meta.Name.as_deref().unwrap_or(""));
+    let dir = std::env::temp_dir().join(format!("ppg-saveprobe-sp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    *ct::SAVE_DIRECTORY.lock().unwrap() = Some(dir.clone());
+    g.contraption.save_point.GameObjectsToSave = selected;
+    g.contraption.save_point.NameToSave = name.clone();
+    g.contraption.save_point.NewOrigin = [0.5, -0.25, 0.0];
+    g.random = crate::unity::Random::new(7);
+    let report = g.contraption_serialise();
+    *ct::SAVE_DIRECTORY.lock().unwrap() = None;
+    let r = (|| -> Result<String, String> {
+        let f = dir.join(&name).join(&name);
+        let rd = |ext: &str| std::fs::read(f.with_extension(ext)).map_err(|e| format!("{ext}: {e}"));
+        let json = String::from_utf8(rd("json")?).map_err(|e| e.to_string())?.replace(serde_json::to_string(&dir.to_string_lossy()).unwrap().trim_matches('"'), "@D");
+        let outline = String::from_utf8(rd("outline")?).map_err(|e| e.to_string())?;
+        let back = ct::deserialise_states(&rd("jaap")?)?;
+        Ok(format!("[{},{},{},{}]", m_s(Some(&report.notification)), m_s(Some(&json)), m_s(Some(&outline)), sp_canon(back)?))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    r
+}
 /// The roots back into states (ObjectStateConverter.Convert's GameObject overload at `origin`), SP_UNSTABLE's members dropped and every Guid renumbered.
 fn sp_back(g: &mut Game, roots: &[i32], origin: [f32; 3]) -> Result<String, String> {
     let selected: Vec<usize> = roots.iter().filter_map(|&r| (0..g.physicals.len()).find(|&p| !g.physicals[p].destroyed && g.root_id(p) == r)).collect();
-    let mut back = g.object_states_of(&selected, origin);
+    sp_canon(g.object_states_of(&selected, origin))
+}
+/// States as the probe's CanonStates gives them: SP_UNSTABLE's members dropped and every Guid renumbered by first appearance.
+fn sp_canon(mut back: Vec<super::super::save::ObjectState>) -> Result<String, String> {
+    let r = sp_canon0(&mut back)?;
+    if let Ok(d) = std::env::var("PPG_SP_DUMP") {
+        let d = std::path::Path::new(&d);
+        let _ = std::fs::write(d.join("ours.txt"), format!("{back:#?}"));
+        if let Ok(t) = std::fs::read_to_string(d.join("game.b64")) { let _ = std::fs::write(d.join("game.txt"), format!("{:#?}", ct::deserialise_states(&m_b64(t.trim())?)?)); }
+    }
+    Ok(r)
+}
+fn sp_canon0(back: &mut Vec<super::super::save::ObjectState>) -> Result<String, String> {
     // Regenerate's Guid.NewGuid differs every run: each Guid is renumbered by first appearance (Guid.Empty stays 0), as the probe does.
     let mut seen: Vec<u128> = Vec::new();
     let mut canon = |x: &mut u128| {
@@ -1351,7 +1416,7 @@ fn sp_back(g: &mut Game, roots: &[i32], origin: [f32; 3]) -> Result<String, Stri
         }
     };
     use super::super::save::SavedValue;
-    for st in &mut back {
+    for st in back.iter_mut() {
         for proto in st.RootComponentData.iter_mut().chain(st.ChildComponentData.iter_mut().flat_map(|(_, v)| v.iter_mut())) {
             proto.storedFields.retain(|(k, _)| !SP_UNSTABLE.iter().any(|u| k.contains(u)));
             proto.storedProperties.retain(|(k, _)| !SP_UNSTABLE.iter().any(|u| k.contains(u)));

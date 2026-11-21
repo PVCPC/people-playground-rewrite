@@ -197,11 +197,11 @@ impl Game {
     }
 
     /// PersonBehaviour.SetShaderColour: the colour (r, g, b over 255, alpha 1) on every limb's material property `id`. The
-    /// rewrite keeps four (Skin colours: 0 _BruiseColor, 1 _SecondBruiseColor, 2 _ThirdBruiseColor, 3 _Zombie); _BloodColor is
-    /// written over by SkinMaterialHandler.OnWillRenderObject before every draw, and any other id names a property no limb
-    /// shader reads, so neither leaves anything.
+    /// rewrite keeps five (Skin colours: 0 _BruiseColor, 1 _SecondBruiseColor, 2 _ThirdBruiseColor, 3 _Zombie, 4 _BloodColor,
+    /// which SkinMaterialHandler.OnWillRenderObject writes over before every draw); any other id names a property no limb
+    /// shader reads, so it leaves nothing.
     pub(crate) fn person_set_shader_colour(&mut self, person: usize, id: &str, red: u8, green: u8, blue: u8) {
-        let Some(slot) = ["_BruiseColor", "_SecondBruiseColor", "_ThirdBruiseColor", "_Zombie"].iter().position(|p| *p == id) else { return };
+        let Some(slot) = ["_BruiseColor", "_SecondBruiseColor", "_ThirdBruiseColor", "_Zombie", "_BloodColor"].iter().position(|p| *p == id) else { return };
         let value = [red as f32 / 255.0, green as f32 / 255.0, blue as f32 / 255.0, 1.0];
         for l in self.people[person].Limbs.clone() {
             self.skins[l].colours[slot] = Some(value);
@@ -223,9 +223,10 @@ impl Game {
         self.person_set_shader_colour(person, "_ThirdBruiseColor", red, green, blue);
     }
 
-    /// PersonBehaviour.SetBloodColour: sets `_BloodColor`, which SkinMaterialHandler.OnWillRenderObject writes over every frame
-    /// before the limb is drawn, so nothing stays of it.
-    pub fn person_set_blood_colour(&mut self, _person: usize, _red: u8, _green: u8, _blue: u8) {}
+    /// PersonBehaviour.SetBloodColour
+    pub fn person_set_blood_colour(&mut self, person: usize, red: u8, green: u8, blue: u8) {
+        self.person_set_shader_colour(person, "_BloodColor", red, green, blue);
+    }
 
     /// PersonBehaviour.SetRottenColour
     pub fn person_set_rotten_colour(&mut self, person: usize, red: u8, green: u8, blue: u8) {

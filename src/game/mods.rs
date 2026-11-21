@@ -1233,7 +1233,7 @@ pub mod mod_api {
             let condition = [OlderThan, OlderThanOrEqualTo, EqualTo, NewerThan, NewerThanOrEqualTo][e.get("VersionCondition").and_then(Value::i64).unwrap_or(0) as usize];
             let event = super::super::contraption::MigrationEvent { Version: version.clone(), VersionCondition: condition };
             let game_version = get_Metadata()?.ok_or_else(Exc::nre)?.lock().unwrap().GameVersion.clone();
-            if event.IsApplicable(game_version.as_deref().ok_or_else(Exc::nre)?, true) {
+            if event.IsApplicable(game_version.as_deref().ok_or_else(Exc::nre)?, true).map_err(|e| Exc::new(["FormatException", "OverflowException", "ArgumentOutOfRangeException"].into_iter().find(|c| e.starts_with(c)).unwrap_or("ArgumentException"), e))? {
                 return Ok(Some(target));
             }
         }

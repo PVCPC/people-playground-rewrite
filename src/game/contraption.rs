@@ -453,8 +453,11 @@ impl ContraptionMetaData {
 
 /// ContraptionSerialiser.SaveDirectory (relative to the working directory)
 pub fn save_directory() -> PathBuf {
-    PathBuf::from("Contraptions")
+    SAVE_DIRECTORY.lock().unwrap().clone().unwrap_or_else(|| PathBuf::from("Contraptions"))
 }
+
+/// ContraptionSerialiser.SaveDirectory set elsewhere (the game's field is static; fn-check's save probe rows point it at a temp folder).
+pub static SAVE_DIRECTORY: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 /// PathExtensions.GetFile: Path.Combine(dir.FullName, fileName) (a rooted fileName replaces the directory, as Path.Combine does).
 pub fn get_file(dir: &Path, file_name: &str) -> PathBuf {
@@ -535,7 +538,7 @@ pub fn load_contraption(metadata: &mut ContraptionMetaData, messages: &mut LoadM
     }
     for state in &mut states {
         for (event, to) in MIGRATIONS.get().and_then(|m| m.get(&state.SpawnableAssetName)).cloned().unwrap_or_default() {
-            if event.IsApplicable(metadata.Version.as_deref().unwrap_or(""), true) {
+            if event.IsApplicable(metadata.Version.as_deref().unwrap_or(""), true)? {
                 state.SpawnableAssetName = to;
             }
         }
@@ -1051,10 +1054,18 @@ pub fn parse_build_index(input: &str) -> Result<i32, String> {
     let input = input.trim();
     let at = input.find(crate::il!(str "LegacyGameVersionUtils::ParseBuildIndex" 0)).or_else(|| input.find(crate::il!(str "LegacyGameVersionUtils::ParseBuildIndex" 1)));
     let version = &input[..at.unwrap_or(input.len())];
-    let nums: Vec<i32> = version.trim().split('.').map(|p| p.trim().parse::<i32>().map_err(|_| format!("bad version {input}"))).collect::<Result<_, _>>()?;
-    // Version.Parse: two to four components, none negative.
-    if !(2..=4).contains(&nums.len()) || nums.iter().any(|&n| n < 0) {
-        return Err(format!("bad version {input}"));
+    // Version.Parse: two to four components (ArgumentException), each an Int32 (FormatException, OverflowException), none negative
+    // (ArgumentOutOfRangeException); the error text starts with the exception's class.
+    let parts: Vec<&str> = version.trim().split('.').collect();
+    if !(2..=4).contains(&parts.len()) {
+        return Err(format!("ArgumentException: bad version {input}"));
+    }
+    let nums: Vec<i32> = parts.iter().map(|p| p.trim().parse::<i32>().map_err(|e| match e.kind() {
+        std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => format!("OverflowException: bad version {input}"),
+        _ => format!("FormatException: bad version {input}"),
+    })).collect::<Result<_, _>>()?;
+    if nums.iter().any(|&n| n < 0) {
+        return Err(format!("ArgumentOutOfRangeException: bad version {input}"));
     }
     let n = |i: usize| nums.get(i).copied().unwrap_or(-1).max(0);
     let mut total = n(0) * 10000 + n(1) * 1000 + n(2) * 100;
@@ -1138,30 +1149,31 @@ pub fn legacy_game_version_is_newer_than(a: &str, b: &str) -> Result<bool, Strin
 }
 
 impl MigrationEvent {
-    /// MigrationEvent.IsApplicable (`has_target` is `ToSpawnInstead != null`)
-    pub fn IsApplicable(&self, origin_version: &str, has_target: bool) -> bool {
+    /// MigrationEvent.IsApplicable (`has_target` is `ToSpawnInstead != null`); a legacy (not "1.28...") version GetDifference
+    /// cannot parse throws, as the game's does.
+    pub fn IsApplicable(&self, origin_version: &str, has_target: bool) -> Result<bool, String> {
         if !has_target {
-            return false;
+            return Ok(false);
         }
         // 1.28.45: a "1.28..." origin compares as System.Version (a parse failure is false).
         if crate::assets::il::is_1_28_45() && origin_version.starts_with("1.28") {
-            let (Some(a), Some(b)) = (version_parse(origin_version), version_parse(&self.Version)) else { return false };
-            return match self.VersionCondition {
+            let (Some(a), Some(b)) = (version_parse(origin_version), version_parse(&self.Version)) else { return Ok(false) };
+            return Ok(match self.VersionCondition {
                 MigrationCondition::OlderThan => a < b,
                 MigrationCondition::OlderThanOrEqualTo => a <= b,
                 MigrationCondition::EqualTo => a == b,
                 MigrationCondition::NewerThan => a > b,
                 MigrationCondition::NewerThanOrEqualTo => a >= b,
-            };
+            });
         }
-        let Ok(difference) = legacy_game_version_get_difference(origin_version, &self.Version) else { return false };
-        match self.VersionCondition {
+        let difference = legacy_game_version_get_difference(origin_version, &self.Version)?;
+        Ok(match self.VersionCondition {
             MigrationCondition::OlderThan => difference < 0,
             MigrationCondition::OlderThanOrEqualTo => difference <= 0,
             MigrationCondition::EqualTo => difference == 0,
             MigrationCondition::NewerThan => difference > 0,
             MigrationCondition::NewerThanOrEqualTo => difference >= 0,
-        }
+        })
     }
 }
 
@@ -1389,7 +1401,7 @@ impl Game {
 
     /// ContraptionSavePoint.Serialise: an empty name becomes "Contraption <1000..9998>"; Convert, SaveContraption, SaveThumbnail, SaveOutline; the notification says whether it
     /// worked, then CatalogBehaviour.CreateItemButtons is asked for.
-    fn contraption_serialise(&mut self) -> SaveReport {
+    pub(crate) fn contraption_serialise(&mut self) -> SaveReport {
         if self.contraption.save_point.NameToSave.trim().is_empty() || self.contraption.save_point.NameToSave.is_empty() {
             self.contraption.save_point.NameToSave = format!("Contraption {}", self.random.range_int(1000, 9999));
         }
@@ -1693,7 +1705,7 @@ pub(crate) mod tests {
         assert_eq!(save_action_ask_for_save("my battery", &[]), SaveAsk::Save);
         assert_eq!(save_action_ask_for_save("modded battery", &[ContraptionMetaData::new("Modded Battery")]), SaveAsk::ConfirmOverwrite);
         let e = MigrationEvent { Version: "1.27".into(), VersionCondition: MigrationCondition::OlderThan };
-        assert!(e.IsApplicable("1.2.6", true) && !e.IsApplicable("1.28", true) && !e.IsApplicable("1.2.6", false));
+        assert!(e.IsApplicable("1.2.6", true) == Ok(true) && e.IsApplicable("1.28", true) == Ok(false) && e.IsApplicable("1.2.6", false) == Ok(false));
         assert_eq!(parse_build_index("1.28").unwrap(), 1 * 10000 + 28 * 1000 + 99);
         assert_eq!(parse_build_index("1.3 beta 2").unwrap(), 13000 + 2);
         // xxHash32 test vectors
