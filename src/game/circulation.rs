@@ -679,6 +679,8 @@ impl Game {
             loaded: false,
             psm: None,
             pss: Vec::new(),
+            pseed: None,
+            log_at: (0, 0),
             local_position: [t[0], t[1], t[2]],
             local_up: [2.0 * (q[0] * q[1] - q[3] * q[2]), 1.0 - 2.0 * (q[0] * q[0] + q[2] * q[2]), 2.0 * (q[1] * q[2] + q[3] * q[0])],
             color: [0.0; 4],
@@ -689,9 +691,17 @@ impl Game {
             collision: false,
         };
         bleeding.awake(self.prefs.FancyEffects);
+        bleeding.log_at = self.effect_stamp();
         self.bleeding.push(bleeding);
         self.behaviours.add(0, super::Behaviour::Bleeding(self.bleeding.len() - 1));
         self.bleeding.len() - 1
+    }
+
+    /// Where an event falls among the frame's effect clones: after the first `.0` of `effect_log`, `.1` orders
+    /// events between the same two clones.
+    pub(super) fn effect_stamp(&mut self) -> (usize, u64) {
+        self.effect_seq += 1;
+        (self.effect_log.len(), self.effect_seq)
     }
 
     /// CirculationBehaviour.CreateBleedingParticle

@@ -20,7 +20,7 @@ pub const RAYCAST_BUDGET: i32 = 256;
 /// delay AssignRayBudgets keeps.
 #[derive(Clone, Debug)]
 pub struct State {
-    rand: RandN,
+    pub(crate) rand: RandN,
     /// PlaneData (normal, intersection) by ComputeHash; never cleared.
     cache: Option<HashMap<u64, ([f32; 3], [f32; 3])>>,
     next: usize,

@@ -107,11 +107,13 @@ impl Game {
         self.audio_one_shot(id, "AudioSource", "EndSound");
     }
 
-    /// PhysicsGunBehaviour.OnDisable: SetTarget(null), then the line's object is hidden (the sound stops).
+    /// PhysicsGunBehaviour.OnDisable: SetTarget(null), LineRenderer.gameObject.SetActive(false), AudioSource.Stop().
     pub fn physics_gun_on_disable(&mut self, i: usize, inst: &mut super::spawn::Instance) {
         self.physics_gun_set_target(i, None);
         let lo = self.physics_guns[i].line_object;
         self.set_active_scripts(inst, lo, false);
+        let s = self.audio_src(self.physics_guns[i].id, "AudioSource");
+        self.audio.stop(s);
     }
 
     /// PhysicsGunBehaviour.QueryTarget: Physics2D.Raycast(LineStart.position, direction, MaxRange, LayersToHit); a hit

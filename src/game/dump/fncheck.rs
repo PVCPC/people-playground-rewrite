@@ -1921,6 +1921,15 @@ const CALLS: &[(&str, Call)] = &[
         let h = |x: f32| format!("{:08x}", x.to_bits());
         Ok(format!(" st=sa:{},{},{}", mp.0.is_empty() as u8, lc.map(h).join(","), h(mp.get_float("_Direction"))))
     }),
+    // fc41 r13: SerialisableIdentity.Regenerate: Guid.NewGuid can't be reproduced, so FnTiny's st=sid: is <changed>,<not empty>.
+    ("SerialisableIdentity.Regenerate", |g, c| {
+        let c = c.with(1)?;
+        let tid = c.p_int(0)?;
+        let pre = g.identities.get(&tid).copied();
+        g.identity_regenerate(tid);
+        let post = g.identities.get(&tid).copied();
+        Ok(format!(" st=sid:{},{}", (post != pre) as u8, post.is_some_and(|x| x != 0) as u8))
+    }),
     // fc41 r12: DamagableMachineryBehaviour.Stabbed: the generated entry read the Stab arg as an index. The self by id, the
     // Stab's stabber; MapConfigProbe's wound=0 reset after (stab_probe_reset).
     ("DamagableMachineryBehaviour.Stabbed", |g, c| {
@@ -3281,6 +3290,8 @@ const CALLS: &[(&str, Call)] = &[
     ("SharpOnAllSidesBehaviour.ProcessSoftConnections", |g, c| { let s = sharp_with_connections(g, c)?; g.sharp_on_all_sides_process(s, c.arg(0)?, c.arg(1)?); Ok(sharp_state(g, s)) }),
     ("SharpOnAllSidesBehaviour.FixedUpdate", |g, c| { let s = sharp_with_connections(g, c)?; g.sharp_on_all_sides_fixed_update(s); Ok(sharp_state(g, s)) }),
     ("SharpOnAllSidesBehaviour.OnDestroy", |g, c| { let s = sharp_with_connections(g, c)?; g.sharp_on_all_sides_destroy(s); Ok(sharp_state(g, s)) }),
+    // fc41 r13: OnDisable is OnDestroy (the same seeded connections, FnTiny's R4).
+    ("SharpOnAllSidesBehaviour.OnDisable", |g, c| { let s = sharp_with_connections(g, c)?; g.sharp_on_all_sides_on_disable(s); Ok(sharp_state(g, s)) }),
     ("SharpOnAllSidesBehaviour.OnAfterDeserialise", |g, c| {
         let s = sharp_with_connections(g, c)?;
         let (sv, objects) = r4_victims(g, c)?;

@@ -242,6 +242,9 @@ script! {
         psm: Option<i32> = None,
         /// A loaded one's systems (the root, then its children): renderer isVisible, culled, cullTime, stopTime.
         pss: Vec<(bool, bool, f64, f64)> = Vec::new(),
+        /// A loaded one's root ParticleSystem randoms as recorded (pseed=): randomSeed, the emission Rand's 4 words, then the
+        /// Initial, Shape and Collision RandNs' 16 words each in memory order. None in recordings before it.
+        pseed: Option<Vec<u32>> = None,
         local_position: [f32; 3] = [0.0; 3],
         local_up: [f32; 3] = [0.0, 1.0, 0.0],
         /// ParticleSystem main/emission values the renderer draws from.
@@ -252,6 +255,8 @@ script! {
         destroyed: bool = false,
         /// BleedingParticleBehaviour.Awake's collision.enabled = true under FancyEffects (read by particles.rs `collision_of`).
         collision: bool = false,
+        /// Its Instantiate among the frame's effect clones (`Game::effect_stamp`): its systems join the manager there.
+        log_at: (usize, u64) = (0, 0),
     }
 }
 
@@ -1762,7 +1767,8 @@ impl Game {
                     let p = self.splats[self.blood_puffs[b].splat].parent_position;
                     if !(invert ^ self.is_point_under_water([p[0], p[1]])) {
                         self.blood_puffs[b].off.push(name);
-                        self.pooled_child_off.push((super::Pooled::BloodPuff(b), name));
+                        let at = self.effect_stamp();
+                        self.pooled_child_off.push((super::Pooled::BloodPuff(b), name, at));
                     }
                 }
                 PendingStart::BloodPuffEmitterWater(b) => {

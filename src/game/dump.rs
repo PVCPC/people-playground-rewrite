@@ -131,8 +131,8 @@ pub fn open_recording(path: &Path) -> Result<Box<dyn std::io::Read>, String> {
 pub fn recording_for_version(path: &Path) -> std::path::PathBuf {
     if crate::assets::il::is_1_28_45() {
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            // -v52b: a later re-recording (one with every particle system's active-list slot) over -v52.
-            for v in ["v52b", "v52"] {
+            // A later re-recording over an earlier one: -v52c over -v52b (every particle system's active-list slot) over -v52.
+            for v in ["v52c", "v52b", "v52"] {
                 let v52 = path.with_file_name(format!("{stem}-{v}.txt"));
                 if v52.exists() || v52.with_extension("txt.gz").exists() {
                     return v52;
@@ -1619,6 +1619,10 @@ impl Game {
                     })
                     .collect()
             });
+            b.pseed = r.get("pseed").map(|t| t.split(',').map(|w| u32::from_str_radix(w, 16).map_err(|_| format!("bad pseed {t}"))).collect::<Result<Vec<u32>, String>>()).transpose()?;
+            if b.pseed.as_ref().is_some_and(|w| w.len() != 53) {
+                return Err(format!("BleedingParticleBehaviour {}: pseed needs 53 words", r.id));
+            }
             b.awake(g.prefs.FancyEffects);
             b.dripSoundClock = distributor(r.req("dripSoundClock")?);
             g.bleeding.push(b);
@@ -4689,6 +4693,9 @@ pub fn loop_test(dump: &Path, rig: &HumanRig) -> Result<(), String> {
     // The recorder's UE is its own WaitForEndOfFrame coroutine, registered before every other: the game's end-of-frame
     // coroutines (a bullet's next iteration) run after the UE snapshot.
     let mut end_of_frame_due = false;
+    // The manager's Rand the next BeginUpdateAll's Instantiates draw from (see the end of frame): the first frame's
+    // FixedUpdates start at the first snapshot's.
+    let mut frame_rand: Option<Vec<u32>> = first.snap.iter().find(|(k, _)| k == "psrand").map(|(_, v)| words(v));
     // The snapshots read ahead to the frame's US (its time, for EarlyUpdate).
     let mut ahead = std::collections::VecDeque::new();
     let mut n = 0;
@@ -4706,6 +4713,11 @@ pub fn loop_test(dump: &Path, rig: &HumanRig) -> Result<(), String> {
         let random = g.random.clone();
         g.load_time(&prev);
         g.random = random;
+        if prev.pt == "US" {
+            if let Some(w) = frame_rand.take() {
+                crate::particles::set_manager_rand(&mut g, [w[0], w[1], w[2], w[3]]);
+            }
+        }
         if prev.pt.starts_with('F') {
             if let Some(&t) = frame_times.get(&g.time.frameCount) {
                 g.time.dynamicTimeAsDouble = t;
@@ -4734,6 +4746,10 @@ pub fn loop_test(dump: &Path, rig: &HumanRig) -> Result<(), String> {
             g.run_pending_starts();
             g.time.frameCount = frame;
             end_of_frame_due = false;
+            // The manager's Rand at the UE snapshot: the end-of-frame coroutines' and the next FixedUpdates' Instantiates
+            // draw ResetSeeds after it in the game, ours in the next BeginUpdateAll (after the US snapshot's psrand,
+            // which already holds those draws).
+            frame_rand = prev.snap.iter().find(|(k, _)| k == "psrand").map(|(_, v)| words(v));
         }
         // PPG_RANDOM_TRACE: each point between the draws.
         if std::env::var_os("PPG_RANDOM_TRACE").is_some() {

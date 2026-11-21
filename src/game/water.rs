@@ -116,7 +116,7 @@ pub struct SplashPool {
 /// PoolGenerator.PoolSize
 const POOL_SIZE: usize = 256;
 /// ParticleSystem class id.
-pub(super) const PARTICLE_SYSTEM: i32 = 198;
+pub(crate) const PARTICLE_SYSTEM: i32 = 198;
 
 impl Game {
     /// The pool of the Splash prefab `source`, read from the data the first time a water names it.

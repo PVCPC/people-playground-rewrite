@@ -3051,7 +3051,10 @@ pub struct Game {
     /// Pooled clones returned by a script (SetActive(false)) since the particles last looked: their systems clear.
     pub pooled_deactivated: Vec<Pooled>,
     /// SetActive(false) of a pooled clone's child, by name, for the particle systems.
-    pub pooled_child_off: Vec<(Pooled, &'static str)>,
+    /// Each with its `effect_stamp` (the Start pass that ran it, between the FixedUpdates' Instantiates).
+    pub pooled_child_off: Vec<(Pooled, &'static str, (usize, u64))>,
+    /// Counter behind `effect_stamp`.
+    pub effect_seq: u64,
     /// A recording's ParticleSystemManager active list (psm=, index order): the first particle update builds it.
     pub recorded_active: Vec<(i32, crate::particles::Listed)>,
     /// Synced instances that hold a WaterBehaviour (its SetActive calls change their objects).

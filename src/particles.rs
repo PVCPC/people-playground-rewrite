@@ -418,7 +418,19 @@ fn awake_order(sys: &[usize], systems: &[Sys], manager: &mut Manager) -> HashMap
         }
     }
     all.sort_by_key(|&s| systems[s].order);
-    all.into_iter().map(|s| (s, (crate::game::particle_rand::Seeds::reset(&systems[s].ps, &mut manager.rand), manager.add()))).collect()
+    let mut out: HashMap<usize, (crate::game::particle_rand::Seeds, u32)> = HashMap::new();
+    for s in all {
+        out.insert(s, (crate::game::particle_rand::Seeds::reset(&systems[s].ps, &mut manager.rand), manager.add()));
+        // ResetSeeds (1801bf2e0) draws for each sub-emitter too (1801bf4fe): an earlier-awoken one takes it, a later
+        // one's own Play draws again over it.
+        for c in sub_systems(&systems[s]) {
+            let seeds = crate::game::particle_rand::Seeds::reset(&systems[c].ps, &mut manager.rand);
+            if let Some(e) = out.get_mut(&c) {
+                e.0 = seeds;
+            }
+        }
+    }
+    out
 }
 
 fn start_with(sys: usize, position: Vec3, rotation: Quat, scale: f32, systems: &[Sys], manager: &mut Manager, pre: &mut HashMap<usize, (crate::game::particle_rand::Seeds, u32)>) -> Run {
@@ -2066,9 +2078,33 @@ impl Game {
     /// gapC r10: `<field>.Play(withChildren)` / `.Stop(withChildren)` on script `sid`'s ParticleSystem field (field_ps_tree);
     /// nothing when ours has none.
     pub(crate) fn ps_field_call(&mut self, sid: i32, field: &str, children: bool, call: crate::game::PsCall) {
+        self.adopt_field_ps(sid, field);
         for i in self.field_ps_tree(sid, field, children) {
             self.ps_calls.push((i, call));
         }
+    }
+
+    /// A recorded clone's ParticleSystem field target (link_instance's Free systems are a spawned clone's): it joins
+    /// embedded_ps as a Free system under its nearest PhysicalBehaviour, so the script's call reaches it.
+    fn adopt_field_ps(&mut self, sid: i32, field: &str) {
+        if self.field_ps(sid, field).is_some() {
+            return;
+        }
+        let Some((inst, t, psid)) = self.field_target(sid, field) else { return };
+        if !inst.prefab.objects[t].components.iter().any(|(_, c)| matches!(c, crate::assets::db::Component::Other(crate::game::water::PARTICLE_SYSTEM))) {
+            return;
+        }
+        let (mut chain, mut up) = (Vec::new(), Some(t));
+        let anchor = loop {
+            let Some(x) = up else { break crate::game::BareAnchor::Root };
+            if let Some(p) = self.physicals.iter().position(|p| inst.objects[x].components.contains(&p.id)) {
+                break crate::game::BareAnchor::Physical(p);
+            }
+            chain.push(inst.objects[x].trs);
+            up = inst.objects[x].parent;
+        };
+        let go = inst.prefab.objects[t].game_object;
+        self.embedded_ps.push(crate::game::EmbeddedPs { go, anchor, chain, owner: psid, drive: crate::game::EmbeddedDrive::Free, shape_texture: None, awake: true, emission: None });
     }
 
     /// A script's module writes on its ParticleSystem field (the system itself, not its children).
@@ -2778,6 +2814,18 @@ pub fn shockwaves_message(g: &mut Game, phase: ShockwavePhase) {
     g.assets = Some(db);
 }
 
+/// SetActive(false) of a pooled clone's child (its script's Start): ParticleSystem::Deactivate (1801b8610) clears it
+/// and RemoveFromManager; it plays no more (children before parents, as ActivateAwakeRecursivelyInternal).
+fn child_off(runs: &mut Vec<Run>, manager: &mut Manager, p: crate::game::Pooled, name: &str) {
+    let mut i = runs.len();
+    while i > 0 {
+        i -= 1;
+        if runs[i].pooled == Some(p) && runs[i].names.iter().any(|n| n == name) {
+            manager.forget(&runs.remove(i));
+        }
+    }
+}
+
 fn play_effect(library: &mut Library, runs: &mut Vec<Run>, db: &mut AssetDb, e: &crate::game::EffectSpawn, manager: &mut Manager) -> Option<u32> {
     let parts = library.parts(db, e.prefab, e.subtree);
     if parts.is_empty() {
@@ -2796,6 +2844,13 @@ fn play_effect(library: &mut Library, runs: &mut Vec<Run>, db: &mut AssetDb, e: 
     // activates them through the hierarchy (start's order).
     // ponytail: a pool Clear (300 s idle) remakes clones under the same index; they would count as reactivated.
     let made = e.pooled.is_some_and(|p| !manager.pooled.insert(p));
+    // A made clone's reactivation: each played root's Play (needRestart, no particles) runs ResetSeeds, its own draw then
+    // one per sub-emitter (1801bf4fe); a sub's Play only joins the list, its isSubEmitter byte (+0x20) still set from
+    // its last update (BeginUpdate 1801b5906 clears it only for listed systems). So one draw per system, root first:
+    // start_with's own order. A sub-emitter's sub-emitters would keep their last seeds.
+    if made && playing.iter().any(|&s| sub_systems(&library.systems[s]).iter().any(|&c| !library.systems[c].subs.is_empty())) {
+        unimplemented!("mod-only: a pooled clone's sub-emitter with sub-emitters of its own (ResetSeeds does not reseed them)");
+    }
     let mut pre = if made { HashMap::new() } else { awake_order(&playing, &library.systems, manager) };
     for part in parts {
         // A child the clone's scripts deactivated (activeSelf false) does not play.
@@ -3180,6 +3235,33 @@ fn play(run: &mut Run, systems: &[Sys], manager: &mut Manager) {
     }
 }
 
+/// ScheduleUpdateJobsHelper (1801bf680, BeginUpdate's per-root step) on an active root: CollectSubEmittersRecursive
+/// (1801b7130) gathers its sub systems depth first (CacheSubEmitters 1801df1c0 takes GetSubEmitterPtrs 1801ff200's
+/// lists by type: births, then deaths), then KeepUpdating (1801bcc10) sets each kStopped one kPlaying with
+/// stopEmitting and no ResetSeeds (1801bccf0 set its isSubEmitter byte, +0x20, which skips it). Its update job runs
+/// with the root's; `out` takes the ones that join the manager. An empty one leaves again at the frame's EndUpdateAll.
+fn keep_updating_subs(run: &mut Run, systems: &[Sys], out: &mut Vec<u32>) {
+    let s = &systems[run.sys];
+    let mut order = Vec::new();
+    for t in [0, 2] {
+        for sub in s.subs.iter().filter(|x| x.1 == t) {
+            let c = child_index(s, sub.0);
+            if !order.contains(&c) {
+                order.push(c);
+            }
+        }
+    }
+    for c in order {
+        let child = &mut run.children[c];
+        if child.halted {
+            child.halted = false;
+            child.clock.stop_emitting = true;
+            out.push(child.id);
+        }
+        keep_updating_subs(child, systems, out);
+    }
+}
+
 /// ParticleSystem::KeepUpdating (1801bcc10) on a kStopped system: kPlaying, stopEmitting, ResetSeeds (1801bf2e0;
 /// needRestart is still set by the ctor, Stop or a non-looping run's end, and only Pause/Simulate clear it), then
 /// AddToManager (appended; out of inactiveEmittersWithStopActions). t, numLoops and accumulatedDt keep their values.
@@ -3214,8 +3296,8 @@ pub(crate) struct Manager {
     /// The pooled clones made so far: a later Request reactivates one (SetActive(true)).
     pooled: std::collections::HashSet<crate::game::Pooled>,
     /// A loaded recording's listed systems the replay does not run (Listed::Ghost, Listed::Destroyed): they hold their
-    /// slots until the first EndUpdateAll (None) or their clone's Destroy (its Transform).
-    ghosts: HashMap<u32, Option<i32>>,
+    /// slots until the EndUpdateAll that counts their walks left down to 0, or their clone's Destroy (its Transform).
+    ghosts: HashMap<u32, (Option<i32>, Option<GhostClock>)>,
 }
 
 /// One slot of a recording's active list (Game::recorded_active).
@@ -3232,11 +3314,40 @@ pub enum Listed {
     Ghost,
 }
 
+/// A loaded SpawnParticles' system clock (it holds no particles): `t` advances as Update0's
+/// (unscaled ? unscaledDeltaTime : deltaTime) * simulationSpeed, and the system is empty and stopEmitting once `t`
+/// passes `end` (its duration, and its last birth plus its longest start lifetime).
+#[derive(Clone, Copy, Debug)]
+pub struct GhostClock {
+    t: f32,
+    speed: f32,
+    unscaled: bool,
+    end: f32,
+}
+
+impl GhostClock {
+    fn of(ps: &ParticleSystem) -> Self {
+        let longest = |c: &crate::assets::particles::MinMaxCurve| match c.state {
+            0 | 3 => c.scalar,
+            s => unimplemented!("mod-only: a loaded SpawnParticles with a curve start lifetime (state {s})"),
+        };
+        let last_birth = if ps.rate_over_time.scalar > 0.0 || ps.rate_over_distance.scalar > 0.0 {
+            ps.length
+        } else {
+            ps.bursts.iter().map(|b| b.time + b.interval * (b.cycles.max(1) - 1) as f32).fold(0.0, f32::max)
+        };
+        if ps.looping {
+            unimplemented!("mod-only: a loaded SpawnParticles that loops");
+        }
+        GhostClock { t: 0.0, speed: ps.simulation_speed, unscaled: ps.unscaled_time, end: ps.length.max(last_birth + longest(&ps.start_lifetime)) }
+    }
+}
+
 /// Destroy of a recorded DeleteAfterTime clone (its Transform `key`): RemoveFromManager swap-removes its system.
 pub fn destroyed_ghost(g: &mut Game, key: i32) {
     let Some(w) = g.particle_world.as_mut() else { return };
     let m = &mut w.manager;
-    if let Some((&id, _)) = m.ghosts.iter().find(|(_, k)| **k == Some(key)) {
+    if let Some((&id, _)) = m.ghosts.iter().find(|(_, k)| k.0 == Some(key)) {
         m.ghosts.remove(&id);
         if let Some(i) = m.active.iter().position(|&x| x == id) {
             m.active.swap_remove(i);
@@ -3358,12 +3469,50 @@ pub fn begin_update_all(g: &mut Game) {
     // The clones made since the last Start pass (their Start comes at the next one).
     spawn_shockwaves(library, shockwaves, &mut db, &log, *shockwave_scan);
     *shockwave_scan = 0;
-    for (j, e) in log.iter().enumerate() {
+    // The frame's Instantiates, Start passes and new bleeding particles in their order (Unity runs the Start of
+    // clones a FixedUpdate made before the next FixedUpdate): each clone's systems join the manager at its Play, a
+    // pooled clone's child its Start deactivates leaves it there (swap-remove), and a new bleeding particle's
+    // systems join at its Instantiate.
+    let offs = std::mem::take(&mut g.pooled_child_off);
+    let mut fresh: Vec<(usize, usize, Option<usize>)> = Vec::new();
+    for (i, b) in g.bleeding.iter().enumerate() {
+        if b.loaded || bleeds.contains_key(&i) || g.physicals[b.Parent].destroyed || g.physicals[b.Parent].rigidbody.detached.is_some() {
+            continue;
+        }
+        let Some(prefab) = b.prefab else { continue };
+        let Some(sys) = library.system(&db, prefab, Quat::IDENTITY) else { continue };
+        let go = db.prefab_cached(prefab).ok().and_then(|p| p.objects.iter().find(|o| o.name == "water puff").map(|o| o.game_object));
+        fresh.push((i, sys, go.and_then(|go| library.system(&db, go, Quat::IDENTITY))));
+    }
+    fresh.sort_by_key(|f| g.bleeding[f.0].log_at);
+    let mut reserved = HashMap::new();
+    let (mut o, mut f) = (0, 0);
+    for j in 0..=log.len() {
+        loop {
+            let next_off = offs.get(o).filter(|x| x.2 .0 <= j).map(|x| x.2);
+            let next_bleed = fresh.get(f).map(|x| g.bleeding[x.0].log_at).filter(|at| at.0 <= j);
+            match (next_off, next_bleed) {
+                (Some(a), b) if b.is_none_or(|b| a < b) => {
+                    child_off(runs, manager, offs[o].0, offs[o].1);
+                    o += 1;
+                }
+                (_, Some(_)) => {
+                    let (i, sys, puff) = fresh[f];
+                    reserved.insert(i, awake_order(&[sys].into_iter().chain(puff).collect::<Vec<_>>(), &library.systems, manager));
+                    f += 1;
+                }
+                _ => break,
+            }
+        }
+        let Some(e) = log.get(j) else { break };
         if let Some(group) = play_effect(library, runs, &mut db, e, manager) {
             for sw in shockwaves.iter_mut().filter(|s| s.log == Some(j)) {
                 sw.group = group;
             }
         }
+    }
+    for &(p, name, _) in &offs[o..] {
+        child_off(runs, manager, p, name);
     }
     for sw in shockwaves.iter_mut() {
         sw.log = None;
@@ -3400,18 +3549,10 @@ pub fn begin_update_all(g: &mut Game) {
         list.sort_by_key(|b| manager.active.iter().position(|&x| x == b.id));
         crate::game::particle_collision::assign_ray_budgets(&mut list);
     }
-    // SetActive(false) of a pooled clone's child (its script's Start): ParticleSystem::Deactivate (1801b8610) clears
-    // it and RemoveFromManager; it plays no more (children before parents, as ActivateAwakeRecursivelyInternal).
-    for (p, name) in std::mem::take(&mut g.pooled_child_off) {
-        let mut i = runs.len();
-        while i > 0 {
-            i -= 1;
-            if runs[i].pooled == Some(p) && runs[i].names.iter().any(|n| n == name) {
-                manager.forget(&runs.remove(i));
-            }
-        }
-    }
     let mut restored = Vec::new();
+    // BeginUpdate's roots' KeepUpdating subs (see keep_updating_subs), joined after the frame's Plays.
+    let mut kept: Vec<(u32, Vec<u32>)> = Vec::new();
+    let mut loaded_rand: Option<crate::unity::Random> = None;
     for (i, b) in g.bleeding.iter().enumerate() {
         // A child of the limb: destroyed with it, its particles too.
         if g.physicals[b.Parent].destroyed || g.physicals[b.Parent].rigidbody.detached.is_some() {
@@ -3446,12 +3587,36 @@ pub fn begin_update_all(g: &mut Game) {
         };
         let run = bleeds.entry(i).or_insert_with(|| {
             // The clone's AwakeFromLoad plays the root, Trail and water puff by original id.
-            let mut pre = if b.loaded { HashMap::new() } else { awake_order(&[sys].into_iter().chain(puff).collect::<Vec<_>>(), &library.systems, manager) };
+            let mut pre = if b.loaded { HashMap::new() } else { reserved.remove(&i).unwrap_or_else(|| awake_order(&[sys].into_iter().chain(puff).collect::<Vec<_>>(), &library.systems, manager)) };
+            // A loaded bleed's ResetSeeds drew before the recording's psrand: the manager's Rand stays as recorded. Its root
+            // continues from the recorded randoms (pseed=); the children (halted below) never draw.
+            let rand = manager.rand;
+            let lanes = |w: &[u32], o: usize| crate::game::particle_rand::RandN([0, 1, 2, 3].map(|i| crate::unity::Random { state: [w[o + i], w[o + 4 + i], w[o + 8 + i], w[o + 12 + i]] }));
+            if b.loaded {
+                if let Some(w) = &b.pseed {
+                    let seeds = crate::game::particle_rand::Seeds { random_seed: w[0], emission: crate::unity::Random { state: [w[1], w[2], w[3], w[4]] }, initial: lanes(w, 5) };
+                    pre.insert(sys, (seeds, manager.add()));
+                } else {
+                    // ponytail: recordings before pseed= (the 1.28.41 ones; on 1.28.52 the four loops whose pseed= re-recording
+                    // fails elsewhere keep theirs): the seeds are unknown; the loaded ones take successive draws of a copy of
+                    // the manager's Rand. No loop's compared state shows them (a fixed unrelated Rand passes all 54 on both
+                    // versions); a pseed= re-recording gives the real ones.
+                    manager.rand = loaded_rand.unwrap_or(rand);
+                }
+            }
             let mut run = start_with(sys, Vec3::ZERO, Quat::IDENTITY, 1.0, &library.systems, manager, &mut pre);
             if b.loaded {
-                // Played long before the recording: the sub-emitters left the list at the first EndUpdateAll.
-                for c in &run.children {
+                if let Some(w) = &b.pseed {
+                    run.shape.as_mut().unwrap().rand = lanes(w, 21);
+                    run.collision.as_mut().unwrap().rand = lanes(w, 37);
+                } else {
+                    loaded_rand = Some(manager.rand);
+                }
+                manager.rand = rand;
+                // Played long before the recording: the sub-emitters left the list (kStopped) at the first EndUpdateAll.
+                for c in &mut run.children {
                     manager.forget(c);
+                    c.halted = true;
                 }
                 restored.push((b.psm, run.id));
                 // The root's recorded culling state: renderer isVisible (the last render saw it), culled, cullTime, stopTime.
@@ -3481,6 +3646,11 @@ pub fn begin_update_all(g: &mut Game) {
         run.rotation = Quat::from_rotation_z(crate::unity::atan2f(up[1], up[0]) - std::f32::consts::FRAC_PI_2);
         run.stopped = b.destroyed;
         run.invalid |= !run.halted;
+        if manager.active.contains(&run.id) {
+            let mut subs = Vec::new();
+            keep_updating_subs(run, &library.systems, &mut subs);
+            kept.push((run.id, subs));
+        }
         step(run, &library.systems, Some(&drive), g, dt, rng);
     }
     // A recording with every listed system's slot: the active list as recorded, our systems in their slots and
@@ -3507,7 +3677,18 @@ pub fn begin_update_all(g: &mut Game) {
             };
             let id = id.unwrap_or_else(|| {
                 manager.next += 1;
-                manager.ghosts.insert(manager.next, if let Listed::Destroyed(k) = l { Some(k) } else { None });
+                // A loaded SpawnParticles (Listed::Destroyed: the recordings' DeleteAfterTime clones are SetupSpawnPrefab's)
+                // runs on its system's clock from its Play (the recorder loads right after the spawn: DeleteAfterTime
+                // time 0); the 1.28.52 prefab's simulationSpeed 4 on unscaled time ends it in the recorder's first
+                // slow frames (unscaledDeltaTime ~1 s).
+                let clock = if let Listed::Destroyed(_) = l {
+                    let go = db.resource("Prefabs/SpawnParticles", 1).ok().flatten().expect("SpawnParticles prefab");
+                    let sys = library.system(&db, go, Quat::IDENTITY).expect("SpawnParticles system");
+                    Some(GhostClock::of(&library.systems[sys].ps))
+                } else {
+                    None
+                };
+                manager.ghosts.insert(manager.next, (if let Listed::Destroyed(k) = l { Some(k) } else { None }, clock));
                 manager.next
             });
             list.push(id);
@@ -3564,7 +3745,26 @@ pub fn begin_update_all(g: &mut Game) {
         }
         // ParticleSystem.useUnscaledTime (SpawnParticles).
         let dt = if library.systems[run.sys].ps.unscaled_time { g.time.unscaledDeltaTime } else { dt };
+        if manager.active.contains(&run.id) {
+            let mut subs = Vec::new();
+            keep_updating_subs(run, &library.systems, &mut subs);
+            kept.push((run.id, subs));
+        }
         step(run, &library.systems, None, g, dt, rng);
+    }
+    // AddToManager (1801b4cc0) of the kept subs: BeginUpdate walks its roots in activeEmitters order, after the
+    // Update scripts' Plays and Instantiates (appended; out of inactiveEmittersWithStopActions).
+    kept.sort_by_key(|(root, _)| manager.active.iter().position(|x| x == root));
+    for id in kept.into_iter().flat_map(|k| k.1) {
+        if let Some(k) = manager.inactive.iter().position(|&x| x == id) {
+            manager.inactive.swap_remove(k);
+        }
+        if !manager.active.contains(&id) {
+            manager.active.push(id);
+        }
+        if !manager.nodes.contains(&id) {
+            manager.nodes.push(id);
+        }
     }
     *runs = r;
     g.particle_world = Some(w);
@@ -3673,9 +3873,17 @@ pub fn end_update_all(g: &mut Game) -> Vec<crate::game::Pooled> {
     while i > 0 {
         i -= 1;
         let id = m.active[i];
-        // A recording's placeholder: played long before, it stopped (one its Destroy takes holds on).
-        if let Some(&k) = m.ghosts.get(&id) {
-            if k.is_none() {
+        // A recording's placeholder: a loaded SpawnParticles stops when its clock passes its end (unless its Destroy
+        // comes first); the others at the first walk.
+        if let Some(k) = m.ghosts.get_mut(&id) {
+            let gone = match &mut k.1 {
+                None => true,
+                Some(c) => {
+                    c.t += if c.unscaled { g.time.unscaledDeltaTime } else { g.time.deltaTime } * c.speed;
+                    c.t > c.end
+                }
+            };
+            if gone {
                 m.ghosts.remove(&id);
                 m.active.swap_remove(i);
             }
