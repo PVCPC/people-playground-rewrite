@@ -412,6 +412,19 @@ const PURE_MODS: &[(&str, PureCall)] = &[
         Ok(format!("{},{}", m_rel(&t, &s.Folder), m_b(t.0.join("New").join("Folder").is_dir())))
     }),
     // v52h r6: DllCheck mods MODS_ONLY=migration: Version;VersionCondition;ToSpawnInstead set;originVersion.
+    // v52h r7 (v52h_ui2, PPG_LOGOFRAMES): each Update from the recorded t, finished, unscaledDeltaTime, Duration and colour (bits); t,
+    // finished, activeSelf and Renderer.color after (the colour before, unless this Update set it).
+    ("LogoFlashBehaviour.Update", |c| {
+        let f = |i: usize| -> Result<f32, String> { u32::from_str_radix(m_arg(c, i)?, 16).map(f32::from_bits).map_err(|e| e.to_string()) };
+        let (mut t, mut fin, dt, dur) = (f(0)?, m_arg(c, 1)? == "1", f(2)?, f(3)?);
+        let step = crate::ui::logo_flash_update_45(&mut t, &mut fin, dt, dur);
+        let h = |x: f32| format!("{:08x}", x.to_bits());
+        let colour = match step {
+            crate::ui::LogoStep::Show(at) => crate::ui::logo_flash_gradient(at)?.map(h).join(";"),
+            _ => (4..8).map(|i| m_arg(c, i)).collect::<Result<Vec<_>, _>>()?.join(";"),
+        };
+        Ok(format!("{};{};{};{colour}", h(t), m_b(fin), m_b(step != crate::ui::LogoStep::Hide)))
+    }),
     ("MigrationEvent.IsApplicable", |c| {
         use crate::game::contraption::{MigrationCondition as C, MigrationEvent};
         let cond = [C::OlderThan, C::OlderThanOrEqualTo, C::EqualTo, C::NewerThan, C::NewerThanOrEqualTo][m_arg(c, 1)?.parse::<usize>().map_err(|e| e.to_string())?];

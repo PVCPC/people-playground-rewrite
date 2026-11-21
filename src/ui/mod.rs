@@ -513,24 +513,14 @@ fn logo_flash(
     if crate::assets::il::is_1_28_45() {
         use std::sync::atomic::{AtomicBool, Ordering};
         static FINISHED: AtomicBool = AtomicBool::new(false);
-        if FINISHED.load(Ordering::Relaxed) {
-            for mut i in &mut images {
-                i.color = Color::NONE;
-            }
-            return;
-        }
-        if time.delta_secs() > 0.1 {
-            return;
-        }
-        if s.t > duration {
-            FINISHED.store(true, Ordering::Relaxed);
-            for mut i in &mut images {
-                i.color = Color::NONE;
-            }
-            return;
-        }
-        s.t += time.delta_secs();
-        let c = gradient((s.t / duration).clamp(0.0, 1.0));
+        let mut finished = FINISHED.load(Ordering::Relaxed);
+        let step = logo_flash_update_45(&mut s.t, &mut finished, time.delta_secs(), duration);
+        FINISHED.store(finished, Ordering::Relaxed);
+        let c = match step {
+            LogoStep::Skip => return,
+            LogoStep::Hide => Color::NONE,
+            LogoStep::Show(at) => gradient(at),
+        };
         for mut i in &mut images {
             i.color = c;
         }
@@ -548,6 +538,40 @@ fn logo_flash(
     for mut i in &mut images {
         i.color = c;
     }
+}
+
+/// What one 1.28.45 LogoFlashBehaviour.Update did: SetActive(false), nothing (a frame over 0.1 s), or the colour at Gradient time `at`.
+#[derive(Debug, PartialEq)]
+pub(crate) enum LogoStep {
+    Hide,
+    Skip,
+    Show(f32),
+}
+
+/// LogoFlashBehaviour.Update (1.28.45): hidden once the static `finished` is set; unscaledDeltaTime > 0.1 skips the frame; past
+/// Duration sets `finished` and hides; else t += unscaledDeltaTime and Renderer.color = Gradient.Evaluate(Clamp01(t / Duration)).
+pub(crate) fn logo_flash_update_45(t: &mut f32, finished: &mut bool, dt: f32, duration: f32) -> LogoStep {
+    if *finished {
+        return LogoStep::Hide;
+    }
+    if dt > 0.1 {
+        return LogoStep::Skip;
+    }
+    if *t > duration {
+        *finished = true;
+        return LogoStep::Hide;
+    }
+    *t += dt;
+    LogoStep::Show((*t / duration).clamp(0.0, 1.0))
+}
+
+/// The Menu scene's LogoFlashBehaviour.Gradient at `at` (srgba; the scenes must be loaded).
+pub(crate) fn logo_flash_gradient(at: f32) -> Result<[f32; 4], String> {
+    if scene::field("Menu", view::LOGO_FLASH, "LogoFlashBehaviour", "Gradient").is_none() {
+        scene::load(&mut crate::assets::db::AssetDb::open(&crate::game_assets::find_game(None)?)?)?;
+    }
+    let v = scene::field("Menu", view::LOGO_FLASH, "LogoFlashBehaviour", "Gradient").ok_or("no LogoFlashBehaviour.Gradient")?;
+    Ok(crate::game::visual::Gradient::read(v)?.evaluate(at))
 }
 
 /// The pointer is over a UI node.
@@ -1552,20 +1576,26 @@ fn contraption_buttons(
 }
 
 /// SpawnableOutlineBehaviour's active children: the transform's state; play::spawnable_outline_sprites draws the children.
-fn spawnable_outline(ui: Res<Ui>, play: Option<ResMut<Play>>) {
+fn spawnable_outline(ui: Res<Ui>, play: Option<ResMut<Play>>, mut shown: Local<Option<f32>>) {
     let Some(mut play) = play else { return };
-    // CatalogBehaviour.ShowContraptionOutline / HideContraptionOutline / Update: SetOutline, the flip, the active flag and the mouse position.
+    // CatalogBehaviour.ShowContraptionOutline / HideContraptionOutline / Update: SetOutline, the flip, the active flag and the mouse
+    // position. Only the catalog's changes reach the object: DragTool's paste shows and hides the same one (tool.rs).
     let g = &mut play.game;
     match &ui.local.outline {
         Some((rects, flip)) => {
-            if !g.spawnable_outline.active || g.spawnable_outline.flip != *flip {
+            if *shown != Some(*flip) {
                 g.spawnable_outline.SetOutline(rects);
+                g.spawnable_outline.active = true;
+                g.spawnable_outline.flip = *flip;
+                *shown = Some(*flip);
             }
-            g.spawnable_outline.active = true;
-            g.spawnable_outline.flip = *flip;
             g.spawnable_outline.position = [g.MousePosition[0], g.MousePosition[1]];
         }
-        None => g.spawnable_outline.active = false,
+        None => {
+            if shown.take().is_some() {
+                g.spawnable_outline.active = false;
+            }
+        }
     }
 }
 

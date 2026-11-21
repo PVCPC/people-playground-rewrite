@@ -149,10 +149,11 @@ impl ObjectState {
     }
 }
 
-/// Clipboard (the ContraptionOutline it also holds is only drawn by SpawnableOutlineBehaviour and is not kept).
+/// Clipboard: the states and the ContraptionOutline (its Rectangles) SpawnableOutlineBehaviour shows on a paste.
 #[derive(Clone, Debug, Default)]
 pub struct Clipboard {
     pub States: Vec<ObjectState>,
+    pub Outline: Vec<super::contraption::RotatedRectangle>,
 }
 
 impl Clipboard {
@@ -543,6 +544,18 @@ impl Game {
                 let t = self.physicals[q].transform_id;
                 let link = ComponentReferenceLink { UniqueIdentity: self.identity_of(t), ComponentType: Some("SyringeBehaviour".into()) };
                 proto.storedReferenceFields.push(("AttachedSyringe".into(), link));
+            }
+        }
+        // FirearmAttachmentBehaviour.FirearmBehaviour and AttachmentPoint: set while connected (the gun's FirearmBehaviour, the point).
+        if let Some(a) = self.firearm_attachments.iter().position(|a| a.id == id).filter(|_| super::attachment::CLASSES.contains(&class)) {
+            let (f, pt) = (self.firearm_attachments[a].firearm, self.firearm_attachments[a].point);
+            if let Some(q) = f.and_then(|f| self.firearms[f].physical).filter(|&q| !self.physicals[q].destroyed && self.object_names.contains_key(&self.root_id(q))) {
+                let link = ComponentReferenceLink { UniqueIdentity: self.identity_of(self.physicals[q].transform_id), ComponentType: Some("FirearmBehaviour".into()) };
+                proto.storedReferenceFields.push(("FirearmBehaviour".into(), link));
+            }
+            if let Some(t) = pt.filter(|&pt| !self.destroyed_components.contains(&self.attachment_points[pt].id)).map(|pt| self.attachment_points[pt].tid) {
+                let link = ComponentReferenceLink { UniqueIdentity: self.identity_of(t), ComponentType: Some("FirearmAttachmentPointBehaviour".into()) };
+                proto.storedReferenceFields.push(("AttachmentPoint".into(), link));
             }
         }
         for (_, field, rty) in REFERENCE_MEMBERS.iter().filter(|(c, ..)| *c == class) {
@@ -1118,6 +1131,7 @@ impl Game {
         }
         // The NodeBehaviour PhysicalBehaviour.Awake added (GetOrAddComponent, before any other run-time component): DelaySeconds, Started, Ended
         // (SerialisableState, a SerialisableEvent[], is not a serialisable type). One the prefab carries is among `scripts`.
+        let added_at = prefab_end.unwrap_or(out.len());
         let added_node = self.physicals.iter().find(|q| q.transform_id == tid && !q.destroyed).map(|q| q.ids.ActivationNode).filter(|&n| n != 0 && !comps.contains(&n) && !self.destroyed_components.contains(&n));
         if let Some(n) = added_node {
             let node = self.activation_nodes.iter().find(|a| a.id == n).cloned().unwrap_or_default();
@@ -1125,7 +1139,18 @@ impl Game {
             proto.storedFields.push(("DelaySeconds".into(), SavedValue::Net("System.Single".into(), Payload::F32(node.DelaySeconds.to_bits()))));
             proto.storedFields.push(("Started".into(), SavedValue::Net("Activations.Channel".into(), Payload::EnumU8(node.Started))));
             proto.storedFields.push(("Ended".into(), SavedValue::Net("Activations.Channel".into(), Payload::EnumU8(node.Ended))));
-            let at = prefab_end.unwrap_or(out.len());
+            let at = added_at;
+            out.insert(at, proto);
+            if let Some(s) = identity_slot.as_mut().filter(|s| **s >= at) {
+                *s += 1;
+            }
+        }
+        // The CheckOnDestroyAttachment FirearmAttachmentBehaviour.Awake added: after the prefab's components, before PhysicalBehaviour's node.
+        // Its one serialised member is the Attachment reference (no ComponentType subclass: the field is a FirearmAttachmentBehaviour).
+        if self.firearm_attachments.iter().any(|a| a.physical.is_some_and(|p| self.physicals[p].transform_id == tid && !self.physicals[p].destroyed)) {
+            let link = ComponentReferenceLink { UniqueIdentity: self.identity_of(tid), ComponentType: Some("FirearmAttachmentBehaviour".into()) };
+            let proto = MonoBehaviourPrototype { Enabled: true, Type: "CheckOnDestroyAttachment".into(), storedFields: Vec::new(), storedProperties: Vec::new(), storedReferenceFields: vec![("Attachment".into(), link)] };
+            let at = added_at;
             out.insert(at, proto);
             if let Some(s) = identity_slot.as_mut().filter(|s| **s >= at) {
                 *s += 1;
@@ -2519,7 +2544,11 @@ impl Game {
     pub(crate) fn clipboard_store(&mut self, selected: &[usize], center: [f32; 3]) {
         let live: Vec<usize> = selected.iter().copied().filter(|&p| !self.physicals[p].destroyed).collect();
         let states = self.object_states_of(&live, center);
-        self.clipboard = Some(Clipboard { States: states });
+        // Clipboard's constructor: Outline = ContraptionOutlineSerialiser.GenerateOutline(set, center), then SpawnableOutlineBehaviour.Instance.SetOutline(Outline).
+        let roots = self.contraption_outline_roots(selected);
+        let outline = super::contraption::generate_outline(&roots, center);
+        self.spawnable_outline.SetOutline(&outline);
+        self.clipboard = Some(Clipboard { States: states, Outline: outline });
     }
 
     /// DragTool.Update's copy: the clipboard filled, then the "Copied N objects" notification.

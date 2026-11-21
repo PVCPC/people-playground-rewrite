@@ -72,7 +72,8 @@ impl Game {
         self.physicals[child].parent = Some(node);
         let chain = self.parent_chain(child);
         let (local, world) = set_world(&chain, live.position, live.rotation);
-        let local_scale = [scale[0] / parent_scale[0], scale[1] / parent_scale[1], scale[2] / parent_scale[2]];
+        // Transform.SetParent(worldPositionStays)'s localScale: the parent chain's rotation-scale inverted, as ArrayCloner's clones (misc.rs).
+        let local_scale = crate::unity::transform::local_scale_under(&chain, live.rotation, scale, local.1);
         let ph = &mut self.physicals[child];
         (ph.transform.position, ph.transform.rotation, ph.transform.local, ph.transform.localScale) = (world.0, world.1, Some(local), local_scale);
         // Rigidbody2D::TransformParentChanged.

@@ -427,16 +427,18 @@ fn act(app: &mut App, verb: &str, arg: Option<&str>) -> Result<Vec<Act>, String>
             vec![]
         }
         "spawn" => {
+            // At the camera (Camera.main.transform.position), as the recorder does.
+            let c = camera_xy(app);
             let mut play = app.world_mut().resource_mut::<crate::play::Play>();
             let g = &mut play.game;
             let first = g.physicals.len();
             let mut db = g.assets.take().ok_or("no game data")?;
-            // At the camera (the world point of the screen's centre), as the recorder does.
-            let c = match (g.input.screen, g.input.window) {
-                (Some(s), Some(w)) => s.to_world([w.size[0] / 2.0, w.size[1] / 2.0]),
-                _ => [g.BoundingBox.center[0], g.BoundingBox.center[1]],
+            // "<name>@<dx>": dx metres right of the camera.
+            let (name, dx) = match arg.ok_or("spawn needs a name")?.split_once('@') {
+                Some((n, d)) => (n, d.parse::<f32>().map_err(|e| e.to_string())?),
+                None => (arg.unwrap(), 0.0),
             };
-            let spawned = g.catalog_spawn(&mut db, arg.ok_or("spawn needs a name")?, [c[0], c[1], 0.0], false);
+            let spawned = g.catalog_spawn(&mut db, name, [c[0] + dx, c[1], 0.0], false);
             g.assets = Some(db);
             g.unsynced.push(spawned?.0);
             let p = (first..g.physicals.len()).find(|&q| g.physicals[q].Selectable).ok_or("nothing selectable spawned")?;
@@ -478,11 +480,52 @@ fn act(app: &mut App, verb: &str, arg: Option<&str>) -> Result<Vec<Act>, String>
             app.world().resource::<Ui>().selected_category();
             vec![]
         }
+        // DragTool.Update with only "copy" down, "paste" down or "paste" up (pasteup:<dx>: dx metres right of the camera), the mouse
+        // at the camera, as the recorder forces InputSystem.Down/Up for one call.
+        "copy" | "pastedown" | "pasteup" => {
+            let c = camera_xy(app);
+            let mut play = app.world_mut().resource_mut::<crate::play::Play>();
+            let g = &mut play.game;
+            let dx = arg.map(str::parse::<f32>).transpose().map_err(|e| e.to_string())?.unwrap_or(0.0);
+            g.MousePosition = [c[0] + dx, c[1], 0.0];
+            let key = if verb == "copy" { "copy" } else { "paste" };
+            let saved = std::mem::take(&mut g.input.controls);
+            g.input.controls.insert(key.into(), crate::game::tool::Control { down: verb != "pasteup", held: false, up: verb == "pasteup" });
+            g.drag_tool_update();
+            g.input.controls = saved;
+            vec![]
+        }
+        // The last spawn's first PhysicalBehaviour disintegrated.
+        "disint" => {
+            let mut play = app.world_mut().resource_mut::<crate::play::Play>();
+            play.game.physical_disintegrate(SPAWNED.load(std::sync::atomic::Ordering::Relaxed));
+            vec![]
+        }
         "selflip" | "seldelete" | "selclear" | "deselect" => {
             let mut play = app.world_mut().resource_mut::<crate::play::Play>();
             let g = &mut play.game;
             match verb {
-                "selflip" => g.flip_selection(),
+                "selflip" => {
+                    g.flip_selection();
+                    // The recorder's FlipSelection.roots: each selected object's root once, name, position x y, rotation z w, localScale x (bits).
+                    let mut roots: Vec<i32> = Vec::new();
+                    for &p in &g.tool.as_ref().unwrap().rawSelection {
+                        let r = g.root_id(p);
+                        if !g.physicals[p].destroyed && !roots.contains(&r) {
+                            roots.push(r);
+                        }
+                    }
+                    let b = |f: f32| format!("{:08x}", f.to_bits());
+                    let s = roots.iter().filter_map(|&r| g.physicals.iter().find(|q| q.transform_id == r && !q.destroyed).map(|q| {
+                        let t = &q.transform;
+                        format!("{} {} {} {} {} {}", g.object_names.get(&r).cloned().unwrap_or_default(), b(t.position[0]), b(t.position[1]), b(t.rotation[2]), b(t.rotation[3]), b(t.localScale[0]))
+                    })).collect::<Vec<_>>().join("|");
+                    crate::ui::uifn("SelectionController.FlipSelection.roots", || s);
+                    // The recorder's FlipSelection postfix: the first selected object's root's localScale.x (any number of roots).
+                    if let Some(x) = g.tool.as_ref().unwrap().rawSelection.first().map(|&p| g.root_id(p)).and_then(|r| g.physicals.iter().find(|q| q.transform_id == r && !q.destroyed)).map(|q| q.transform.localScale[0]) {
+                        crate::ui::uifn("SelectionController.FlipSelection", || crate::game::menu::cs_float(x));
+                    }
+                }
                 "seldelete" => g.user_delete_selection(),
                 "selclear" => g.clear_selection(),
                 _ => g.deselect(SPAWNED.load(std::sync::atomic::Ordering::Relaxed)),
@@ -817,4 +860,11 @@ mod tests {
         assert_eq!(super::untag("<color=#ccc>Loading</color> a<b"), "Loading a<b");
         assert_eq!(super::base64("eyJhIjoxfQ=="), b"{\"a\":1}");
     }
+}
+
+/// Camera.main.transform.position's x and y: the main camera's world translation.
+fn camera_xy(app: &mut App) -> [f32; 2] {
+    let world = app.world_mut();
+    let t = world.query_filtered::<&GlobalTransform, With<crate::lights::MainCamera>>().single(world).map(|t| t.translation()).unwrap_or_default();
+    [t.x, t.y]
 }

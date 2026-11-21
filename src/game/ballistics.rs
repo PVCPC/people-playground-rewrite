@@ -542,7 +542,7 @@ impl Game {
     }
 
     /// The transform.root of a physical's GameObject, as its Transform id.
-    pub(super) fn root_id(&self, p: usize) -> i32 {
+    pub(crate) fn root_id(&self, p: usize) -> i32 {
         match self.root_of(p) {
             (true, n) => self.transform_nodes[n].id,
             (false, p) => self.physicals[p].transform_id,

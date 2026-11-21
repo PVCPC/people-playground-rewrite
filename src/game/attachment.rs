@@ -71,6 +71,8 @@ script! {
 pub struct AttachmentPoint {
     /// The component's instance id.
     pub id: i32,
+    /// Its object's Transform id.
+    pub tid: i32,
     /// The BoxCollider2D trigger(s) on the point's own object.
     pub colliders: Vec<i32>,
     pub AttachmentType: i32,

@@ -58,6 +58,11 @@ impl SpawnableOutline {
                 self.children.push(OutlineChild { active: true, size: r.Size, position: r.Center, angle: r.AngleDegrees });
             }
         }
+        // The recorder's uifn: the children's count, then each active one's size and localPosition (bits).
+        let b = |f: f32| format!("{:08x}", f.to_bits());
+        let children = &self.children;
+        let state = || format!("{} {}", children.len(), children.iter().filter(|c| c.active).map(|c| format!("{} {} {} {}", b(c.size[0]), b(c.size[1]), b(c.position[0]), b(c.position[1]))).collect::<Vec<_>>().join("|"));
+        crate::ui::uifn("SpawnableOutlineBehaviour.SetOutline", state);
     }
 }
 

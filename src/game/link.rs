@@ -3855,7 +3855,7 @@ impl Game {
                 let firearm = prefab.objects[o].parent.and_then(|t| firearms.get(&t).copied());
                 let colliders = prefab.objects[o].components.iter().enumerate().filter(|(_, (_, x))| matches!(x, Component::Collider2D(_))).map(|(k, _)| inst.objects[o].components[k]).collect();
                 attachment_points.insert(o, self.attachment_points.len());
-                self.attachment_points.push(super::attachment::AttachmentPoint { id: inst.objects[o].components[c], colliders, AttachmentType: field(v, "AttachmentType")?.i64().ok_or("AttachmentType")? as i32, firearm, ..Default::default() });
+                self.attachment_points.push(super::attachment::AttachmentPoint { id: inst.objects[o].components[c], tid: inst.objects[o].components[0], colliders, AttachmentType: field(v, "AttachmentType")?.i64().ok_or("AttachmentType")? as i32, firearm, ..Default::default() });
             }
             if let Some((c, enabled, v)) = script(prefab, o, "ActOnShot") {
                 let mut x = super::acts::ActOnShot::default();

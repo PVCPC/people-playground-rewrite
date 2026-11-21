@@ -1892,10 +1892,20 @@ impl Game {
             return;
         }
         // ClipboardControllerBehaviour.ObjectStateInClipboard: the auto-property is `clipboard`, which copy fills.
-        // (The outline SpawnableOutlineBehaviour draws on paste is presentation.)
         if self.input.down(crate::il!(str "DragTool::Update" 0)) && !t.rawSelection.is_empty() {
             let (selected, center) = (t.rawSelection.clone(), self.MousePosition);
             self.clipboard_copy(&selected, center);
+        }
+        // Paste held down: SpawnableOutlineBehaviour.Instance at localScale 1 shows the clipboard's Outline; released, it is hidden.
+        if self.input.down(crate::il!(str "DragTool::Update" 2)) {
+            if let Some(outline) = self.clipboard.as_ref().map(|c| c.Outline.clone()) {
+                self.spawnable_outline.flip = 1.0;
+                self.spawnable_outline.SetOutline(&outline);
+                self.spawnable_outline.active = true;
+            }
+        }
+        if self.input.up(crate::il!(str "DragTool::Update" 2)) {
+            self.spawnable_outline.active = false;
         }
         if self.input.up(crate::il!(str "DragTool::Update" 2)) && self.clipboard.is_some() {
             let at = self.MousePosition;
