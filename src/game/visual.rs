@@ -515,8 +515,11 @@ impl Game {
                 self.hologram_will_render(v);
                 continue;
             }
-            if matches!(self.visuals[v].kind, Kind::SortingChild { .. }) {
-                self.sorting_layer_child_will_render(v);
+            if let Kind::SortingChild { sprite, line, .. } = self.visuals[v].kind {
+                // Unity calls OnWillRenderObject only for a renderer that draws.
+                if sprite.is_some_and(|s| self.sprite_drawn(s)) || line.is_some_and(|i| self.line_drawn(i)) {
+                    self.sorting_layer_child_will_render(v);
+                }
                 continue;
             }
             let Kind::ColorWave { own, .. } = self.visuals[v].kind else { continue };
@@ -597,9 +600,8 @@ impl Game {
     /// layer from the parent's SpriteRenderer, the order the parent's, plus Offset (Above) or minus it (Behind).
     pub(crate) fn sorting_layer_child_will_render(&mut self, v: usize) {
         let Kind::SortingChild { sprite, line, parent, Behaviour, Offset, .. } = self.visuals[v].kind else { unreachable!() };
-        let drawn = sprite.is_some_and(|s| self.sprite_drawn(s)) || line.is_some_and(|i| self.line_drawn(i));
         // `if (!parentRenderer) return;`
-        let Some(parent) = parent.filter(|_| drawn) else { return };
+        let Some(parent) = parent else { return };
         if !self.renderer_alive(parent) {
             return;
         }

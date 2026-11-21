@@ -767,19 +767,21 @@ impl Game {
         }
     }
 
-    /// The pending MapLightBehaviour coroutines (DelayedCallManager, between Update and LateUpdate):
-    /// each resumes in the first frame whose time reaches its wake, in wake order.
-    pub fn map_light_coroutines(&mut self) {
-        let now = self.time.timeAsDouble;
+    /// The pending MapLightBehaviour coroutines due by `now`, as (wake, light). They resume in the delayed-call pass
+    /// (DelayedCallManager), in wake order with every other WaitForSeconds coroutine (a railgun's FireCoroutine).
+    pub fn map_light_due(&mut self, now: f64) -> Vec<(f64, usize)> {
         // A light whose GameObject was destroyed stops its coroutine with it.
         for l in 0..self.map_lights.len() {
             if self.destroyed_components.contains(&self.map_lights[l].id) {
                 self.map_lights[l].wake = None;
             }
         }
-        let mut due: Vec<usize> = (0..self.map_lights.len()).filter(|&l| self.map_lights[l].wake.is_some_and(|w| w <= now)).collect();
-        due.sort_by(|&a, &b| self.map_lights[a].wake.partial_cmp(&self.map_lights[b].wake).unwrap());
-        for l in due {
+        (0..self.map_lights.len()).filter_map(|l| self.map_lights[l].wake.filter(|&w| w <= now).map(|w| (w, l))).collect()
+    }
+
+    /// A MapLightBehaviour coroutine resuming after its WaitForSeconds.
+    pub fn map_light_resume(&mut self, l: usize) {
+        {
             // DelayedActivation or DelayedDeactivation after its WaitForSeconds.
             // MapLightBehaviour.DelayedActivation: Activated = true, UpdateActivated().
             // MapLightBehaviour.DelayedDeactivation: Activated = false, the switch clip, UpdateActivated().

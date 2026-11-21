@@ -1581,7 +1581,7 @@ pub struct ThermalTexture {
     pub min_temp: f32,
     pub max_temp: f32,
     pub to_read: u32,
-    t: f32,
+    pub t: f32,
     /// data: heat and alpha per texel, rows from the bottom.
     pub data: Vec<u8>,
     /// Bumped at each Apply.

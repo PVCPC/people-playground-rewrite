@@ -453,6 +453,10 @@ impl Game {
             b.indices.extend([num2 + 1, num2 + 2, num2, num2 + 1, num2 + 2, num2 + 3]);
             num2 += 2;
         }
-        b.version += 1;
+        // mesh.Clear(): the Mesh is made in Awake, which a never-active blur did not run.
+        if !self.with_component_instance(self.energy_blurs[i].id, |_, inst, o| inst.objects[o].activated) {
+            super::menu::throw("NullReferenceException: Object reference not set to an instance of an object");
+        }
+        self.energy_blurs[i].version += 1;
     }
 }

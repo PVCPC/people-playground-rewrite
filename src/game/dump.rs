@@ -3055,7 +3055,6 @@ impl Game {
         // Starts (wake -10 s, first in time order), then the coroutines.
         self.camera_control_update();
         self.run_pending_starts();
-        self.map_light_coroutines();
         self.explosive_coroutines();
         self.reactor_a5_arc_coroutines();
         self.gore_string_delayed_calls(true);

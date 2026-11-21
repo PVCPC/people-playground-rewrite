@@ -1923,6 +1923,90 @@ const CALLS: &[(&str, Call)] = &[
     }),
     // fc41 r15: SingleFloodlightBehaviour.Awake on a " fla=1" case: FnTiny gave the Renderer's and each Highlight sprite's block a
     // _GlowIntensity (" flr=", " flh=": not in the dump) and junk in the held blocks; the return is the held blocks after (st=fl:).
+    // fc41 r16: Use(ActivationPropagation): its Channel. Older recordings passed the channel as an int; a bare "signal"
+    // (Direct, channel 0) is dropped from the args.
+    ("ValveBehaviour.Use", |g, c| {
+        let i = g.valves.iter().position(|x| x.id == c.id).ok_or("no valves entry")?;
+        let ch = match c.args.first() { Some(a) if !a.starts_with("signal") => c.arg(0)?, a => signal_arg(a.copied().unwrap_or("signal"))?.1 as i32 };
+        g.valve_use(i, ch);
+        VOID
+    }),
+    // fc41 r16: the FnTiny seed (emn: the nodes; the mesh lists cleared); st=em:<enabled>,<vertices>,<colours>,<indices>,<FNV of the bits>.
+    ("EnergySwordMotionBlur.UpdateMesh", |g, c| {
+        let i = { let c = c.with(1)?; c.p_usize(g, 0)? };
+        let case = c.s.of("FnCase").next();
+        let Some(emn) = case.and_then(|r| r.get("emn")) else { g.energy_blur_update_mesh(i); return VOID };
+        let mut nodes = Vec::new();
+        for (k, n) in emn.split(';').filter(|x| *x != "-").enumerate() {
+            let v: Vec<f32> = n.split(',').map(|v| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+            if v.len() != 6 { return Err(format!("emn node {k}: {} values", v.len())) }
+            nodes.push(crate::game::energy_sword::BlurNode { Life: 0.1 * k as f32, A: [v[0], v[1], v[2]], B: [v[3], v[4], v[5]] });
+        }
+        let old = std::mem::replace(&mut g.energy_blurs[i].nodes, nodes);
+        { let b = &mut g.energy_blurs[i]; b.vertices.clear(); b.colors.clear(); b.indices.clear(); }
+        g.energy_blur_update_mesh(i);
+        let b = &mut g.energy_blurs[i];
+        b.nodes = old;
+        let fnv = |xs: &mut dyn Iterator<Item = u32>| xs.fold(2166136261u32, |h, x| (h ^ x).wrapping_mul(16777619));
+        let hv = fnv(&mut b.vertices.iter().flatten().map(|f| f.to_bits()));
+        let hc = fnv(&mut b.colors.iter().flatten().map(|f| f.to_bits()));
+        let hi = fnv(&mut b.indices.iter().copied());
+        let (n, x) = (b.vertices.len(), |f: f32| format!("{:08x}", f.to_bits()));
+        let tail = if n >= 2 { let (v, w, q) = (b.vertices[n - 2], b.vertices[n - 1], b.colors[b.colors.len() - 2]); format!(",{},{},{},{},{},{}", x(v[0]), x(v[1]), x(w[0]), x(w[1]), x(q[0]), x(q[3])) } else { String::new() };
+        Ok(format!(" st=em:{},{n},{},{},{hv:08x},{hc:08x},{hi:08x}{tail}", b.renderer_enabled as u8, b.colors.len(), b.indices.len()))
+    }),
+    // fc41 r16: the FnTiny seed (rxt/rxc, the core's InternalTemperature and CoolingPower; text "junk");
+    // st=rx:<length>,<FNV-1a of the UTF-16 code units of TextMesh.text>.
+    ("ReactorA5DisplayBehaviour.UpdateDisplayText", |g, c| {
+        let i = { let c = c.with(1)?; c.p_usize(g, 0)? };
+        let case = c.s.of("FnCase").next();
+        let f = |k: &str| case.and_then(|r| r.get(k)).map(|v| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string()));
+        let (Some(t), Some(cp)) = (f("rxt"), f("rxc")) else { g.reactor_a5_display_update_text(i); return VOID };
+        let core = g.reactor_a5_displays[i].Core.ok_or("rx case: no Core")?;
+        let old = (g.reactor_cores[core].InternalTemperature, g.reactor_cores[core].CoolingPower);
+        (g.reactor_cores[core].InternalTemperature, g.reactor_cores[core].CoolingPower) = (t?, cp?);
+        let text = g.reactor_a5_displays[i].TextMesh;
+        if let Some(x) = text { g.text_set(x, "junk") }
+        g.reactor_a5_display_update_text(i);
+        (g.reactor_cores[core].InternalTemperature, g.reactor_cores[core].CoolingPower) = old;
+        let Some(x) = text else { return Ok(" st=rx:n".into()) };
+        let s = g.text_get(x);
+        let h = s.encode_utf16().fold(2166136261u32, |h, ch| (h ^ ch as u32).wrapping_mul(16777619));
+        Ok(format!(" st=rx:{},{h:08x}", s.encode_utf16().count()))
+    }),
+    // fc41 r16: the FnTiny seed (tve/tvt and the transform the dump lacks); st=tv:<enabled>,<t bits>,<heat sum>,<alpha sum>,<fnv of data>.
+    ("ThermalVisionBehaviour.Update", |g, c| {
+        let case = c.s.of("FnCase").next();
+        let Some(tve) = case.and_then(|r| r.get("tve")) else { g.thermal_vision_update(); return VOID };
+        let f = |k: &str| -> Result<Vec<f32>, String> { case.and_then(|r| r.get(k)).ok_or(format!("tv case: no {k}"))?.split(',').map(|v| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string())).collect() };
+        let (t, p, s, r) = (f("tvt")?[0], f("tvp")?, f("tvs")?, f("tvr")?[0]);
+        if r != 0.0 { return Err(format!("tv case: rotation {r}, ours reads TransformPoint without it")) }
+        let tvm = f("tvm");
+        let tvl = case.and_then(|r| r.get("tvl")).map(|v| v.parse::<i32>().map(|x| x as u32).map_err(|e| e.to_string())).transpose()?;
+        let old_en = g.thermal_vision.replace(tve == "1");
+        let old_amb = (g.AmbientTemperature, g.prefs.AmbientTemperatureTransfer);
+        if let Ok(v) = f("tva") { g.AmbientTemperature = v[0] }
+        if let Some(x) = case.and_then(|r| r.get("tvx")) { g.prefs.AmbientTemperatureTransfer = x == "1" }
+        let old = {
+            let x = g.thermal_texture.as_mut().ok_or("no thermal texture")?;
+            let old = (x.t, x.data.clone(), x.position, x.scale, x.visible, x.min_temp, x.max_temp, x.to_read);
+            if let Ok(m) = &tvm { (x.min_temp, x.max_temp) = (m[0], m[1]) }
+            if let Some(l) = tvl { x.to_read = l }
+            x.t = t; x.data.iter_mut().for_each(|b| *b = 0); x.position = [p[0], p[1]]; x.scale = [s[0], s[1]];
+            // FitCameraBackgroundBehaviour.Update's camera follow (ours runs it here) is not this function's.
+            x.visible = true;
+            old
+        };
+        g.thermal_vision_update();
+        let x = g.thermal_texture.as_mut().ok_or("no thermal texture after")?;
+        let (mut h, mut sh, mut sa) = (2166136261u32, 0u64, 0u64);
+        for (i, &b) in x.data.iter().enumerate() { h = (h ^ b as u32).wrapping_mul(16777619); if i % 2 == 0 { sh += b as u64 } else { sa += b as u64 } }
+        let st = format!(" st=tv:{},{:08x},{sh},{sa},{h:08x},{:08x},{:08x},{:08x},{}", (g.thermal_vision == Some(true)) as u8, x.t.to_bits(), x.min_temp.to_bits(), x.max_temp.to_bits(), g.AmbientTemperature.to_bits(), g.prefs.AmbientTemperatureTransfer as u8);
+        (x.t, x.data, x.position, x.scale, x.visible, x.min_temp, x.max_temp, x.to_read) = old;
+        g.thermal_vision = old_en;
+        (g.AmbientTemperature, g.prefs.AmbientTemperatureTransfer) = old_amb;
+        Ok(st)
+    }),
     ("SingleFloodlightBehaviour.Awake", |g, c| {
         use crate::game::props::PropBlock;
         let i = g.floodlights.iter().position(|x| x.id == c.id).ok_or("no floodlights entry")?;

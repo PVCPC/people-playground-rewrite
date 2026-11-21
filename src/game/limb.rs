@@ -1893,6 +1893,7 @@ impl Game {
         due.extend(self.attachment_joint_destroys.iter().filter(|&&(at, _)| at <= now).map(|&(t, j)| (t, 9, j)));
         due.extend(self.component_destroys.iter().filter(|&&(at, _)| at <= now).map(|&(t, id)| (t, 8, id as usize)));
         if dynamic {
+            due.extend(self.map_light_due(now).into_iter().map(|(t, l)| (t, 11, l)));
             let frame = self.time.frameCount as i64;
             due.extend(self.coroutines.iter().filter(|c| c.at <= now && super::coroutine::frame_reached(c, frame)).map(|c| (c.at, 6, c.seq as usize)));
         }
@@ -1906,6 +1907,7 @@ impl Game {
                 3 => self.people[l].destroy_at == Some(t),
                 4 => self.frozen_in_ice[l].destroy_at == Some(t),
                 10 => self.hinges[l].destroy_at == Some(t),
+                11 => self.map_lights[l].wake == Some(t),
                 _ => true,
             };
             if !pending {
@@ -1917,6 +1919,8 @@ impl Game {
                     let c = self.coroutines.remove(i);
                     self.resume_coroutine(c);
                 }
+            } else if kind == 11 {
+                self.map_light_resume(l);
             } else if kind == 10 {
                 self.run_hinge_destroy(l);
             } else if kind == 9 {
