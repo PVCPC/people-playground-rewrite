@@ -9230,7 +9230,8 @@ mod tests {
     fn person_links_match_game() {
         let Some((mut g, inst, prefab, mut db, first)) = super::super::spawn::tests::spawn_recorded("dump31spawnrand") else { return };
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let Ok(rig) = HumanRig::load(&root.join("local-cache"), &crate::game_assets::find_game(None).unwrap()) else { return };
+        let game = crate::game_assets::find_game(None).unwrap();
+        let Ok(rig) = HumanRig::load(&crate::game_assets::test_cache(root, &game), &game) else { return };
         // The map's and pool's splats are not the Person's.
         let mut first = first;
         first.records.retain(|r| r.ty != "FancyBloodSplatController" && r.ty != "BleedingParticleBehaviour");

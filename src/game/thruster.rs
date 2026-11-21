@@ -177,31 +177,36 @@ impl Game {
 
     /// ThrusterbedBehaviour.BurnOthers
     pub(crate) fn thrusterbed_burn_others(&mut self, i: usize, progress: f32) {
-        let s = &self.thrusterbeds[i];
-        let (p, direction, count, width, length, offset, perpendicular, mask) =
-            (s.Phys, s.RelativeDirection, s.BurnRayCount, s.BurnRayWidth, s.BurnRayLength, s.BurnRayOffset, s.BurnRayPerpendicular, s.LayersToBurn);
         let num = (d(self.thrusterbed_boost(i)) * 0.2f32 * progress).f();
-        let t = self.transform_vector(p, direction);
-        let vector = [t[0], t[1]];
-        let vector2 = [vector[0] * num, vector[1] * num];
-        let step = width / mathf::max(1.0, (count - 1) as f32);
-        let vector3 = [step * perpendicular[0], step * perpendicular[1]];
-        let half = width / 2.0;
-        for k in 0..count {
-            let k = k as f32;
-            let local = [(offset[0] + vector3[0] * k) - half * perpendicular[0], (offset[1] + vector3[1] * k) - half * perpendicular[1]];
-            let start = self.transform_point3(p, [local[0], local[1], 0.0]);
-            let back = 0.0 - length;
-            let end = [(start[0] + vector[0] * back) - vector2[0], (start[1] + vector[1] * back) - vector2[1]];
-            let hits = self.linecast_hits(V::new(start[0], start[1]), V::new(end[0], end[1]), mask, THRUSTERBED_BUFFER);
+        for k in 0..self.thrusterbeds[i].BurnRayCount {
+            let hits = self.thrusterbed_burn_ray(i, k, num);
             if !hits.is_empty() {
                 self.thrusterbed_burn_in_buffer(i, progress, &hits);
             }
         }
     }
 
+    /// BurnOthers' ray `k`'s LinecastNonAlloc hits (`num`: Boost * 0.2f * progress).
+    pub(crate) fn thrusterbed_burn_ray(&mut self, i: usize, k: i32, num: f32) -> Vec<super::explosion::RayHit2D> {
+        let s = &self.thrusterbeds[i];
+        let (p, direction, count, width, length, offset, perpendicular, mask) =
+            (s.Phys, s.RelativeDirection, s.BurnRayCount, s.BurnRayWidth, s.BurnRayLength, s.BurnRayOffset, s.BurnRayPerpendicular, s.LayersToBurn);
+        let t = self.transform_vector(p, direction);
+        let vector = [t[0], t[1]];
+        let vector2 = [vector[0] * num, vector[1] * num];
+        let step = width / mathf::max(1.0, (count - 1) as f32);
+        let vector3 = [step * perpendicular[0], step * perpendicular[1]];
+        let half = width / 2.0;
+        let k = k as f32;
+        let local = [(offset[0] + vector3[0] * k) - half * perpendicular[0], (offset[1] + vector3[1] * k) - half * perpendicular[1]];
+        let start = self.transform_point3(p, [local[0], local[1], 0.0]);
+        let back = 0.0 - length;
+        let end = [(start[0] + vector[0] * back) - vector2[0], (start[1] + vector[1] * back) - vector2[1]];
+        self.linecast_hits(V::new(start[0], start[1]), V::new(end[0], end[1]), mask, THRUSTERBED_BUFFER)
+    }
+
     /// ThrusterbedBehaviour.BurnInBuffer
-    fn thrusterbed_burn_in_buffer(&mut self, i: usize, progress: f32, hits: &[super::explosion::RayHit2D]) {
+    pub(crate) fn thrusterbed_burn_in_buffer(&mut self, i: usize, progress: f32, hits: &[super::explosion::RayHit2D]) {
         let s = &self.thrusterbeds[i];
         let (p, direction, target, id) = (s.Phys, s.RelativeDirection, s.TemperatureTarget, s.id);
         let vector = self.transform_vector(p, direction);

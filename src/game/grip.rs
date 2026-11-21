@@ -240,7 +240,7 @@ Your script should either check if it is null or you should not destroy the obje
     }
 
     /// held.GetComponentsInChildren<Collider2D>(). A recording has no clone: its item's colliders are on its own object.
-    fn colliders_of_held(&mut self, held: usize) -> Vec<(i32, ())> {
+    pub(crate) fn colliders_of_held(&mut self, held: usize) -> Vec<(i32, ())> {
         if self.is_recording() {
             return self.physicals[held].colliders.iter().map(|&c| (c, ())).collect();
         }

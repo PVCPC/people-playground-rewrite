@@ -76,7 +76,7 @@ pub(super) struct Case<'a> {
     pub(super) id: i32,
     /// The component the method ran on (`self=`): the target, or another component on its GameObject.
     sid: i32,
-    args: Vec<&'a str>,
+    pub(super) args: Vec<&'a str>,
     /// A Liquid's method (the recorder's `liquid=`): self is that registry liquid, its LIQUIDS index.
     liq: Option<usize>,
     /// The recorder's version (the header's `recver N`; 0 before gapB r2 stamped one).
@@ -291,6 +291,10 @@ impl Case<'_> {
         // fnweap: a belt: its `Game::belts` index.
         if r.ty == "SerpentineBeltBehaviour" {
             return Ok((r.ty.clone(), super::fnweap::belt_index(g, id).ok_or(format!("no belt #{id}"))?));
+        }
+        // fnrec r2: a power tool: its `Game::powers` index (by kind; the load adds each recorded one).
+        if let Some(k) = crate::game::power::PowerKind::of_tool(&r.ty) {
+            return Ok((r.ty.clone(), g.powers.iter().position(|p| p.kind == k).ok_or(format!("no power #{id}"))?));
         }
         // An item's script (ItemScript records of every class): its index among its class's, the rewrite's arena order.
         if r.ty == "ItemScript" {
@@ -1228,7 +1232,7 @@ fn outline_fmt(rs: &[crate::game::contraption::RotatedRectangle]) -> String {
 
 /// The recorder's ActivationPropagation: `signal` (Direct, channel 0, no Target) or `signal:<direct>,<channel>,<Target's
 /// GameObject id, 0 for null>`.
-fn signal_arg(arg: &str) -> Result<(bool, u16, i32), String> {
+pub(super) fn signal_arg(arg: &str) -> Result<(bool, u16, i32), String> {
     match arg.strip_prefix("signal") {
         Some("") => Ok((true, 0, 0)),
         Some(r) => {
@@ -1594,6 +1598,57 @@ fn explosion_arg(a: &str) -> Result<super::super::explosion::ExplosionParameters
 }
 
 const CALLS: &[(&str, Call)] = &[
+    // fnrec r2: game signatures the GEN entries paired wrong. Instance getters/methods on the self: the self's state.
+    // CanTransferBlood: containerA and containerB alive and both AllowsTransfer.
+    ("BloodWireBehaviour.get_CanTransferBlood", |g, c| {
+        c.with(0)?;
+        let w = super::fnweap::wire_index(g, c.sid).ok_or(format!("no wire #{}", c.sid))?;
+        let (a, b) = (g.blood_wires[w].containerA.filter(|&o| g.wire_container_alive(o)), g.blood_wires[w].containerB.filter(|&o| g.wire_container_alive(o)));
+        Ok(bit(matches!((a, b), (Some(a), Some(b)) if g.blood_wire_can_transfer(a, b))))
+    }),
+    // GetReferenceAngle(): the wire's body against otherPhysicalBehaviour.
+    ("FixedJointWireBehaviour.GetReferenceAngle", |g, c| {
+        c.with(0)?;
+        let w = super::fnweap::wire_index(g, c.sid).ok_or(format!("no wire #{}", c.sid))?;
+        let o = g.blood_wires[w].other.ok_or("no otherPhysicalBehaviour")?;
+        Ok(Enc::enc(g.fixed_wire_get_reference_angle(g.blood_wires[w].physical, o)))
+    }),
+    // IsNearOtherDecal(localPosition): the controller from em= (its physical's id, index), IgnoreRadius of its descriptor.
+    ("DecalControllerBehaviour.IsNearOtherDecal", |g, c| {
+        let w = c.with(2)?;
+        let (pid, k) = c.field("em").ok_or("no em=")?.split_once(',').ok_or("bad em=")?;
+        let pid: i32 = pid.parse().map_err(|_| "em physical")?;
+        let k: usize = k.parse().map_err(|_| "em index")?;
+        let p = g.physicals.iter().position(|x| x.id == pid).ok_or("no physical of the controller")?;
+        let dc = g.physicals[p].decal_controllers.get(k).ok_or(format!("no decal controller {k}"))?;
+        let r = g.decal_descriptors[dc.descriptor].IgnoreRadius;
+        Ok(Enc::enc(g.decal_is_near_other_decal(p, k, r, w.p_arr::<2>(1)?)))
+    }),
+    // GetNearEntry(localPos, minDistance, type, out index): ret and the out args (index = currentDamagePointCount on a miss).
+    ("SkinMaterialHandler.GetNearEntry", |g, c| {
+        let w = c.with_self(4)?;
+        let l = w.p_usize(g, 0)?;
+        let found = g.skin_get_near_entry(l, w.p_arr::<3>(1)?, w.p_f32(2)?, w.p_int(3)?);
+        let index = found.unwrap_or(g.skins[l].currentDamagePointCount as usize);
+        Ok(format!("{} out={};{};{};{index}", bit(found.is_some()), c.args[0], c.args[1], c.args[2]))
+    }),
+    // Use(activation): the signal arg is not read; the self.
+    // fnrec r3: isFiring from the recorder's " stpre=rg:" (private, no record holds it), the call, then " st=rg:" (FireCoroutine sets it
+    // before its first yield).
+    ("RailgunBehaviour.Use", |g, c| {
+        let w = c.with_self(1)?;
+        let i = w.p_usize(g, 0)?;
+        let pre = st_pre(c).and_then(|p| p.strip_prefix("rg:"));
+        if let Some(p) = pre { g.railguns[i].isFiring = p == "1"; }
+        g.railgun_shoot(i);
+        Ok(pre.map(|_| format!(" st=rg:{}", bit(g.railguns[i].isFiring))).unwrap_or_default())
+    }),
+    ("TruckDoorBehaviour.Use", |g, c| { let w = c.with_self(1)?; let i = w.p_usize(g, 0)?; g.truck_door_use(i); VOID }),
+    // SendContinuous(activation, target): target.OnContinuousUse has no listener (activations_send_continuous).
+    // A bare "signal" arg is dropped from the args (Case), so the target is the last.
+    ("Activations.SendContinuous", |g, c| { let n = c.args.len(); let w = c.with(n)?; let p = w.p_usize(g, n.checked_sub(1).ok_or("no target arg")?)?; g.activations_send_continuous(p); VOID }),
+    // fnrec r2: the self by its id (the ItemScript record order is not the arena's).
+    ("BreakJointOnBurnBehaviour.Awake", |g, c| { c.with(1)?; let b = g.break_joint_on_burns.iter().position(|x| x.id == c.sid).ok_or(format!("no BreakJointOnBurn #{}", c.sid))?; g.break_joint_on_burn_awake(b); VOID }),
     // gapC r27: PoolGenerator.RequestPrefab(originalPrefab, position): the arg `@<prefab>#id` by name among the prefabs the
     // game requests (the people's PoolableImpactEffect, the properties' ShotImpact); ret the clone's GameObject as the recorder
     // writes it: a new one takes the next id after Ensure's three (a new pool's GameObject, Transform and ObjectPoolBehaviour).
@@ -2331,7 +2386,7 @@ const CALLS: &[(&str, Call)] = &[
     ("PhysicalBehaviour.GetSharpEnd", |g, c| { let a = super::fnmaped::sharp_axis(c.args.first().ok_or("no SharpAxis")?)?; Ok(Enc::enc(g.get_sharp_end(c.phys(g)?, &a))) }),
     // fnmaped round 12: HandleStabbing and DoStab on a knife set against a limb (MapConfigProbe.PokeCase), IsInsideOf on a
     // limb's own non-trigger colliders.
-    ("PhysicalBehaviour.HandleStabbing", |g, c| { let col = c.with(3)?.p_collision(1)?; let ct = super::fnmaped::contact_point(c.args.get(1).ok_or("no ContactPoint2D")?)?; let p = c.phys(g)?; g.handle_stabbing(p, &col, &ct); VOID }),
+    ("PhysicalBehaviour.HandleStabbing", |g, c| { let col = c.with(3)?.p_collision(1)?; let ct = super::fnmaped::contact_point(c.args.get(1).ok_or("no ContactPoint2D")?)?; let p = c.phys(g)?; if crate::assets::il::is_1_28_45() { super::all_property_clips(g)?; } let r = g.handle_stabbing(p, &col, &ct); if crate::assets::il::is_1_28_45() { Ok(bit(r)) } else { VOID } }),
     ("PhysicalBehaviour.DoStab", |g, c| { c.with(4)?; let p = c.phys(g)?; let other = c.arg_phys(g, 0)?; let a = super::fnmaped::sharp_axis(c.args[1])?; let pen = super::fnmaped::fresh_penetration(g, c.args[2])?; g.do_stab(p, other, a, pen); VOID }),
     // fnmaped r15: MapConfigProbe.Seed sets SpawnSpawnParticles on even cases, off on odd ones (the PI record holds it).
     ("PhysicalBehaviour.SetupSpawnPrefab", |g, c| { c.with(1)?; let p = c.phys(g)?; g.physical_setup_spawn_prefab(p); VOID }),
@@ -3042,6 +3097,14 @@ const CALLS: &[(&str, Call)] = &[
     // gapC r3: CreateEffectObject on a Push/Pull/Lift self (AOEPowerTool's runs the override, as the game's virtual call):
     // ret the new clone's GameObject (its Transform's id + 2).
     ("AOEPowerTool.CreateEffectObject", power_create_effect),
+    // fnrec r3: FixedUpdate is the self tool's own (GEN ran every tool's: the other tools' mouseMovement changed too).
+    ("AOEPowerTool.FixedUpdate", |g, c| {
+        c.with(0)?;
+        let k = c.self_kind(crate::game::power::PowerKind::of_tool)?;
+        let p = g.powers.iter().position(|p| p.kind == k).ok_or(format!("no power tool {k:?} loaded"))?;
+        g.power_fixed_update(p);
+        VOID
+    }),
     ("PushPowerTool.CreateEffectObject", power_create_effect),
     ("PullPowerTool.CreateEffectObject", power_create_effect),
     ("LiftPowerTool.CreateEffectObject", power_create_effect),
@@ -3416,7 +3479,31 @@ const CALLS: &[(&str, Call)] = &[
     ("LimbBehaviour.SynchroniseDismemberment", |g, c| { let c = c.with(2)?; let a0 = c.p_usize(g, 0)?; let a1 = c.p_opt_usize(g, 1)?; g.synchronise_dismemberment_call(a0, a1); VOID }),
     ("GripBehaviour.Update", |g, c| { g.grip_update(c.comp("GripBehaviour")?); VOID }),
     ("GripBehaviour.FixedUpdate", |g, c| { g.grip_fixed_update(c.comp("GripBehaviour")?); VOID }),
-    ("GripBehaviour.RefreshNoCollide", |g, c| { g.grip_refresh_no_collide(c.comp("GripBehaviour")?, c.b(0)); VOID }),
+    // fnrec r3: from the recorder's pairs (" stpre=nc:", FnTiny.NcOf: each pair's IgnoreCollisionStackController count and
+    // Physics2D.GetIgnoreCollision), the call, then the same pairs after (" st=nc:").
+    ("GripBehaviour.RefreshNoCollide", |g, c| {
+        let gi = c.comp("GripBehaviour")?;
+        let pre = st_pre(c).and_then(|p| p.strip_prefix("nc:"));
+        for w in pre.filter(|p| *p != "-").into_iter().flat_map(|p| p.split(';')) {
+            let v: Vec<i32> = w.split(':').filter_map(|x| x.parse().ok()).collect();
+            let [a, b, n, i] = v[..] else { return Err(format!("bad nc stpre {w}")) };
+            if n > 0 { g.ignore_stack.insert((a, b), n); } else { g.ignore_stack.remove(&(a, b)); }
+            g.world.ignore_collision(a, b, i == 1);
+        }
+        g.grip_refresh_no_collide(gi, c.b(0));
+        if pre.is_none() { return VOID }
+        let Some(held) = g.grip_held(gi) else { return Ok(" st=nc:-".into()) };
+        let mut pairs = std::collections::BTreeSet::new();
+        for (h, _) in g.colliders_of_held(held) {
+            for item in g.grips[gi].CollidersToIgnore.clone() {
+                if item != h && g.collider_exists(h) && g.collider_exists(item) {
+                    let k = Game::collider_pair(h, item);
+                    pairs.insert(format!("{}:{}:{}:{}", k.0, k.1, g.ignore_stack.get(&k).copied().unwrap_or(0), bit(g.world.ignored.contains(&k))));
+                }
+            }
+        }
+        Ok(format!(" st=nc:{}", pairs.into_iter().collect::<Vec<_>>().join(";")))
+    }),
     ("GripBehaviour.OnChangePause", |g, c| { g.grip_on_change_pause(c.comp("GripBehaviour")?, c.b(0)); VOID }),
     // gapC r17: Awake alone (it was link_tool_choose, which is SetTool's AddComponent + OnToolChosen).
     ("PhaseLinkTool.Awake", |g, c| { c.with(0)?; g.phase_link_tool_awake(); VOID }),
@@ -4119,6 +4206,7 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                             load_map_light_blocks(&mut g, &s);
                             // Input.mousePosition and the camera (screen=), for the scripts that read the screen.
                             g.load_input(&s);
+                            g.load_powers(&s);
                             // gapA r5: the recorder calls OnWillRenderObject on the target itself: the will-render loops run it alone.
                             if case_name.ends_with(".OnWillRenderObject") {
                                 g.fn_render_only = Some(case.sid);
@@ -4166,6 +4254,15 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                             // gapC r11: the third char (recordings since r11) is emission.enabled: ours' takes it, and a playing system with its
                             // emission off ("010") is played, not stopped.
                             for (f, v) in r.get("pspre").map(ps_fields).unwrap_or_default() {
+                                // fnrec r2: a power tool's effect: ours' playing is the recorded isEmitting (fnrec r3; was isPlaying, which
+                                // stays 1 after Stop while particles live). fnrec r3: the 4th char (recordings since r3) is the effect
+                                // GameObject's activeInHierarchy (Play does nothing on an inactive one).
+                                if f == "effect" && let Ok(k) = case.self_kind(crate::game::power::PowerKind::of_tool)
+                                    && let (Some(p), Some(&b)) = (g.powers.iter_mut().find(|p| p.kind == k), v.as_bytes().first())
+                                {
+                                    p.playing = b == b'1';
+                                    p.effect_inactive = v.as_bytes().get(3) == Some(&b'0');
+                                }
                                 // gapC r18: a BleedingParticleBehaviour's BloodParticleSystem (Awake's GetComponent, no serialized field): ours
                                 // keeps its emission.enabled on the particle.
                                 if f == "BloodParticleSystem" && let (Some(b), Some(&en)) = (bleeding_of(&g, &s, case.sid), v.as_bytes().get(2)) {
@@ -4413,6 +4510,15 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                             // hover, the selection and isSelecting they write (DetermineHovering, EscapeAndDeselect, StopSelectionDrag).
                             if pi.of("FnCase").next().and_then(|c| c.get("selfty")).is_some() || name.starts_with("ToolControllerBehaviour.") || name.starts_with("SelectionController.") {
                                 d.extend(super::compare_tool(&g, &s).unwrap_or_else(|e| vec![format!("tool compare: {e}")]));
+                                // fnrec r2: every recorded power tool's mouseMovement and oldMousePos (FixedUpdate runs them all).
+                                for r in s.records.iter().filter(|r| crate::game::power::PowerKind::of_tool(&r.ty).is_some()) {
+                                    let k = crate::game::power::PowerKind::of_tool(&r.ty).unwrap();
+                                    let Some(p) = g.powers.iter().find(|p| p.kind == k) else { d.push(format!("{} #{}: ours has no power", r.ty, r.id)); continue };
+                                    let h = |v: [f32; 2]| format!("{:08x},{:08x}", v[0].to_bits(), v[1].to_bits());
+                                    for (f, ours) in [("mouseMovement", h(p.mouseMovement)), ("oldMousePos", h(p.oldMousePos))] {
+                                        if let Some(t) = r.get(f) && *t != ours { d.push(format!("{} #{} {f}: game {t} ours {ours}", r.ty, r.id)) }
+                                    }
+                                }
                             }
                             // batch4 r8: HandleToolSelectionInput's effects compare() leaves out: the cycle fields and CurrentTool's type
                             // (the PO snap's tool=; ours the ToolLibrary entry SetTool chose last, else the PI's tool).
@@ -4632,6 +4738,12 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                                             let ours = if en && playing { '1' } else { '0' };
                                             if ours != theirs { d.push(format!("ParticleSystem {f} of #{sid} isEmitting: game {theirs} ours {ours}")) }
                                             if let Some(&e) = v.as_bytes().get(2) && (e == b'1') != en { d.push(format!("ParticleSystem {f} of #{sid} emission.enabled: game {} ours {}", e as char, en as u8)) }
+                                        }
+                                        // fnrec r2: a power tool's effect: isEmitting against ours' playing (fnrec r3; checker limit: isPlaying
+                                        // not compared, it stays 1 after Stop while particles live and ours loads no particle).
+                                        None if f == "effect" && let Some(k) = pi.of("FnCase").next().and_then(|c| c.get("selfty")).and_then(crate::game::power::PowerKind::of_tool)
+                                            && let Some(p) = g.powers.iter().find(|p| p.kind == k) => {
+                                            if (theirs == '1') != p.playing { d.push(format!("ParticleSystem effect of #{sid} isEmitting: game {theirs} ours {}", p.playing as u8)) }
                                         }
                                         None if pre.get(&f).and_then(|p| p.chars().next()) != Some(theirs) => d.push(format!("ParticleSystem {f} of #{sid} isEmitting: game {theirs}, ours has no system")),
                                         None => {}

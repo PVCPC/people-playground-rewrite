@@ -50,9 +50,26 @@ impl Default for BreakJointOnShot {
 }
 
 impl Game {
-    /// BreakJointOnBurnBehaviour.Awake: phys and initialThreshold are linked; Random.Range(1, 3) is drawn here.
+    /// BreakJointOnBurnBehaviour.Awake: phys is linked; initialThreshold = Joint.breakForce (the joint's current value);
+    /// Random.Range(1, 3) is drawn here.
     pub fn break_joint_on_burn_awake(&mut self, b: usize) {
+        let joint = self.break_joint_on_burns[b].Joint;
+        if let Some(v) = self.joint_break_force(joint) {
+            self.break_joint_on_burns[b].initialThreshold = v;
+        }
         self.break_joint_on_burns[b].randomOffset = self.random.range_int(1, 3) as f32;
+    }
+
+    /// Joint2D.breakForce of an anchored joint (joint_set_break_force's three homes); None: not an anchored joint.
+    pub(crate) fn joint_break_force(&self, id: i32) -> Option<f32> {
+        let slot = self.anchored_joints.iter().position(|a| a.component == id)?;
+        Some(if let Some(&f) = self.adopted_slots.get(&slot) {
+            self.fixed_joints[f].state.break_force
+        } else if let Some(h) = self.anchored_joints[slot].hinge {
+            self.hinges[h].breakForce
+        } else {
+            self.anchored_joints[slot].break_force
+        })
     }
 
     /// BreakJointOnBurnBehaviour.Update

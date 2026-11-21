@@ -145,6 +145,84 @@ pub(super) const CALLS: &[(&str, Call)] = &[
     }),
     ("PhysicalBehaviour.GetRandomPointInHull", |g, c| { let p = c.with(1)?.p_usize(g, 0)?; Ok(Enc::enc(g.physical_random_point_in_hull(p))) }),
     ("PhysicalBehaviour.TransferPropertiesForPenetration", |g, c| { let w = c.with(2)?; let (p, o) = (w.p_usize(g, 0)?, w.p_usize(g, 1)?); g.transfer_properties_for_penetration(p, o); VOID }),
+    // Stabbed(Stabbing): the stab is not read (PlayClipOnce of a random StabSound).
+    ("PhysicalBehaviour.Stabbed", |g, c| {
+        let p = c.with(2)?.p_usize(g, 0)?;
+        super::super::all_property_clips(g)?;
+        g.physical_stabbed(p);
+        // The probe turns the stabber's StabCausesWound off for a wound=0 case and back on before the PO snapshot.
+        if c.rec::<i32>("Stab(", "wound")? == 0 { let s = phys_by_id(g, c.rec::<i32>("Stab(", "stabber")?)?; g.physicals[s].StabCausesWound = true; }
+        VOID
+    }),
+    // The impact sounds' clips from the game's PhysicalProperties assets (a recording's hold none).
+    ("PhysicalBehaviour.OnCollisionEnter2D", |g, c| { let w = c.with(2)?; let p = w.p_usize(g, 0)?; let col = w.p_collision(1)?; super::super::all_property_clips(g)?; g.physical_on_collision_enter(p, &col); VOID }),
+    // DoSlash(worldPos, victim, selfCollider, victimCollider): the Slash as the recorder writes it. The joint is the new
+    // FrictionJoint2D (its instance id from the rewrite's allocator); the colliders print as their arguments; the
+    // VictimLiquidContainer is compared by presence on the victim (the rewrite keeps no BloodContainer instance id).
+    ("PhysicalBehaviour.DoSlash", |g, c| {
+        let w = c.with(5)?;
+        let (p, pos, victim) = (w.p_usize(g, 0)?, w.p_arr::<2>(1)?, w.p_usize(g, 2)?);
+        let (a3, a4) = (w.arg(3)?, w.arg(4)?);
+        let (sc, vc) = (reference(a3).ok_or("selfCollider null")?, reference(a4).ok_or("victimCollider null")?);
+        let jid = g.next_instance_id;
+        let i = g.do_slash(p, pos, victim, sc, vc);
+        let s = g.physicals[p].SlashConnections[i].clone();
+        let coll = |id: i32| if id == sc { a3.to_string() } else if id == vc { a4.to_string() } else { format!("#{id}") };
+        // A CirculationBehaviour container: its instance id from the victim's Clone record (the components beside it).
+        let vname = g.physicals[victim].name.replace(' ', "_");
+        let container = match s.VictimLiquidContainer {
+            None => "null".to_string(),
+            Some(crate::game::container::Owner::Circulation(l)) if g.limbs[l].PhysicalBehaviour == victim => {
+                let me = format!("PhysicalBehaviour:{}", g.physicals[victim].id);
+                let comps = c.s.of("Clone").find_map(|r| r.get("comps").filter(|v| v.trim_matches(['[', ']']).split(';').any(|x| x == me))).unwrap_or("");
+                let id = comps.trim_matches(['[', ']']).split(';').find_map(|x| x.strip_prefix("CirculationBehaviour:")).unwrap_or("?");
+                format!("@{vname}#{id}")
+            }
+            Some(o) => format!("{o:?}"),
+        };
+        Ok(format!("Slash(Joint=@{}#{jid} Lifetime={} MyCollider={} OtherCollider={} Victim={} Self={} Strength={} CurrentPosition={},{} VictimLiquidContainer={container})",
+            g.physicals[p].name.replace(' ', "_"), hex(s.Lifetime), coll(s.MyCollider), coll(s.OtherCollider), phys_ref(g, Some(s.Victim)), phys_ref(g, Some(p)), hex(s.Strength), hex(s.CurrentPosition[0]), hex(s.CurrentPosition[1])))
+    }),
+    // Liquid.TryGetLiquid(id, out liquid): Registry.TryGetValue; the out liquid as its identity.
+    ("Liquid.TryGetLiquid", |_g, c| {
+        let a = *c.args.first().ok_or("no id")?;
+        let id = a.strip_prefix('"').and_then(|t| t.strip_suffix('"')).ok_or_else(|| format!("not a string: {a}"))?;
+        // The recorder writes a key's spaces as underscores.
+        let l = crate::game::circulation::liquid_get(id).or_else(|| crate::game::circulation::liquid_get(&id.replace('_', " ")));
+        Ok(format!("{} out={a};{}", bit(l.is_some()), l.map_or("null".to_string(), |l| crate::game::circulation::liquid_identity(l).replace(' ', "_"))))
+    }),
+    // DragTool.IsUndraggableInSelection: the PI's selection; an object has an Undraggable when its Clone record lists one.
+    ("DragTool.IsUndraggableInSelection", |g, c| {
+        // The selection's PhysicalBehaviour ids: the FnCase's `sel=a;b` (V52Seed.Args; none: an empty selection).
+        let sel: Vec<usize> = c.field("sel").unwrap_or("").split(';').filter(|t| !t.is_empty()).map(|t| phys_by_id(g, t.parse().map_err(|e| format!("sel: {e}"))?)).collect::<Result<_, _>>()?;
+        c.with(0)?;
+        let und: std::collections::HashSet<i32> = c.s.of("Clone").filter_map(|r| {
+            let comps = r.get("comps")?.trim_matches(['[', ']']);
+            if !comps.split(';').any(|x| x.starts_with("Undraggable:")) { return None }
+            comps.split(';').find_map(|x| x.strip_prefix("PhysicalBehaviour:")?.parse().ok())
+        }).collect();
+        Ok(bit(Game::drag_is_undraggable_in_selection(&sel, |p| und.contains(&g.physicals[p].id))))
+    }),
+    // ThrusterbedBehaviour.BurnInBuffer: the recorder (V52Seed.Args) fills the static buffer with BurnOthers' first ray at no
+    // boost lengthening and writes its colliders (`bufc=a;b;..`, nearest first; a later disturb can move the bodies, so the
+    // ray is not cast again). BurnInBuffer reads only each hit's collider, its GameObject and its body: a collider here
+    // must be on a PhysicalBehaviour's own object (checker limit: a child collider's GameObject would differ).
+    ("ThrusterbedBehaviour.BurnInBuffer", |g, c| {
+        let ids: Vec<i32> = c.field("bufc").ok_or("no bufc")?.split(';').filter(|t| !t.is_empty()).map(|t| t.parse().map_err(|e| format!("bufc: {e}"))).collect::<Result<_, _>>()?;
+        let c = c.with(3)?;
+        let i = c.p_usize(g, 0)?;
+        let progress = c.p_f32(1)?;
+        let n: usize = c.arg(2)?.parse().map_err(|e| format!("count: {e}"))?;
+        let mut hits = Vec::new();
+        for &collider in ids.iter().take(n) {
+            let p = g.physical_of_collider(collider).ok_or(format!("collider #{collider}: no physical"))?;
+            let game_object = g.with_component_instance(g.physicals[p].id, |_, inst, o| inst.objects[o].game_object);
+            let z = crate::b2::math::Vec2::new(0.0, 0.0);
+            hits.push(crate::game::explosion::RayHit2D { collider, game_object, body: g.physicals[p].rigidbody.body, point: z, normal: z, distance: 0.0, fraction: 0.0 });
+        }
+        g.thrusterbed_burn_in_buffer(i, progress, &hits);
+        VOID
+    }),
     ("PhysicalBehaviour.OnBeforeSerialise", |g, c| { let p = c.with(1)?.p_usize(g, 0)?; g.physical_on_before_serialise(p); VOID }),
     // ToolControllerBehaviour.SelectByMass/Size/Depth(mouse): the PhysicalBehaviour picked, or null.
     ("ToolControllerBehaviour.SelectByMass", |g, c| { let m = c.with(1)?.p_arr::<3>(0)?; let p = g.select_by_mass(m); Ok(phys_ref(g, p)) }),

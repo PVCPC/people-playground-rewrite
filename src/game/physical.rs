@@ -238,7 +238,7 @@ script! {
         SelectionPriority: bool = false,
         PreventGripping: bool = false,
         PauseDragOverride: bool = true,
-        /// SlashColliders (1.28.45) by instance id (0 for a null entry); None: null (1.28.41, or a recording).
+        /// SlashColliders (1.28.45) by instance id (0 for a null entry); None: null (1.28.41).
         SlashColliders: Option<Vec<i32>> = None,
         /// SlashConnections (1.28.45).
         SlashConnections: Vec<super::stab::Slash> = Vec::new(),
@@ -1066,7 +1066,8 @@ impl Game {
             self.physicals[p].collisionBuffer.clear();
             return;
         }
-        self.physicals[p].charge *= 0.95;
+        // Charge *= 0.95f: through the getter (0 when ForceNoCharge).
+        self.physicals[p].charge = self.physicals[p].Charge() * 0.95;
         if self.prefs.CollisionQuality == super::COLLISION_DYNAMIC {
             let rb = &self.physicals[p].rigidbody;
             let fast = mathf::sqr_magnitude(rb.velocity(&self.world)) > self.DynamicSqrdVelocityThreshold.0;
@@ -2635,7 +2636,7 @@ mod tests {
     fn start_matches_game() {
         let Ok(game) = crate::game_assets::find_game(None) else { return };
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let Ok(rig) = HumanRig::load(&root.join("local-cache"), &game) else { return };
+        let Ok(rig) = HumanRig::load(&crate::game_assets::test_cache(&root, &game), &game) else { return };
         let Ok(mut snaps) = dump::snapshots(&root.join("reference-probe/game/dump30start.txt")) else { return };
         // The first snapshot (frame 428, right after the Starts) holds the fields; the first FS one with the b2 world builds the game.
         let first = snaps.next().unwrap();

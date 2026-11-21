@@ -613,7 +613,8 @@ impl Game {
         }
         self.synchronise_dismemberment_call(l, None);
         if self.limbs[l].HasJoint {
-            let h = self.limbs[l].Joint.unwrap();
+            // HasJoint with the Joint gone (a destroyed hinge): Joint.limits throws.
+            let h = self.limbs[l].Joint.unwrap_or_else(|| super::menu::throw("NullReferenceException"));
             self.limbs[l].originalJointLimits = self.hinges[h].limits;
         }
         for i in 0..self.limbs[l].ConnectedLimbs.len() {

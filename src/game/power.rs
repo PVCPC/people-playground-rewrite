@@ -44,12 +44,15 @@ const LAYERS: u32 = (1 << 9) | (1 << 10) | (1 << 13);
 pub struct Power {
     pub kind: PowerKind,
     pub(crate) mouseMovement: [f32; 2],
-    oldMousePos: [f32; 2],
-    effect: ObjRef,
+    pub(crate) oldMousePos: [f32; 2],
+    pub(crate) effect: ObjRef,
     /// The effect's clone root.
     pub root: i32,
-    /// ParticleSystem.isPlaying: the prefab plays on awake.
+    /// ParticleSystem.isEmitting: the prefab plays on awake (after Stop it may still be isPlaying while its particles live).
     pub playing: bool,
+    /// !effectObject.activeSelf: ParticleSystem.Play does nothing on an inactive GameObject (PlayChildrenRecursive checks
+    /// GameObject::IsActive). Ours never deactivates it; the fn-check loads it.
+    pub effect_inactive: bool,
 }
 
 impl Game {
@@ -73,7 +76,7 @@ impl Game {
                 i
             }
             None => {
-                self.powers.push(Power { kind, mouseMovement: [0.0; 2], oldMousePos: [0.0; 2], effect, root, playing: true });
+                self.powers.push(Power { kind, effect, root, playing: true, ..Default::default() });
                 self.powers.len() - 1
             }
         }
@@ -91,12 +94,18 @@ impl Game {
 
     /// AOEPowerTool.FixedUpdate, for every tool added.
     pub fn powers_fixed_update(&mut self) {
-        let mouse = [self.MousePosition[0], self.MousePosition[1]];
-        for p in &mut self.powers {
-            let delta = [mouse[0] - p.oldMousePos[0], mouse[1] - p.oldMousePos[1]];
-            p.mouseMovement = delta.map(|v| MOUSE_MOVE_INFLUENCE * v);
-            p.oldMousePos = mouse;
+        for p in 0..self.powers.len() {
+            self.power_fixed_update(p);
         }
+    }
+
+    /// AOEPowerTool.FixedUpdate of one tool.
+    pub(crate) fn power_fixed_update(&mut self, power: usize) {
+        let mouse = [self.MousePosition[0], self.MousePosition[1]];
+        let p = &mut self.powers[power];
+        let delta = [mouse[0] - p.oldMousePos[0], mouse[1] - p.oldMousePos[1]];
+        p.mouseMovement = delta.map(|v| MOUSE_MOVE_INFLUENCE * v);
+        p.oldMousePos = mouse;
     }
 
     // AOEPowerTool.OnToolChosen: empty.
@@ -104,7 +113,7 @@ impl Game {
     // AOEPowerTool.OnHold: empty.
     /// AOEPowerTool.OnSelect
     pub(crate) fn power_on_select(&mut self, power: usize) {
-        if !self.powers[power].playing {
+        if !self.powers[power].playing && !self.powers[power].effect_inactive {
             self.powers[power].playing = true;
             let (effect, root) = (self.powers[power].effect, self.powers[power].root);
             self.log_effect(effect, self.MousePosition, [0.0, 0.0, 0.0, 1.0], 1.0, None, Some(root));

@@ -510,8 +510,9 @@ impl Game {
         // FlipMuzzleFlash=0 blaster).
         if let Some(i) = self.retained.iter().position(|x| x.objects[0].game_object == root_go) {
             let poses: Vec<(usize, Trs)> = self.retained[i].objects.iter().enumerate().filter(|(_, x)| x.parent.is_some()).filter_map(|(o, x)| {
-                let t = format!("Transform:{}", x.components[0]);
-                let r = s.of("Clone").find(|r| r.get("parent") != Some("-1") && r.get("comps").is_some_and(|c| c.trim_matches(['[', ']']).split(';').any(|y| y == t)))?;
+                // fnrec r3: or a RectTransform (a TextMeshPro child: MaintainScaleSign's Text kept the Start's flip).
+                let (t, rt) = (format!("Transform:{}", x.components[0]), format!("RectTransform:{}", x.components[0]));
+                let r = s.of("Clone").find(|r| r.get("parent") != Some("-1") && r.get("comps").is_some_and(|c| c.trim_matches(['[', ']']).split(';').any(|y| y == t || y == rt)))?;
                 Some((o, trs(r).ok()?))
             }).collect();
             // gapA r3: its local position and scale too (a Start's Translate or localScale set from prefab fields).
@@ -736,6 +737,39 @@ impl Game {
             }
             self.delete_afters.push(crate::game::explosion::DeleteAfter { id: r.id, added_to: Some(key), parent, ..Default::default() });
             let b = crate::game::Behaviour::DeleteAfter(self.delete_afters.len() - 1);
+            self.behaviour_of.insert(r.id, (0, b));
+            self.behaviours.add(0, b);
+        }
+        // 1.28.45: a PPG_STAB item's DrippingBloodParticleController (PhysicalBehaviour.Start made it; a recording runs no
+        // Start): its recorded fields, linked to its PhysicalBehaviour (Update draws Random.value while Amount > 0).
+        for r in s.of("ItemScript").filter(|r| r.get("class") == Some("DrippingBloodParticleController")) {
+            if self.v45.drips.iter().any(|x| x.id == r.id) {
+                continue;
+            }
+            let hex = |t: &str| u32::from_str_radix(t, 16).map(f32::from_bits).map_err(|_| format!("DrippingBloodParticleController #{}: {t}", r.id));
+            let id = |v: &str| v.rsplit_once('#').and_then(|(_, i)| i.parse::<i32>().ok());
+            let Some(p) = r.get("PhysicalBehaviour").and_then(id).and_then(|i| self.physicals.iter().position(|x| x.id == i)) else { continue };
+            let colour: Vec<f32> = r.req("Colour")?.split(',').map(hex).collect::<Result<_, _>>()?;
+            let areas = r.req("LocalDripAreas")?;
+            let data = areas.split_once("Data=[").and_then(|(_, x)| x.split_once(']')).ok_or("LocalDripAreas: no Data")?.0;
+            let Data = data.split(';').map(|xy| { let (x, y) = xy.split_once(',').ok_or("LocalDripAreas: a point")?; Ok([hex(x)?, hex(y)?]) }).collect::<Result<Vec<_>, String>>()?;
+            let WriteIndex = areas.split_once("WriteIndex=").and_then(|(_, x)| x.trim_end_matches(')').parse().ok()).ok_or("LocalDripAreas: no WriteIndex")?;
+            let clock = r.req("clock")?;
+            let get = |k: &str| clock.split_once(&format!("{k}=")).map(|(_, x)| x.split([' ', ')']).next().unwrap()).ok_or(format!("clock: no {k}"));
+            let clock = crate::game::misc::FixedIntervalDistributor { timeStepAccumulator: hex(get("timeStepAccumulator")?)?, MaxCycles: get("<MaxCycles>k__BackingField")?.parse().map_err(|_| "clock: MaxCycles")?, InterpolationTime: hex(get("<InterpolationTime>k__BackingField")?)?, IntervalSeconds: hex(get("<IntervalSeconds>k__BackingField")?)? };
+            self.v45.drips.push(crate::game::v45_new::DrippingBlood {
+                id: r.id,
+                PhysicalBehaviour: Some(p),
+                Colour: [colour[0], colour[1], colour[2], colour[3]],
+                Amount: hex(r.req("Amount")?)?,
+                DecaySpeed: hex(r.req("DecaySpeed")?)?,
+                LocalDripAreas: crate::game::v45_new::CircularBuffer { Data, WriteIndex },
+                clock,
+                emitted: Vec::new(),
+            });
+            let d = self.v45.drips.len() - 1;
+            self.physicals[p].DrippingBloodParticles = Some(d);
+            let b = crate::game::Behaviour::V45(crate::game::v45_new::V::DrippingBlood(d));
             self.behaviour_of.insert(r.id, (0, b));
             self.behaviours.add(0, b);
         }

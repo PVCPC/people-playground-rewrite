@@ -609,14 +609,9 @@ impl Game {
         if !self.physicals[s.victim].active || self.physicals[s.victim].destroyed {
             return;
         }
-        // PhysicalBehaviour.Messages.IUnstabbed.Unstabbed: (1.28.45) PlayClipOnce(Properties.StabSound.PickRandom(), 0.6f).
-        if crate::assets::il::is_1_28_45() {
-            if let Some(n) = self.properties[self.physicals[s.victim].Properties].StabSound.filter(|&n| n != 0) {
-                let k = self.pick_random(n).unwrap();
-                let clip = self.properties[self.physicals[s.victim].Properties].clips.StabSound.get(k).cloned().flatten();
-                self.play_clip_once(s.victim, clip, 0.6);
-            }
-        }
+        // PhysicalBehaviour's 1.28.45 Unstabbed (PlayClipOnce(StabSound.PickRandom(), 0.6f)) is an explicit interface
+        // method, IL name "Messages.IUnstabbed.Unstabbed": SendMessage("Unstabbed") never finds it, so it never runs
+        // (the 1.28.52 recording dumpL1syrbone-v52 draws no Random for it).
         if let Some(l) = self.limbs.iter().position(|l| l.PhysicalBehaviour == s.victim) {
             self.circulation_unstabbed(l, s);
         }

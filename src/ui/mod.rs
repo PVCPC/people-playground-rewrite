@@ -2496,7 +2496,7 @@ mod tests {
     #[ignore]
     fn the_installed_game_loads_resets_and_leaves() {
         let game = crate::game_assets::find_game(None).unwrap();
-        let cache = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("local-cache");
+        let cache = crate::game_assets::test_cache(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), &game);
         let Some(mut app) = app() else { return };
         app.add_plugins(AssetPlugin { file_path: cache.to_string_lossy().into_owned(), ..default() })
             .init_asset::<Image>().init_asset::<crate::limb_material::Body>().init_asset::<crate::limb_material::LegacyBody>().init_asset::<crate::wires::BloodWire>()

@@ -658,7 +658,8 @@ impl Game {
         let mut bleeding = BleedingParticle {
             IsOnlyForInternalBleeding: false,
             SpeedMultiplier: 0.6,
-            RateMultiplier: 1.25,
+            // The BleedingParticle prefab's: 1.25 on 1.28.41, 0.8 on 1.28.52 (both games' recorded clones).
+            RateMultiplier: if crate::assets::il::is_1_28_45() { 0.8 } else { 1.25 },
             Laminarity: 0.0,
             DripSoundRateThreshold: 1.0,
             ShouldBecomeSmokeInWater: false,

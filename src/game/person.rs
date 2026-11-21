@@ -718,7 +718,7 @@ mod tests {
         use std::path::Path;
         let Ok(game) = crate::game_assets::find_game(None) else { return };
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let Ok(rig) = HumanRig::load(&root.join("local-cache"), &game) else { return };
+        let Ok(rig) = HumanRig::load(&crate::game_assets::test_cache(&root, &game), &game) else { return };
         let path = root.join("reference-probe/game/dump31spawnrand.txt");
         let Ok(header) = dump::header(&path) else { return };
         let Some(state) = dump::spawn_random_state(&header) else { return };
@@ -749,7 +749,7 @@ mod tests {
         use std::path::Path;
         let Ok(game) = crate::game_assets::find_game(None) else { return };
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let Ok(rig) = HumanRig::load(&root.join("local-cache"), &game) else { return };
+        let Ok(rig) = HumanRig::load(&crate::game_assets::test_cache(&root, &game), &game) else { return };
         let Ok(mut snaps) = dump::snapshots(&root.join("reference-probe/game/dump33human.txt")) else { return };
         let Ok(ids) = dump::read_recording(&root.join("reference-probe/game/ids-after33.txt")) else { return };
         let kind_at = |id: i32| ids.lines().find_map(|l| l.strip_prefix(&format!("{id} "))).map(|r| r.split(' ').next().unwrap().to_string());

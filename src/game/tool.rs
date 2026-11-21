@@ -1479,7 +1479,12 @@ impl Game {
         self.body_set_mass(body, v);
     }
 
-    // DragTool.IsUndraggableInSelection: private, with no caller.
+    /// DragTool.IsUndraggableInSelection (private, with no caller): true when a selected object has an Undraggable
+    /// (no prefab or scene has one: `undraggable` tells the objects a caller gave one).
+    /// `selection`: SelectionController.Main.SelectedObjects.
+    pub(crate) fn drag_is_undraggable_in_selection(selection: &[usize], undraggable: impl Fn(usize) -> bool) -> bool {
+        selection.iter().any(|&p| undraggable(p))
+    }
     // DragTool.GetHeldObject: no caller (mods only).
     // DragTool.OnDestroy: the DragTool lives on the ToolController, which is never destroyed in a session.
     /// DragTool.OnSelect (never paused; nothing in the scene is Undraggable).

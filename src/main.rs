@@ -219,7 +219,7 @@ fn run() -> Result<(), String> {
         return game::dump::fn_check(&probe, &rig);
     }
     if let Some(dump) = looped {
-        return game::dump::loop_test(&dump, &rig);
+        return game::dump::loop_test(&game::dump::recording_for_version(&dump), &rig);
     }
     if let Some(probe) = reference_probe {
         return motor::compare_reference(&probe);

@@ -278,6 +278,8 @@ pub struct BloodWire {
     pub SoakAmount: f32,
     /// AppliedBandageBehaviour.SoakColour (1.28.45; white at first).
     pub SoakColour: [f32; 4],
+    /// AppliedBandageBehaviour.healingRatio (private, 0.001).
+    pub healingRatio: f32,
     /// The component's instance id.
     pub id: i32,
     /// physicalBehaviour: the PhysicalBehaviour on its GameObject (GetComponent in Awake).
@@ -363,6 +365,7 @@ impl Default for BloodWire {
             bloodColour: Default::default(),
             SoakAmount: Default::default(),
             SoakColour: [1.0; 4],
+            healingRatio: 0.001,
             id: Default::default(),
             physical: Default::default(),
             other: Default::default(),
@@ -1050,7 +1053,7 @@ impl Game {
     }
 
     /// `(bool)container`: its GameObject's PhysicalBehaviour was not destroyed.
-    fn wire_container_alive(&self, o: Owner) -> bool {
+    pub(crate) fn wire_container_alive(&self, o: Owner) -> bool {
         self.wire_physical_alive(self.container_physical(o))
     }
 
@@ -1406,11 +1409,11 @@ impl Game {
             self.blood_wires[w].SoakColour = super::visual::color_lerp(self.blood_wires[w].SoakColour, computed, t);
             self.bandage_soak_colour(w);
             self.circulations[l].BleedingRate = (super::d(self.circulations[l].BleedingRate) * 0.9).f();
-            self.limbs[l].Health = mathf::lerp(self.limbs[l].Health, self.limbs[l].InitialHealth, 0.001);
+            self.limbs[l].Health = mathf::lerp(self.limbs[l].Health, self.limbs[l].InitialHealth, self.blood_wires[w].healingRatio);
             return;
         }
         self.circulations[l].BleedingRate = (super::d(self.circulations[l].BleedingRate) * 0.9).f();
-        self.limbs[l].Health = mathf::lerp(self.limbs[l].Health, self.limbs[l].InitialHealth, 0.001);
+        self.limbs[l].Health = mathf::lerp(self.limbs[l].Health, self.limbs[l].InitialHealth, self.blood_wires[w].healingRatio);
         let soak = self.blood_wires[w].SoakAmount;
         let more = (super::d(soak) + super::d(self.time.fixedDeltaTime) * self.circulations[l].BleedingRate * 0.5).f();
         self.blood_wires[w].SoakAmount = mathf::max(soak, mathf::clamp01(more));

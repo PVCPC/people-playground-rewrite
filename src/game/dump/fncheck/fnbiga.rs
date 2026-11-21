@@ -331,7 +331,7 @@ pub(super) const CALLS: &[(&str, Call)] = &[
         Ok(quoted(&format!("{parent};{},{},{};{aod};{}:{};{active}", hex8(scale[0]), hex8(scale[1]), hex8(scale[2]), sources.len(), sources.join(":"))))
     }),
     // Called again on a live limb (biga:start); self is the PhysicalBehaviour.
-    ("PhysicalBehaviour.Start", |g, c| { let w = c.with(1)?; let p = w.p_usize(g, 0)?; g.physical_start(p); VOID }),
+    ("PhysicalBehaviour.Start", |g, c| { let w = c.with(1)?; let p = w.p_usize(g, 0)?; super::super::sliding_loop_clip(g, g.physicals[p].Properties)?; g.physical_start(p); VOID }),
     // The Collision2D is parsed (the game's method never reads it); self is the FireballBehaviour.
     ("FireballBehaviour.OnCollisionEnter2D", |g, c| {
         c.with(1)?.p_collision(0)?;

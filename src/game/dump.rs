@@ -126,6 +126,20 @@ pub fn open_recording(path: &Path) -> Result<Box<dyn std::io::Read>, String> {
     }
 }
 
+/// A loop recording for the running game: on 1.28.52 its re-recording `<name>-v52.txt` (or `.txt.gz`) beside it when
+/// there is one (the 1.28.41 recordings stay for 1.28.41), else the path itself.
+pub fn recording_for_version(path: &Path) -> std::path::PathBuf {
+    if crate::assets::il::is_1_28_45() {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            let v52 = path.with_file_name(format!("{stem}-v52.txt"));
+            if v52.exists() || v52.with_extension("txt.gz").exists() {
+                return v52;
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
 pub fn read_recording(path: &Path) -> Result<String, String> {
     let mut text = String::new();
     std::io::Read::read_to_string(&mut open_recording(path)?, &mut text).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -554,6 +568,31 @@ fn sliding_loop_clip(g: &mut Game, i: usize) -> Result<Option<crate::game::audio
     Ok(g.properties[i].clips.SlidingLoop.clone())
 }
 
+/// v52h: every PhysicalProperties' clips (impact, sizzle, stab, sliding) from the game's asset of that name, for a case
+/// that plays them (a recording's properties hold none). Properties the game has no asset of keep none.
+pub(super) fn all_property_clips(g: &mut Game) -> Result<(), String> {
+    for i in 0..g.properties.len() {
+        // (sliding_loop_clip may have set SlidingLoop alone.)
+        let k = &g.properties[i].clips;
+        if !k.HardImpact.is_empty() || !k.SoftImpact.is_empty() || !k.StabSound.is_empty() || !k.SizzleSounds.is_empty() {
+            continue;
+        }
+        if g.assets.is_none() {
+            let game = crate::game_assets::find_game(None).map_err(|e| format!("PhysicalProperties clips (no game data: {e})"))?;
+            g.assets = Some(Box::new(crate::assets::db::AssetDb::open(&game)?));
+        }
+        let name = g.properties[i].name.clone();
+        let db = g.assets.as_mut().unwrap();
+        for a in db.find_scripts("PhysicalProperties")? {
+            if db.mono(a)?.is_some_and(|(_, mb, _)| mb.name == name) {
+                g.properties[i].clips = super::link::read_physical_properties(db, a)?.clips;
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn ids(s: &Snapshot, ty: &str) -> HashMap<i32, usize> {
     s.of(ty).enumerate().map(|(i, r)| (r.id, i)).collect()
 }
@@ -799,6 +838,10 @@ impl Game {
             // PhysicalBehaviour.colliders, in component order (the recorder dumps the field).
             p.colliders = list(r.req("colliders")?).into_iter().map(|c| c.rsplit_once('#').unwrap().1.parse().unwrap()).collect();
             p.all_colliders = p.colliders.clone();
+            // 1.28.45's SlashColliders (a 1.28.41 recording has no field: None, as its prefabs).
+            p.SlashColliders = r.get("SlashColliders").filter(|&v| v != "null").map(|v| {
+                list(v).into_iter().map(|c| if c == "null" { 0 } else { c.rsplit_once('#').unwrap().1.parse().unwrap() }).collect()
+            });
             if let Some(rs) = &restored {
                 // Same-named objects (the Truck's "Head" beside the person's) part by the clone's component list.
                 let own = s.of("Clone").filter_map(|c| c.get("comps")).find(|c| c.contains(&format!("PhysicalBehaviour:{};", r.id)) || c.contains(&format!("PhysicalBehaviour:{}]", r.id)));
@@ -2445,6 +2488,31 @@ impl Game {
         }
     }
 
+    /// fnrec r2: the power tools' state, for the fn-check only (fnrec r3: load_input ran it at every loop point too, so a
+    /// loop replay took the game's post-step oldMousePos before ours' FixedUpdate: dump37lift/push/pull failed).
+    pub(crate) fn load_powers(&mut self, s: &Snapshot) {
+        // fnrec r2: every Push/Pull/LiftPowerTool on the ToolController (Recorder.Tool dumps each, chosen or not): its
+        // mouseMovement, oldMousePos and effect clone. One added before (SetTool's power_choose) takes the record's state.
+        for (name, kind) in [("PushPowerTool", super::power::PowerKind::Push), ("PullPowerTool", super::power::PowerKind::Pull), ("LiftPowerTool", super::power::PowerKind::Lift)] {
+            let Some(w) = s.of(name).next() else { continue };
+            let i = match self.powers.iter().position(|p| p.kind == kind) {
+                Some(i) => i,
+                None => {
+                    let game = crate::game_assets::find_game(None).expect("the game's data");
+                    let db = self.assets.get_or_insert_with(|| Box::new(crate::assets::db::AssetDb::open(&game).expect("the game's data")));
+                    let effect = db.resource(kind.effect(), 1).ok().flatten().unwrap_or_else(|| panic!("Resources.Load({}) found no GameObject", kind.effect()));
+                    self.powers.push(super::power::Power { kind, effect, playing: true, ..Default::default() });
+                    self.powers.len() - 1
+                }
+            };
+            let p = &mut self.powers[i];
+            if let Some(v) = w.get("mouseMovement") { p.mouseMovement = floats(v) }
+            if let Some(v) = w.get("oldMousePos") { p.oldMousePos = floats(v) }
+            // effectObject is the clone's GameObject; ours' root is its Transform (power_create_effect's root + 2).
+            if let Some(id) = w.get("effectObject").and_then(reference) { p.root = id - 2 }
+        }
+    }
+
     /// The renderer state scripts read: each bleeding particle's ParticleSystemRenderer.isVisible (dump16 on).
     pub fn load_render_state(&mut self, s: &Snapshot) {
         for (b, r) in bleeding_rows(self).into_iter().zip(s.of("BleedingParticleBehaviour")) {
@@ -3654,7 +3722,8 @@ pub fn compare(g: &mut Game, s: &Snapshot) -> Vec<String> {
             }
             // A stab's SliderJoint2D: the live ones in creation order (the newest has the lowest id).
             super::BreakJoint::Fixed(f) if !g.fixed_joints[*f].destroyed && s.of("SliderJoint2D").next().is_some() => {
-                let nth = (0..*f).filter(|&x| !g.fixed_joints[x].destroyed && !g.blood_wires.iter().any(|w| w.joint == x) && !g.pins.iter().any(|p| p.Joint == Some(x))).count();
+                // Among the sliders only (1.28.45's slash FrictionJoint2Ds sit between them, unlisted: infinite limits).
+                let nth = (0..*f).filter(|&x| !g.fixed_joints[x].destroyed && g.fixed_joints[x].slider.is_some() && !g.blood_wires.iter().any(|w| w.joint == x) && !g.pins.iter().any(|p| p.Joint == Some(x))).count();
                 let mut records: Vec<&Record> = s.of("SliderJoint2D").collect();
                 records.sort_by_key(|r| std::cmp::Reverse(r.id));
                 records.get(nth).map_or("?".into(), |r| r.id.to_string())
@@ -3712,8 +3781,16 @@ pub fn compare(g: &mut Game, s: &Snapshot) -> Vec<String> {
     for (x, r) in g.syringes.iter_mut().zip(s.of("SyringeBehaviour")) {
         check(format!("Syringe {}", r.name), x.fields(), r);
     }
+    // fnrec r2: and each node's Connections (a link, not in fields()), as the recorded node ids (ours' index is the record order).
+    let node_rec: Vec<i32> = s.of("ConnectedNodeBehaviour").map(|r| r.id).collect();
+    let mut node_conn = Vec::new();
     for (n, r) in g.nodes.iter_mut().zip(s.of("ConnectedNodeBehaviour")) {
         check(format!("Node {}", r.name), n.fields(), r);
+        if let Some(c) = r.get("Connections") {
+            let theirs: Vec<Option<i32>> = list(c).into_iter().map(reference).collect();
+            let ours: Vec<Option<i32>> = n.Connections.iter().map(|x| x.and_then(|i| node_rec.get(i).copied())).collect();
+            if theirs != ours { node_conn.push(format!("Node {} Connections: game {theirs:?} ours {ours:?}", r.name)) }
+        }
     }
     for (k, r) in g.skins.iter_mut().zip(s.of("SkinMaterialHandler")) {
         check(format!("Skin {}", r.name), k.fields(), r);
@@ -4030,6 +4107,7 @@ pub fn compare(g: &mut Game, s: &Snapshot) -> Vec<String> {
         }
     }
     out.extend(liquid_diffs);
+    out.extend(node_conn);
     out.extend(pose_diffs);
     out.extend(compare_stabs(g, s));
     let w = words(s.snap("random"));

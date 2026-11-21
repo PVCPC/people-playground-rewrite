@@ -456,7 +456,7 @@ pub(super) const ITEM_CALLS: &[(&str, Call)] = &[
     ("SyringeBehaviour.Shot", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.syringe_shot(i); Ok(String::new()) }),
     ("SyringeBehaviour.Start", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.syringe_start(i); Ok(String::new()) }),
     ("SyringeBehaviour.Update", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.syringe_update(i); Ok(String::new()) }),
-    ("SyringeBehaviour.Use", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; g.syringe_use(i, c.arg(0)?); Ok(String::new()) }),
+    ("SyringeBehaviour.Use", |g, c| { let i = g.syringes.iter().position(|x| x.id == c.id).ok_or("no syringes entry")?; let ch = super::fncheck::signal_arg(c.args.first().copied().unwrap_or("signal"))?.1; g.syringe_use(i, ch as i32); Ok(String::new()) }),
     ("SyringeExplosionBehaviour.Start", |g, c| { let i = g.syringe_explosions.iter().position(|x| x.id == c.id).ok_or("no syringe_explosions entry")?; g.syringe_explosion_start(i); Ok(String::new()) }),
     ("TelevisionBehaviour.Awake", |g, c| { let i = g.televisions.iter().position(|x| x.id == c.id).ok_or("no televisions entry")?; g.television_awake(i); Ok(String::new()) }),
     ("TelevisionBehaviour.Break", |g, c| { let i = g.televisions.iter().position(|x| x.id == c.id).ok_or("no televisions entry")?; g.television_break(i); Ok(String::new()) }),

@@ -893,7 +893,7 @@ mod tests {
         let mut first = snaps.next().unwrap();
         // The map's and pool's splats are not loaded from snapshots.
         first.records.retain(|r| r.ty != "FancyBloodSplatController" && r.ty != "BleedingParticleBehaviour");
-        let Ok(rig) = crate::game_assets::HumanRig::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("local-cache"), &game) else { return };
+        let Ok(rig) = crate::game_assets::HumanRig::load(&crate::game_assets::test_cache(Path::new(env!("CARGO_MANIFEST_DIR")), &game), &game) else { return };
         let want = Game::from_snapshot(&first, &rig).unwrap();
         assert_eq!(g.DynamicSqrdVelocityThreshold, want.DynamicSqrdVelocityThreshold);
         assert_eq!((g.time.fixedDeltaTime, g.time.maximumDeltaTime, g.time.timeScale), (want.time.fixedDeltaTime, want.time.maximumDeltaTime, want.time.timeScale));

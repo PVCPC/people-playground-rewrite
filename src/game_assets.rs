@@ -392,6 +392,13 @@ fn is_relative_file(path: &Path) -> bool {
         && path.components().all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// Tests: the checkout's asset cache made from `game`: local-cache, else local-cache-1.28.52 (a 1.28.52 game; pc-ppg.sh
+/// copies main's, mac-ppg.sh puts the matching one in local-cache).
+pub fn test_cache(root: &Path, game: &Path) -> PathBuf {
+    let c52 = root.join("local-cache-1.28.52");
+    if HumanRig::load(&root.join("local-cache"), game).is_err() && c52.join("human.json").is_file() { c52 } else { root.join("local-cache") }
+}
+
 impl HumanRig {
     pub fn load(cache: &Path, game: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(cache.join("human.json")).map_err(|e| {

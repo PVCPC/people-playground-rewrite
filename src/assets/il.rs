@@ -36,6 +36,14 @@ static VERSION: OnceLock<GameVersion> = OnceLock::new();
 
 /// The loaded game's version (1.28.41 before `load`, as in the tests that build no table).
 pub fn version() -> GameVersion {
+    // Tests: the game PPG_GAME_DIR names decides, whichever test runs first (else a 1.28.52 run took 1.28.41 paths in
+    // every test that never loaded the table).
+    #[cfg(test)]
+    if VERSION.get().is_none() {
+        if let Ok(game) = crate::game_assets::find_game(None) {
+            let _ = load(&game);
+        }
+    }
     *VERSION.get().unwrap_or(&GameVersion::V1_28_41)
 }
 
