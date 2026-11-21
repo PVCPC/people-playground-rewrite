@@ -245,6 +245,22 @@ impl Game {
         self.load_resize_handles(db, &scripts, &mut scene.roots)?;
         let centers: Vec<_> = scripts.iter().filter(|s| s.runs && matches!(s.class.as_str(), "CenterOfGravity" | "CenterOfBounds")).map(|s| (s.class == "CenterOfBounds", s.fields.clone(), s.game_object)).collect();
         self.load_centers(db, &centers)?;
+        self.load_scene_eye(db, &scripts)
+    }
+
+    /// fc41 r4: the eye alone for a fn-check (a recording loads no scene), once.
+    pub(crate) fn load_eye_alone(&mut self) -> Result<(), String> {
+        if self.eye.wave.is_some() {
+            return Ok(());
+        }
+        let mut db = self.assets.take().ok_or("the eye without the game's data")?;
+        let r = scene_scripts(&mut db, "level1").and_then(|s| self.load_scene_eye(&mut db, &s));
+        self.assets = Some(db);
+        r
+    }
+
+    /// level1's ToolWheelBehaviour EyeAnimation (UiColorWave) and EyeImage.
+    fn load_scene_eye(&mut self, db: &mut AssetDb, scripts: &[SceneScript]) -> Result<(), String> {
         let wheel = scripts.iter().find(|s| s.runs && s.class == "ToolWheelBehaviour").ok_or("level1 has no running ToolWheelBehaviour")?;
         let mono = |db: &mut AssetDb, name: &str| -> Result<Value, String> {
             let r = wheel.fields.get(name).and_then(Value::pptr).and_then(|p| db.resolve(wheel.game_object.file, p)).ok_or_else(|| format!("ToolWheelBehaviour.{name}"))?;

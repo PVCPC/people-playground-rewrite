@@ -212,6 +212,8 @@ impl Game {
         let trail = self.javelin_missiles[m].trail;
         self.with_component_instance(trail, |g, inst, o| g.set_active_scripts(inst, o, false));
         let id = self.javelin_missiles[m].id;
+        // fc41 r4: SetActive(false) stops the trail's ParticleSystem (game: isPlaying and isEmitting 0 at once).
+        self.ps_field_call(id, "TrailParticleEffect", true, super::PsCall::Stop(self.time.timeAsDouble));
         self.start_coroutine(id, id, Self::javelin_missile_take_off_routine(m));
     }
 
@@ -227,6 +229,9 @@ impl Game {
                     let start_y = g.physicals[p].transform.position[1];
                     let trail = g.javelin_missiles[m].trail;
                     g.with_component_instance(trail, |g, inst, o| g.set_active_scripts(inst, o, true));
+                    // fc41 r4: SetActive(true) plays it again (the trail plays on awake).
+                    let id = g.javelin_missiles[m].id;
+                    g.ps_field_call(id, "TrailParticleEffect", true, super::PsCall::Play);
                     g.javelin_missiles[m].takenOff = true;
                     // AudioSource.PlayOneShot(TakeOffSound); AudioSource.Play()
                     let id = g.javelin_missiles[m].id;

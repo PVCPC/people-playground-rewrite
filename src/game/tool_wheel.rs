@@ -10,7 +10,7 @@ pub struct EyeAnimation {
     oV: f32,
     sV: f32,
     /// Gradient, Duration, Offset, UseSinWave, OffsetVaration, SpeedVaration, Randomisation (None without the scene's data).
-    wave: Option<(super::visual::Gradient, f32, f32, bool, f32, f32, f32)>,
+    pub(crate) wave: Option<(super::visual::Gradient, f32, f32, bool, f32, f32, f32)>,
     /// EyeImage's Image.color; its sprite is EyeClosed while the tools are invisible.
     pub color: [f32; 4],
 }

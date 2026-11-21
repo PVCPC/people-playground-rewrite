@@ -1191,10 +1191,17 @@ fn impact_gm(g: &Game, c: &Case) -> Result<Option<usize>, String> {
 /// them; a `null` joint is a destroyed one) and FnTiny's " csid=" identities; the instance id counter is kept.
 fn chainsaw_with_connections(g: &mut Game, c: &Case) -> Result<usize, String> {
     let i = g.chainsaws.iter().position(|x| x.id == c.sid).ok_or("no chainsaws entry")?;
-    let r = c.s.of("ItemScript").find(|r| r.id == c.sid).ok_or("no ChainsawBehaviour record")?;
+    let saw = g.chainsaws[i].physical;
+    g.chainsaws[i].softConnections = pi_soft_connections(g, c, saw)?;
+    csid_identities(g, c)?;
+    Ok(i)
+}
+/// fc41 r4: the self's PI softConnections (any saw: Chainsaw, EnergySword, SharpOnAllSides), joints rebuilt to `saw`; with
+/// an " stpre=sc:" (FnTiny.R4Of) each joint's maxForce from it.
+fn pi_soft_connections(g: &mut Game, c: &Case, saw: usize) -> Result<crate::game::soft_connect::SoftConnections, String> {
+    let r = c.s.of("ItemScript").find(|r| r.id == c.sid).ok_or("no saw record")?;
     let list = r.req("softConnections")?.trim_start_matches('{').trim_end_matches('}');
     let next = g.next_instance_id;
-    let saw = g.chainsaws[i].physical;
     let mut conns = crate::game::soft_connect::SoftConnections::default();
     for e in super::split_top(list, ';').into_iter().filter(|e| !e.is_empty()) {
         // `<key>:SoftConnection(joint=.. phys=.. coll=.. shouldBeDeleted=..)`: the fields after the '('.
@@ -1212,9 +1219,76 @@ fn chainsaw_with_connections(g: &mut Game, c: &Case) -> Result<usize, String> {
         conns.add(phys, sc);
     }
     g.next_instance_id = next;
-    g.chainsaws[i].softConnections = conns;
+    for e in st_pre(c).and_then(|v| v.strip_prefix("sc:")).unwrap_or("").split(';').filter(|e| !e.is_empty()) {
+        let [id, mf] = e.split('/').collect::<Vec<_>>()[..] else { return Err(format!("bad sc stpre {e}")) };
+        let p = phys_by_id(g, id.parse().map_err(|_| format!("sc id {id}"))?)?;
+        if let (Some(sc), Ok(b)) = (conns.get(p).copied(), u32::from_str_radix(mf, 16)) {
+            g.friction_joint_set_max_force(sc.joint, f32::from_bits(b));
+        }
+    }
+    Ok(conns)
+}
+fn sharp_with_connections(g: &mut Game, c: &Case) -> Result<usize, String> {
+    let s = g.sharp_on_all_sides.iter().position(|x| x.id == c.sid).ok_or("no sharp_on_all_sides entry")?;
+    let saw = g.sharp_on_all_sides[s].physical;
+    g.sharp_on_all_sides[s].softConnections = pi_soft_connections(g, c, saw)?;
+    Ok(s)
+}
+fn sharp_state(g: &Game, s: usize) -> String {
+    soft_state(g, &g.sharp_on_all_sides[s].softConnections)
+}
+/// fc41 r4: FnTiny.R4Of's "sc:" of a saw's connections: victim id / joint maxForce, by id.
+fn soft_state(g: &Game, conns: &crate::game::soft_connect::SoftConnections) -> String {
+    let mut e: Vec<(i32, String)> = conns.keys().into_iter().map(|k| {
+        let sc = conns.get(k).unwrap();
+        let mf = if g.soft_joint_alive(sc.joint) { hex(g.fixed_joints[sc.joint].friction.map_or(0.0, |f| f.0)) } else { "-".into() };
+        (g.physicals[sc.phys].id, mf)
+    }).collect();
+    e.sort();
+    format!(" st=sc:{}", e.iter().map(|(id, mf)| format!("{id}/{mf}")).collect::<Vec<_>>().join(";"))
+}
+/// fc41 r4: an OnAfterDeserialise case's victims (" svpre=" Guid N hex) and objects (every Transform under " svroot=", the
+/// list's GameObject), with the " csid=" identities.
+fn r4_victims(g: &mut Game, c: &Case) -> Result<(Vec<u128>, Vec<i32>), String> {
     csid_identities(g, c)?;
-    Ok(i)
+    let sv = c.field("svpre").unwrap_or("").split(',').filter(|x| !x.is_empty()).map(|h| u128::from_str_radix(h, 16).map_err(|_| format!("svpre {h}"))).collect::<Result<Vec<_>, _>>()?;
+    let root: i32 = c.field("svroot").ok_or("no svroot= (a recording before fc41 r4)")?.parse().map_err(|_| "svroot")?;
+    let objects = (0..g.physicals.len()).filter(|&p| g.root_id(p) == root).map(|p| g.physicals[p].transform_id).collect();
+    Ok((sv, objects))
+}
+/// fc41 r4: ImmobilityField joints from " stpre=imf:<collider>/<maxForce>/<anchor x>,<y>;.." (FnTiny.R4Seed captured them with
+/// OnTriggerEnter2D), built as it does without its clip and message; then the state after `f`.
+fn immobility_entry(g: &mut Game, c: &Case, f: impl FnOnce(&mut Game, usize)) -> Result<String, String> {
+    let i = g.immobility_fields.iter().position(|x| x.id == c.sid).ok_or("no immobility_fields entry")?;
+    let Some(pre) = st_pre(c) else { f(g, i); return VOID };
+    let p = g.immobility_fields[i].physical;
+    let next = g.next_instance_id;
+    for e in pre.strip_prefix("imf:").ok_or(format!("bad imf stpre {pre}"))?.split(';').filter(|e| !e.is_empty()) {
+        let w: Vec<&str> = e.split(['/', ',']).collect();
+        let [coll, mf, ax, ay] = w[..] else { return Err(format!("bad imf stpre {e}")) };
+        let coll: i32 = coll.parse().map_err(|_| format!("imf coll {coll}"))?;
+        let b = |v: &str| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|_| format!("imf {v}"));
+        let go = g.world.collider_game_object(coll).ok_or(format!("imf: no GameObject for collider {coll}"))?;
+        let v = g.physicals.iter().position(|q| !q.destroyed && q.all_colliders.contains(&coll)).ok_or(format!("imf: no physical for collider {coll}"))?;
+        let j = g.add_friction_joint_component(p);
+        g.fixed_joint_set_auto_configure(j, false);
+        g.fixed_joint_set_enable_collision(j, true);
+        g.fixed_joint_set_connected_body(j, Some(crate::game::BodyOwner::Physical(v)));
+        g.friction_joint_set_max_force(j, b(mf)?);
+        g.friction_joint_set_max_torque(j, b(mf)?);
+        g.fixed_joint_set_anchor(j, [b(ax)?, b(ay)?]);
+        g.fixed_joint_set_connected_anchor(j, [0.0, 0.0]);
+        g.immobility_fields[i].joints.add(go, crate::game::immobility_field::Capture { joint: j, coll, phys: v });
+    }
+    g.next_instance_id = next;
+    f(g, i);
+    let mut e: Vec<(i32, String)> = g.immobility_fields[i].joints.keys().into_iter().map(|k| {
+        let cp = *g.immobility_fields[i].joints.get(k).unwrap();
+        let s = if g.soft_joint_alive(cp.joint) { let fj = &g.fixed_joints[cp.joint]; format!("{}/{},{}", hex(fj.friction.map_or(0.0, |f| f.0)), hex(fj.state.anchor.x), hex(fj.state.anchor.y)) } else { "-".into() };
+        (cp.coll, s)
+    }).collect();
+    e.sort();
+    Ok(format!(" st=imf:{}", e.iter().map(|(id, s)| format!("{id}/{s}")).collect::<Vec<_>>().join(";")))
 }
 /// FnTiny's " csid=<Transform id>:<UniqueIdentity N hex>,..": the SerialisableIdentities no record holds.
 fn csid_identities(g: &mut Game, c: &Case) -> Result<(), String> {
@@ -2966,6 +3040,88 @@ const CALLS: &[(&str, Call)] = &[
         let _ = std::fs::remove_file(&path);
         Ok(format!(" olw={}", bytes?.iter().map(|b| format!("{b:02x}")).collect::<String>()))
     }),
+    // fc41 r4: the saws' ProcessSoftConnections(shouldSaw, strength) / OnAfterDeserialise (SharpOnAllSides also FixedUpdate,
+    // OnDestroy) on FnTiny.R4Seed's connections (PI softConnections, the seeded maxForce), then " st=sc:" (FnTiny.R4Of).
+    ("ChainsawBehaviour.ProcessSoftConnections", |g, c| {
+        let i = g.chainsaws.iter().position(|x| x.id == c.sid).ok_or("no chainsaws entry")?;
+        let saw = g.chainsaws[i].physical;
+        g.chainsaws[i].softConnections = pi_soft_connections(g, c, saw)?;
+        g.chainsaw_process(i, c.arg(0)?, c.arg(1)?);
+        let conns = g.chainsaws[i].softConnections.clone();
+        Ok(soft_state(g, &conns))
+    }),
+    ("ChainsawBehaviour.OnAfterDeserialise", |g, c| {
+        let i = g.chainsaws.iter().position(|x| x.id == c.sid).ok_or("no chainsaws entry")?;
+        let saw = g.chainsaws[i].physical;
+        g.chainsaws[i].softConnections = pi_soft_connections(g, c, saw)?;
+        let (sv, objects) = r4_victims(g, c)?;
+        g.chainsaws[i].SerialisableVictims = sv;
+        g.chainsaw_on_after_deserialise(i, &objects);
+        let conns = g.chainsaws[i].softConnections.clone();
+        Ok(soft_state(g, &conns))
+    }),
+    ("EnergySwordBehaviour.ProcessSoftConnections", |g, c| {
+        let i = g.energy_swords.iter().position(|x| x.id == c.sid).ok_or("no energy_swords entry")?;
+        let saw = g.energy_swords[i].physical;
+        g.energy_swords[i].softConnections = pi_soft_connections(g, c, saw)?;
+        g.energy_sword_process(i, c.arg(0)?, c.arg(1)?);
+        let conns = g.energy_swords[i].softConnections.clone();
+        Ok(soft_state(g, &conns))
+    }),
+    ("EnergySwordBehaviour.OnAfterDeserialise", |g, c| {
+        let i = g.energy_swords.iter().position(|x| x.id == c.sid).ok_or("no energy_swords entry")?;
+        let saw = g.energy_swords[i].physical;
+        g.energy_swords[i].softConnections = pi_soft_connections(g, c, saw)?;
+        let (sv, objects) = r4_victims(g, c)?;
+        g.energy_swords[i].SerialisableVictims = sv;
+        g.energy_sword_on_after_deserialise(i, &objects);
+        let conns = g.energy_swords[i].softConnections.clone();
+        Ok(soft_state(g, &conns))
+    }),
+    ("SharpOnAllSidesBehaviour.ProcessSoftConnections", |g, c| { let s = sharp_with_connections(g, c)?; g.sharp_on_all_sides_process(s, c.arg(0)?, c.arg(1)?); Ok(sharp_state(g, s)) }),
+    ("SharpOnAllSidesBehaviour.FixedUpdate", |g, c| { let s = sharp_with_connections(g, c)?; g.sharp_on_all_sides_fixed_update(s); Ok(sharp_state(g, s)) }),
+    ("SharpOnAllSidesBehaviour.OnDestroy", |g, c| { let s = sharp_with_connections(g, c)?; g.sharp_on_all_sides_destroy(s); Ok(sharp_state(g, s)) }),
+    ("SharpOnAllSidesBehaviour.OnAfterDeserialise", |g, c| {
+        let s = sharp_with_connections(g, c)?;
+        let (sv, objects) = r4_victims(g, c)?;
+        g.sharp_on_all_sides[s].SerialisableVictims = sv;
+        g.sharp_on_all_sides_on_after_deserialise(s, &objects);
+        Ok(sharp_state(g, s))
+    }),
+    // fc41 r4: ImmobilityField FixedUpdate / OnTriggerExit2D(collision) / DestroyAllJoints on FnTiny.R4Seed's captures, " st=imf:".
+    ("ImmobilityFieldBehaviour.FixedUpdate", |g, c| immobility_entry(g, c, |g, i| g.immobility_field_fixed_update(i))),
+    ("ImmobilityFieldBehaviour.DestroyAllJoints", |g, c| immobility_entry(g, c, |g, i| g.immobility_field_destroy_all_joints(i))),
+    ("ImmobilityFieldBehaviour.OnTriggerExit2D", |g, c| { let coll: i32 = c.arg(0)?; immobility_entry(g, c, |g, i| g.immobility_field_trigger_exit(i, coll)) }),
+    // fc41 r4: TyreDeflation.Awake from FnTiny's wrong `initial` (" stpre=ty:<Radius>,<Offset x>,<y>"), " st=ty:" after.
+    ("TyreDeflationBehaviour.Awake", |g, c| {
+        let t = arena(&g.tyres, c.sid, |x| x.id, "tyres")?;
+        let pre: Vec<f32> = st_pre(c).and_then(|v| v.strip_prefix("ty:")).unwrap_or("").split(',').filter_map(|x| u32::from_str_radix(x, 16).ok()).map(f32::from_bits).collect();
+        if let [r, x, y] = pre[..] { g.tyres[t].initialRadius = r; g.tyres[t].initialOffset = [x, y]; }
+        g.with_component_instance(c.sid, |g, inst, _| g.tyre_awake(t, inst));
+        let (r, o) = (g.tyres[t].initialRadius, g.tyres[t].initialOffset);
+        Ok(format!(" st=ty:{},{},{}", hex(r), hex(o[0]), hex(o[1])))
+    }),
+    // fc41 r4: TimedGate.Awake from FnTiny's seeded delay (" stpre=tg:"), " st=tg:" after.
+    ("TimedGateBehaviour.Awake", |g, c| {
+        let i = g.timed_gates.iter().position(|x| x.id == c.sid).ok_or("no timed_gates entry")?;
+        let p = g.timed_gates[i].physical;
+        if let Some(v) = st_pre(c).and_then(|v| v.strip_prefix("tg:")).and_then(|v| u32::from_str_radix(v, 16).ok()) {
+            g.physicals[p].ActivationPropagationDelay = f32::from_bits(v);
+        }
+        g.timed_gate_awake(i);
+        Ok(format!(" st=tg:{}", hex(g.physicals[p].ActivationPropagationDelay)))
+    }),
+    // fc41 r4: UiColorWave.OnDisable (the eye's) from the recorder's Renderer.color (" stpre=ucw:"), " st=ucw:" after.
+    ("UiColorWave.OnDisable", |g, c| {
+        g.load_eye_alone()?;
+        if let Some(v) = st_pre(c).and_then(|v| v.strip_prefix("ucw:")) {
+            let w: Vec<f32> = v.split(',').filter_map(|x| u32::from_str_radix(x, 16).ok()).map(f32::from_bits).collect();
+            if let [r, gg, b, a] = w[..] { g.eye.color = [r, gg, b, a]; }
+        }
+        g.eye_animation_on_disable();
+        let k = g.eye.color;
+        Ok(format!(" st=ucw:{},{},{},{}", hex(k[0]), hex(k[1]), hex(k[2]), hex(k[3])))
+    }),
     // batch1 r10: ChainsawBehaviour.SoftConnect(otherPhys, coll, connectionStrength) on the loaded softConnections.
     ("ChainsawBehaviour.SoftConnect", |g, c| {
         let i = chainsaw_with_connections(g, c)?;
@@ -3454,6 +3610,8 @@ const CALLS: &[(&str, Call)] = &[
     }),
     ("GoreStringBehaviour.Update", |g, c| { g.gore_string_update(c.gore_limb()?); VOID }),
     ("GoreStringBehaviour.SetBreakForce", |g, c| { g.gore_string_set_break_force(c.gore_limb()?); VOID }),
+    // fc41 r4: OnDestroy on the self's limb (the GEN entry's self index is not a limb).
+    ("GoreStringBehaviour.OnDestroy", |g, c| { g.gore_string_on_destroy(c.gore_limb()?); VOID }),
     ("GoreStringBehaviour.TryPlaySnapSound", |g, c| { g.gore_string_snap_sound(c.gore_limb()?); VOID }),
     ("GoreStringBehaviour.DestroyJoint", |g, c| { g.gore_string_destroy_joint(c.gore_limb()?); VOID }),
     ("GoreStringBehaviour.CreateJoint", |g, c| { g.gore_string_create_joint(c.gore_limb()?); VOID }),

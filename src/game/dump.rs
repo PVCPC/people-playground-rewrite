@@ -1117,7 +1117,7 @@ impl Game {
             l.goreString = gore.is_some();
             // GoreStringBehaviour.enabled is not dumped; nothing in the game disables it.
             l.goreStringEnabled = true;
-            l.goreStringJoint = gore.is_some_and(|id| s.of("GoreStringBehaviour").any(|g| g.id == id && g.req("Joint").is_ok_and(|j| j != "null")));
+            l.goreStringJoint = gore.is_some_and(|id| s.of("GoreStringBehaviour").any(|g| g.id == id && g.req("Joint").is_ok_and(|j| j != "null" && j != "destroyed")));
             if let Some(g) = gore.and_then(|id| s.of("GoreStringBehaviour").find(|g| g.id == id)) {
                 let line = |k: &str| -> Result<[f32; 4], String> {
                     let fl = inner_fields(g.req(k)?);
