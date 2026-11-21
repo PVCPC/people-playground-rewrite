@@ -272,6 +272,21 @@ impl Game {
     }
 
     /// For a recording (which has no scene): level1's resize handles root alone, as `load_scene` makes it.
+    /// fc41 r12: level1's CenterOfGravity / CenterOfBounds markers for a recording (from_snapshot builds no scene), once.
+    pub(crate) fn recorded_centers(&mut self) -> Result<(), String> {
+        if !self.centers.is_empty() {
+            return Ok(());
+        }
+        let game = crate::game_assets::find_game(None)?;
+        let mut db = match self.assets.take() { Some(db) => db, None => Box::new(AssetDb::open(&game)?) };
+        let r = scene_scripts(&mut db, "level1").and_then(|scripts| {
+            let centers: Vec<_> = scripts.iter().filter(|s| s.runs && matches!(s.class.as_str(), "CenterOfGravity" | "CenterOfBounds")).map(|s| (s.class == "CenterOfBounds", s.fields.clone(), s.game_object)).collect();
+            self.load_centers(&mut db, &centers)
+        });
+        self.assets = Some(db);
+        r
+    }
+
     pub(super) fn load_scene_resize_handles(&mut self, db: &mut AssetDb) -> Result<(), String> {
         let scripts = scene_scripts(db, "level1")?;
         let go = scripts.iter().find(|s| s.runs && s.class == "ResizeHandles").ok_or("level1 has no running ResizeHandles")?.game_object;

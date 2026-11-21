@@ -8,12 +8,26 @@ impl Game {
     pub fn decal_controllers_clear(&mut self) {
         for p in 0..self.physicals.len() {
             if self.physicals[p].active && !self.physicals[p].destroyed {
-                for c in &mut self.physicals[p].decal_controllers {
-                    // DecalControllerBehaviour.Clear: a dirty controller destroys its decalHolder and is clean again.
-                    c.decals.clear();
-                    c.holder = None;
+                for k in 0..self.physicals[p].decal_controllers.len() {
+                    self.decal_controller_clear(p, k);
                 }
             }
+        }
+    }
+
+    /// DecalControllerBehaviour.Clear: localDecalPositions emptied; a dirty controller Object.Destroys each child of its
+    /// decalHolder, then the holder, and is clean again.
+    pub(crate) fn decal_controller_clear(&mut self, p: usize, k: usize) {
+        let c = &mut self.physicals[p].decal_controllers[k];
+        c.decals.clear();
+        if c.holder.take().is_none() {
+            return;
+        }
+        let ids = std::mem::take(&mut c.holder_objects);
+        let at = self.time.fixedTimeAsDouble.min(self.time.timeAsDouble);
+        // (No instance in ours: only the pending destroys, under their GameObject ids, as limb_on_destroy's myStatus.)
+        for &id in ids.iter().skip(1).chain(ids.first()) {
+            self.object_destroys.push((at, id));
         }
     }
 

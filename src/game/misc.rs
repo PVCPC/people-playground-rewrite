@@ -603,6 +603,9 @@ pub struct DecalController {
     pub holder: Option<(Option<crate::assets::db::ObjRef>, i32, i16)>,
     /// !decalHolder.activeSelf as 1.28.45's InvisibleOptionInContextMenu.UpdateVisibility last set it.
     pub holder_hidden: bool,
+    /// fc41 r12: the decalHolder's GameObject instance id, then its children's (Clear destroys them): CreateContainer's and
+    /// Decal's new GameObjects (physical.rs), or a recording's Clone records (dump.rs).
+    pub holder_objects: Vec<i32>,
 }
 
 /// A BloodPuff poolable (the Human PhysicalProperties' ShotImpact), from the pool PoolGenerator made for it.
@@ -2187,7 +2190,7 @@ mod decal_tests {
         ph.transform.rotation = [0.0, 0.0, 0.0, 1.0];
         ph.transform.localScale = [1.0, 1.0, 1.0];
         let streak = Streak { radius: 0.03, speed: 1.0, length: 2.0, ..Default::default() };
-        ph.decal_controllers.push(DecalController { decals: vec![Decal { position: [0.0; 2], size: 1.0, sprite: 0, colour: [1.0; 4], scale: [1.0, 1.0], streaks: vec![streak] }], descriptor: 0, holder: None, holder_hidden: false });
+        ph.decal_controllers.push(DecalController { decals: vec![Decal { position: [0.0; 2], size: 1.0, sprite: 0, colour: [1.0; 4], scale: [1.0, 1.0], streaks: vec![streak] }], descriptor: 0, holder: None, holder_hidden: false, holder_objects: Vec::new() });
         g.physicals.push(ph);
         g.active_streaks.push([0, 0, 0, 0]);
         g.decal_streaks_update();

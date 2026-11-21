@@ -1921,17 +1921,28 @@ const CALLS: &[(&str, Call)] = &[
         let h = |x: f32| format!("{:08x}", x.to_bits());
         Ok(format!(" st=sa:{},{},{}", mp.0.is_empty() as u8, lc.map(h).join(","), h(mp.get_float("_Direction"))))
     }),
+    // fc41 r12: DamagableMachineryBehaviour.Stabbed: the generated entry read the Stab arg as an index. The self by id, the
+    // Stab's stabber; MapConfigProbe's wound=0 reset after (stab_probe_reset).
+    ("DamagableMachineryBehaviour.Stabbed", |g, c| {
+        let m = g.machinery.iter().position(|x| x.id == c.id).ok_or("no machinery entry")?;
+        let s = phys_by_id(g, c.rec::<i32>("Stab(", "stabber")?)?;
+        g.machinery_stabbed(m, s);
+        stab_probe_reset(g, c)?;
+        VOID
+    }),
     // fc41 r11: DecalControllerBehaviour.Clear (an instance method; the generated entry cleared every controller): the controller
-    // from em=, ret as BigProbeB's "dc=<dirty>:<localDecalPositions>".
+    // from em=, ret as BigProbeB's "dc=<dirty>:<localDecalPositions>" (always clean after). r12: FnTiny gives odd k decals first;
+    // the holder's and its children's Object.Destroys compare (their ids from the PI Clone records, dump.rs).
     ("DecalControllerBehaviour.Clear", |g, c| {
         let (pid, k) = c.field("em").ok_or("no em=")?.split_once(',').ok_or("bad em=")?;
         let pid: i32 = pid.parse().map_err(|_| "em physical")?;
         let k: usize = k.parse().map_err(|_| "em index")?;
         let p = g.physicals.iter().position(|x| x.id == pid).ok_or("no physical of the controller")?;
-        let d = g.physicals[p].decal_controllers.get_mut(k).ok_or(format!("no decal controller {k}"))?;
-        d.decals.clear();
-        d.holder = None;
-        Ok(format!("dc={}:", if d.holder.is_some() { "1" } else { "0" }))
+        if k >= g.physicals[p].decal_controllers.len() {
+            return Err(format!("no decal controller {k}"));
+        }
+        g.decal_controller_clear(p, k);
+        Ok("dc=0:".into())
     }),
     // fc41 r11: GlowInTheDarkBehaviour.Start on the flask FnTiny gave one (a runtime AddComponent ours does not load): the glow
     // joins ours by the PI Clone that lists it, owned by that Clone's FlaskBehaviour.
@@ -1962,8 +1973,10 @@ const CALLS: &[(&str, Call)] = &[
         let case = c.s.of("FnCase").next().ok_or("no FnCase")?;
         let f = |v: &str| u32::from_str_radix(v, 16).map(f32::from_bits).map_err(|e| e.to_string());
         let cgp: Vec<&str> = case.get("cgp").ok_or("no cgp=")?.split(',').collect();
-        let [en, x, y, s] = cgp[..] else { return Err("cgp= values".into()) };
+        // fc41 r12: a fifth value, the (fuzzed) SizeMultiplier.
+        let (en, x, y, s, m) = match cgp[..] { [en, x, y, s] => (en, x, y, s, None), [en, x, y, s, m] => (en, x, y, s, Some(m)), _ => return Err("cgp= values".into()) };
         let bounds = case.get("cgb") == Some("1");
+        g.recorded_centers()?;
         let i = g.centers.iter().position(|m| m.bounds == bounds).ok_or("no centers entry")?;
         let sel: Vec<usize> = match case.get("cgs").ok_or("no cgs=")? {
             "-" => Vec::new(),
@@ -1973,6 +1986,7 @@ const CALLS: &[(&str, Call)] = &[
             Some(t) => t.rawSelection = sel,
             None => g.tool = Some(super::super::tool::Tool { rawSelection: sel, ..Default::default() }),
         }
+        if let Some(m) = m { g.centers[i].SizeMultiplier = f(m)?; }
         let r = g.centers[i].renderer;
         g.renderers[r].enabled = en == "1";
         let (x, y, s) = (f(x)?, f(y)?, f(s)?);

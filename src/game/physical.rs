@@ -1730,7 +1730,7 @@ impl Game {
     pub(crate) fn physical_behaviour_decal(&mut self, p: usize, ty: usize, position: [f32; 2], size: f32, colour: [f32; 4]) {
         let ph = &mut self.physicals[p];
         if ph.DisplayBloodDecals && self.prefs.Decals && ph.decal_controllers.iter().all(|c| c.descriptor != ty) {
-            ph.decal_controllers.push(super::misc::DecalController { descriptor: ty, decals: Vec::new(), holder: None, holder_hidden: false });
+            ph.decal_controllers.push(super::misc::DecalController { descriptor: ty, decals: Vec::new(), holder: None, holder_hidden: false, holder_objects: Vec::new() });
             // AddComponent<DecalControllerBehaviour>()
             self.allocate_instance_id();
             // DecalControllerBehaviour.Awake: dirty = false, the flag that rebuilds the decal mesh (only the mesh reads it).
@@ -1767,9 +1767,12 @@ impl Game {
         if self.physicals[p].decal_controllers[c].holder.is_none() {
             // DecalControllerBehaviour.CreateContainer: no child is named "<descriptor> container" (the descriptors are Blast mark, Dense blood
             // and Sparse blood), so new GameObject (GameObject, Transform), then Optout, SortingGroup and SpriteMask.
-            for _ in 0..5 {
+            let go = self.allocate_instance_id();
+            for _ in 0..4 {
                 self.allocate_instance_id();
             }
+            // The holder's GameObject id first (Clear destroys it last, after its children).
+            self.physicals[p].decal_controllers[c].holder_objects = vec![go];
             // GetComponent<SpriteRenderer>() (a null one throws); the SortingGroup takes its layer and order + 1, the SpriteMask its
             // sprite and order + 1 (decals.rs draws them).
             // A recording-built object (dump.rs) keeps no sprite, but the game's object had its SpriteRenderer (the
@@ -1786,10 +1789,12 @@ impl Game {
         if self.decal_is_near_other_decal(p, c, ty.IgnoreRadius, local) {
             return;
         }
-        // new GameObject("decal") (GameObject, Transform) and its SpriteRenderer.
-        for _ in 0..3 {
+        // new GameObject("decal") (GameObject, Transform) and its SpriteRenderer, a child of the holder.
+        let go = self.allocate_instance_id();
+        for _ in 0..2 {
             self.allocate_instance_id();
         }
+        self.physicals[p].decal_controllers[c].holder_objects.push(go);
         let size = size * self.random.range(1.0, 1.2);
         // localScale = decalHolder.transform.InverseTransformVector(num * Vector3.one)
         let (a, b) = (self.inverse_transform_point(p, [size, size, size]), self.inverse_transform_point(p, [0.0; 3]));

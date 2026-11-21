@@ -1819,7 +1819,7 @@ impl Game {
             "DecalControllerBehaviour" => {
                 self.allocate_instance_id();
                 if let Some(p) = p {
-                    self.physicals[p].decal_controllers.push(super::misc::DecalController { descriptor: super::physical::NULL_DECAL, decals: Vec::new(), holder: None, holder_hidden: false });
+                    self.physicals[p].decal_controllers.push(super::misc::DecalController { descriptor: super::physical::NULL_DECAL, decals: Vec::new(), holder: None, holder_hidden: false, holder_objects: Vec::new() });
                 }
             }
             // Nitroglycerine.OnEnterContainer's AddComponent<ExplosiveBehaviour> (a flask or limb that held nitroglycerine when saved).

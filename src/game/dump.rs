@@ -2086,7 +2086,26 @@ impl Game {
                 let (Some(name), Some(dirty), Some(at)) = (f.next(), f.next(), f.next()) else { return Err(format!("bad decal controller {c}")) };
                 let descriptor = if name == "null" { super::physical::NULL_DECAL } else { g.decal_descriptor(name) };
                 let decals = at.split('/').filter(|v| !v.is_empty()).map(|v| super::misc::Decal { position: floats(v), size: 0.0, sprite: 0, colour: [1.0; 4], scale: [1.0, 1.0], streaks: Vec::new() }).collect();
-                list.push(super::misc::DecalController { descriptor, decals, holder: (dirty == "1").then_some((None, 0, 0)), holder_hidden: false });
+                // fc41 r12: the holder ("<descriptor> container", CreateContainer's Find name) among the physical's GameObject's Clone
+                // children, and its children: their GameObject ids for Clear's Object.Destroys.
+                let mut holder_objects = Vec::new();
+                if dirty == "1" {
+                    let key = format!("PhysicalBehaviour:{}", r.id);
+                    let recs: Vec<&Record> = s.of("Clone").collect();
+                    if let Some(at) = recs.iter().position(|x| x.get("comps").is_some_and(|v| v.trim_matches(['[', ']']).split(';').any(|e| e == key))) {
+                        let root = recs[at].get("root");
+                        let same: Vec<&Record> = recs.iter().copied().filter(|x| x.get("root") == root).collect();
+                        let idx = |x: &Record| x.get("index").and_then(|v| v.parse::<i64>().ok());
+                        let par = |x: &Record| x.get("parent").and_then(|v| v.parse::<i64>().ok());
+                        let me = idx(recs[at]);
+                        let hname = format!("{name}_container");
+                        if let Some(h) = same.iter().find(|x| par(x) == me && me.is_some() && x.name == hname) {
+                            holder_objects.push(h.id);
+                            holder_objects.extend(same.iter().filter(|x| par(x).is_some() && par(x) == idx(h)).map(|x| x.id));
+                        }
+                    }
+                }
+                list.push(super::misc::DecalController { descriptor, decals, holder: (dirty == "1").then_some((None, 0, 0)), holder_hidden: false, holder_objects });
             }
             g.physicals[p].decal_controllers = list;
         }
