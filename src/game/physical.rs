@@ -1845,7 +1845,8 @@ impl Game {
 
     /// PhysicalBehaviour.CreateImpactEffect
     pub fn create_impact_effect(&mut self, p: usize, position: [f32; 2], direction: [f32; 2], size: f32) {
-        if mathf::sqr_magnitude(direction) <= f32::EPSILON || size.is_nan() {
+        // float.Epsilon (1.4e-45): a slash by a knife at rest (|v| ~ 4e-8, 1.28.52 OnWhileSlashed) still makes its puff.
+        if mathf::sqr_magnitude(direction) <= mathf::EPSILON || size.is_nan() {
             return;
         }
         let z = (d(crate::game::mathf::atan2(direction[1], direction[0])) * 57.29578f32 - 90.0f32).f();

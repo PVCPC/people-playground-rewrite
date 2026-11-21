@@ -380,7 +380,7 @@ mod fixed_update_tests {
         g.jukeboxes.push(x);
         let data: Vec<i16> = (0..88200).map(|i| (12000.0 * (std::f64::consts::TAU * 440.0 * i as f64 / 44100.0).sin()) as i16).collect();
         let pcm = Pcm { channels: 1, frequency: 44100, data };
-        let clip = crate::assets::classes::AudioClip { name: "sine".into(), load_type: 0, channels: 1, frequency: 44100, length: 2.0, resource: Default::default(), compression_format: 0 };
+        let clip = crate::assets::classes::AudioClip { name: "sine".into(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length: 2.0, resource: Default::default(), compression_format: 0 };
         let clip = Arc::new(Clip { asset: crate::assets::db::ObjRef { file: usize::MAX, path_id: 1 }, clip, pcm: Some(Arc::new(pcm)), stream: None });
         let mut src = AudioSource::default();
         src.looping = true;

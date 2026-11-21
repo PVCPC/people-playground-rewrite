@@ -868,10 +868,12 @@ impl Game {
                     None => None,
                 },
                 None => match physics::item_own_body(s, r) {
-                    Some(rb) => {
-                        let body = restored.as_ref().and_then(|rs| rs.bodies.get(&format!("{}#{}", r.name, rb.id))).ok_or("an item without the b2 world")?;
-                        Some((rb, s.of("ItemB2Body").find(|x| x.id == rb.id), *body))
-                    }
+                    Some(rb) => match restored.as_ref().and_then(|rs| rs.bodies.get(&format!("{}#{}", r.name, rb.id))) {
+                        Some(body) => Some((rb, s.of("ItemB2Body").find(|x| x.id == rb.id), *body)),
+                        // fc41 r6: an inactive object has no b2 body (a broken DestroyableBehaviour's Start SetActive(false)).
+                        None if s.of("Clone").any(|x| x.get("comps").is_some_and(|c| c.contains(&format!("PhysicalBehaviour:{};", r.id)) || c.contains(&format!("PhysicalBehaviour:{}]", r.id))) && x.get("active").is_some_and(|a| a.split(',').any(|v| v == "0"))) => None,
+                        None => return Err(format!("an item without the b2 world ({}#{})", r.name, rb.id)),
+                    },
                     None => None,
                 },
             };
@@ -2481,7 +2483,12 @@ impl Game {
                     self.pyro_tool = Some(super::pyro_tool::PyroTool { entity });
                     self.behaviours.add(0, super::Behaviour::PyroTool);
                 }
+                // fc41 r6: the recorded entity's IsCurrentTool/isHeld stay as recorded (SetTool would unchoose it first: StopHold
+                // clears isHeld and stops its AudioSource; then OnToolChosen sets IsCurrentTool).
+                let pyro_was = self.pyro_tool.as_ref().map(|t| (t.entity, self.pyro_entities[t.entity].IsCurrentTool));
+                if let Some((e, _)) = pyro_was { self.pyro_entities[e].IsCurrentTool = false; }
                 self.set_tool_by_type_name(tool);
+                if let Some((e, cur)) = pyro_was { self.pyro_entities[e].IsCurrentTool = cur; }
                 // SetTool cleared ActiveSingleSelected: the recorded one (the tool's own record) back.
                 if let Some(id) = s.of(tool).next().and_then(|w| w.get("ActiveSingleSelected")).and_then(reference) {
                     let sel = self.physicals.iter().position(|p| p.id == id);

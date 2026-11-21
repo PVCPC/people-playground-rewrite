@@ -154,7 +154,7 @@ fn dll_physical_audio(g: &mut super::super::Game, rec: &str) -> Result<(String, 
 fn dll_clip_field(g: &mut super::super::Game, id: i32, name: &str, v: &str) {
     let clip = (v != "null").then(|| std::sync::Arc::new(super::super::audio::Clip {
         asset: Default::default(),
-        clip: crate::assets::classes::AudioClip { name: v.to_string(), load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
+        clip: crate::assets::classes::AudioClip { name: v.to_string(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
         pcm: None,
         stream: None,
     }));

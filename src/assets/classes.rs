@@ -226,6 +226,9 @@ pub struct AudioClip {
     /// m_Resource: the FSB5 bank in a .resource file (m_Source's file name, m_Offset, m_Size).
     pub resource: (String, u64, u64),
     pub compression_format: i32,
+    /// m_PreloadAudioData, m_LoadInBackground.
+    pub preload_audio_data: bool,
+    pub load_in_background: bool,
 }
 
 impl AudioClip {
@@ -242,7 +245,8 @@ impl AudioClip {
         r.align();
         let _subsound_index = r.i32()?;
         // m_PreloadAudioData, m_LoadInBackground, m_Legacy3D
-        r.bytes(3)?;
+        let flags = r.bytes(3)?;
+        let (preload_audio_data, load_in_background) = (flags[0] != 0, flags[1] != 0);
         r.align();
         let source = r.string()?;
         let resource = (source.rsplit('/').next().unwrap_or(&source).to_string(), r.u64()?, r.u64()?);
@@ -250,6 +254,6 @@ impl AudioClip {
         if r.pos != data.len() {
             return Err(format!("AudioClip {name}: read {} of {} bytes", r.pos, data.len()));
         }
-        Ok(Self { name, load_type, channels, frequency, length, resource, compression_format })
+        Ok(Self { name, load_type, channels, frequency, length, resource, compression_format, preload_audio_data, load_in_background })
     }
 }

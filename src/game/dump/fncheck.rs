@@ -1871,6 +1871,20 @@ const CALLS: &[(&str, Call)] = &[
     // gapB r2: Activations.SendOnce(a, target): target.OnSingleUse.Invoke(a) (the gen twin passed the signal as the target).
     // The recorder's plain signal (channel 0, direct) is dropped from the args: the target is the last one.
     ("Activations.SendOnce", |g, c| { let n = c.args.len(); let t = c.with(n)?.p_usize(g, n - 1)?; g.activations_send_once(t); VOID }),
+    // fc41 r6: BalloonBehaviour.Shot starts WaitAFrame: " st=bw:<its wait>" (FnTiny.R4Of); a " balpop=1" case runs it on to Pop.
+    ("BalloonBehaviour.Shot", |g, c| {
+        let i = g.balloons.iter().position(|x| x.id == c.id).ok_or("no balloons entry")?;
+        let seq = g.coroutine_seq;
+        g.balloon_shot(i);
+        let Some(k) = g.coroutines.iter().position(|x| x.seq > seq && x.owner == c.id) else { return Ok(" st=bw:none".into()) };
+        let mut st = format!(" st=bw:{:08x}", ((g.coroutines[k].at - g.time.dynamicTimeAsDouble) as f32).to_bits());
+        if c.s.of("FnCase").next().and_then(|r| r.get("balpop")) == Some("1") {
+            let r = g.coroutines.remove(k);
+            g.resume_coroutine(r);
+            st.push_str(",pop");
+        }
+        Ok(st)
+    }),
     // gapB r2: BalloonBehaviour.Stabbed(stabbing): Pop. MakeArg's wound=0 stabber gets StabCausesWound back before the PO (ListenPost).
     ("BalloonBehaviour.Stabbed", |g, c| { let i = g.balloons.iter().position(|x| x.id == c.id).ok_or("no balloons entry")?;
         if c.rec::<i32>("Stab(", "wound")? == 0 { let s = c.rec::<i32>("Stab(", "stabber")?; let p = phys_by_id(g, s)?; g.physicals[p].StabCausesWound = true; }
@@ -2245,7 +2259,7 @@ const CALLS: &[(&str, Call)] = &[
         let p = phys_by_id(g, c.sid)?;
         let clip = c.args[0].strip_prefix('@').and_then(|x| x.rsplit_once('#')).map(|(n, _)| std::sync::Arc::new(super::super::audio::Clip {
             asset: Default::default(),
-            clip: crate::assets::classes::AudioClip { name: n.to_string(), load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
+            clip: crate::assets::classes::AudioClip { name: n.to_string(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
             pcm: None,
             stream: None,
         }));
@@ -2884,7 +2898,7 @@ const CALLS: &[(&str, Call)] = &[
         let a = c.args[0].strip_prefix('[').and_then(|x| x.strip_suffix(']')).ok_or("PlaySound arg not an array")?;
         let set: Vec<_> = a.split(';').map(|x| x.strip_prefix('@').and_then(|x| x.rsplit_once('#')).map(|(n, _)| std::sync::Arc::new(super::super::audio::Clip {
             asset: Default::default(),
-            clip: crate::assets::classes::AudioClip { name: n.to_string(), load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
+            clip: crate::assets::classes::AudioClip { name: n.to_string(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
             pcm: None,
             stream: None,
         }))).collect();
@@ -3110,6 +3124,8 @@ const CALLS: &[(&str, Call)] = &[
         let s = sharp_with_connections(g, c)?;
         let (sv, objects) = r4_victims(g, c)?;
         g.sharp_on_all_sides[s].SerialisableVictims = sv;
+        // fc41 r6: SoftConnect's Stabbed plays the victim's Properties.StabSound (a recording's properties hold no clips).
+        super::all_property_clips(g)?;
         g.sharp_on_all_sides_on_after_deserialise(s, &objects);
         Ok(sharp_state(g, s))
     }),
@@ -5007,7 +5023,10 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                                 // v52h round 2: a limb's Object.Destroy(Joint) (limb_destroy_joint: hinges[h].destroy_at).
                                 ours.extend(limb_hinge_pre.iter().filter_map(|&(h, id, pre)| g.hinges[h].destroy_at.filter(|&at| pre != Some(at)).map(|at| format!("c{id}:{}", t(at)))));
                                 ours.extend(g.object_destroys.iter().filter(|e| !po.contains(e)).map(|&(at, id)| format!("g{}:{}", go(&g, id), t(at))));
-                                if theirs != ours && g.joint_destroys.len() == *pj && g.attachment_joint_destroys.len() == *pa {
+                                // fc41 r6: a " balpop=1" Balloon.Shot case: FnTiny.R4Of runs WaitAFrame on to Pop after the recorder's
+                                // destroys capture closed, so the game's list misses Pop's Destroy (a checker limit; the rest compares).
+                                let balpop = name == "BalloonBehaviour.Shot" && pi.of("FnCase").next().and_then(|r| r.get("balpop")) == Some("1");
+                                if theirs != ours && !balpop && g.joint_destroys.len() == *pj && g.attachment_joint_destroys.len() == *pa {
                                     d.push(format!("Object.Destroy calls: game [{}] ours [{}]", theirs.into_iter().collect::<Vec<_>>().join(";"), ours.into_iter().collect::<Vec<_>>().join(";")));
                                 }
                                 // Tritium.OnEnterContainer/OnExitContainer: the container's GlowInTheDarkBehaviour after the call (" glow=", 0: none).

@@ -78,7 +78,8 @@ impl Game {
         let mut next_id = recs[0].id;
         let expected: Vec<i32> = prefab.objects.iter().map(|ob| { let id = next_id; next_id -= 2 * (1 + ob.components.len() as i32); id }).collect();
         let named = |o: usize| by_id.get(&expected[o]).copied().filter(|&j| recs[j].name == prefab.objects[o].name.replace(' ', "_"));
-        let by_ids = prefab.objects.len() > 1 && named(1).is_some();
+        // fc41 r6: any prefab object at its id (a Bottle_debris' "dust", the first child, destroyed itself after its burst).
+        let by_ids = (1..prefab.objects.len()).any(|o| named(o).is_some());
         let mut gone = vec![false; prefab.objects.len()];
         // The root is the record's root (the spawn names it after its spawnable).
         for o in 1..prefab.objects.len() {
@@ -95,8 +96,7 @@ impl Game {
                 }
                 continue;
             }
-            let rp = map[prefab.objects[o].parent.unwrap()];
-            let name = prefab.objects[o].name.replace(' ', "_");
+            let rp = map[prefab.objects[o].parent.unwrap()];            let name = prefab.objects[o].name.replace(' ', "_");
             let mut found = None;
             for j in cursor[rp].max(rp + 1)..recs.len() {
                 if parent(recs[j])? == rp as i64 && recs[j].name == name {
@@ -820,6 +820,18 @@ impl Game {
                 c.base.LiquidDistribution.insert(id, value);
             }
             c.base.SerialisableDistributions = super::serialisable_distributions(r)?;
+        }
+        // fc41 r6: a BloodTankBehaviour's container as recorded (its LiquidDistribution and TotalLiquidAmount backing field,
+        // which the recorder's fuzz may leave apart from the distribution; CopyTo divides by it).
+        for r in s.of("ItemScript").filter(|r| r.get("class") == Some("BloodTankBehaviour")) {
+            let Some(t) = self.blood_tanks.iter_mut().find(|x| x.id == r.id) else { continue };
+            t.base.LiquidDistribution = Default::default();
+            for (id, value) in super::liquid_distribution(r)? {
+                t.base.LiquidDistribution.insert(id, value);
+            }
+            if let Some(v) = r.get("<TotalLiquidAmount>k__BackingField") {
+                t.base.TotalLiquidAmount = f32::from_bits(u32::from_str_radix(v, 16).map_err(|e| format!("BloodTankBehaviour TotalLiquidAmount: {e}"))?);
+            }
         }
         // A Tritium glow (GlowInTheDarkBehaviour, added at runtime) on a flask: Start again with the recorded ids (its glow
         // object's first), which builds the ModLightPrefab light and its LightSprite; the loop below gives the fields.

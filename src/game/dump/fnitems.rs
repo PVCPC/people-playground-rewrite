@@ -157,7 +157,7 @@ pub(super) const ITEM_CALLS: &[(&str, Call)] = &[
     ("DefibrillatorBehaviour.Start", |g, c| { let i = g.defibrillators.iter().position(|x| x.id == c.id).ok_or("no defibrillators entry")?; g.defibrillator_start(i); Ok(String::new()) }),
     ("DefibrillatorBehaviour.Use", |g, c| { let i = g.defibrillators.iter().position(|x| x.id == c.id).ok_or("no defibrillators entry")?; g.defibrillator_use(i); Ok(String::new()) }),
     ("DeleteAfterTime.Update", |g, c| { let i = g.delete_afters.iter().position(|x| x.id == c.id).ok_or("no delete_afters entry")?; g.delete_after_update(i); Ok(String::new()) }),
-    ("DestroyableBehaviour.Break", |g, c| { let i = g.destroyables.iter().position(|x| x.id == c.id).ok_or("no destroyables entry")?; g.destroyable_break(i, c.arg(0)?); Ok(String::new()) }),
+    ("DestroyableBehaviour.Break", |g, c| { let i = g.destroyables.iter().position(|x| x.id == c.id).ok_or("no destroyables entry")?; g.destroyable_break(i, if c.args.is_empty() { [0.0; 2] } else { c.arg(0)? }); Ok(String::new()) }), // fc41 r6: Break() is Break(default(Vector2))
     ("DestroyableBehaviour.OnFragmentHit", |g, c| { let i = g.destroyables.iter().position(|x| x.id == c.id).ok_or("no destroyables entry")?; g.destroyable_on_fragment_hit(i, c.arg(0)?); Ok(String::new()) }),
     ("DestroyableBehaviour.Start", |g, c| { let i = g.destroyables.iter().position(|x| x.id == c.id).ok_or("no destroyables entry")?; g.destroyable_start(i); Ok(String::new()) }),
     ("DestroyableBehaviour.Update", |g, c| { let i = g.destroyables.iter().position(|x| x.id == c.id).ok_or("no destroyables entry")?; g.destroyable_update(i); Ok(String::new()) }),

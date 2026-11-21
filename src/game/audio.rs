@@ -81,7 +81,7 @@ pub fn create_stream_clip(id: i32, name: &str, length_samples: usize, channels: 
     }
     let mut state = StreamState { read, first: None, pos: 0, length: length_samples };
     state.first = Some(PcmStream::read_block(&mut state, channels, frequency));
-    let clip = crate::assets::classes::AudioClip { name: name.into(), load_type: 0, channels: channels as i32, frequency: frequency as i32, length: length_samples as f32 / frequency as f32, resource: Default::default(), compression_format: 0 };
+    let clip = crate::assets::classes::AudioClip { name: name.into(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: channels as i32, frequency: frequency as i32, length: length_samples as f32 / frequency as f32, resource: Default::default(), compression_format: 0 };
     Arc::new(Clip { asset: ObjRef { file: usize::MAX, path_id: id as i64 }, clip, pcm: None, stream: Some(Arc::new(PcmStream { channels, frequency, state: std::sync::Mutex::new(state) })) })
 }
 
@@ -101,7 +101,7 @@ pub fn file_to_audio_clip(path: &std::path::Path, n: i64) -> Result<ClipRef, Str
     let name = path.display().to_string();
     // AudioClip.length = samples / frequency
     let length = pcm.data.len() as f32 / pcm.frequency as f32;
-    let clip = crate::assets::classes::AudioClip { name, load_type: 0, channels: 1, frequency: pcm.frequency as i32, length, resource: Default::default(), compression_format: 0 };
+    let clip = crate::assets::classes::AudioClip { name, load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: pcm.frequency as i32, length, resource: Default::default(), compression_format: 0 };
     Ok(Arc::new(Clip { asset: ObjRef { file: usize::MAX, path_id: n }, clip, pcm: Some(Arc::new(pcm)), stream: None }))
 }
 
@@ -612,9 +612,15 @@ impl Audio {
         // PlayOneShot (180aad970): CreateFMODGroups before the channel is allocated.
         self.dry_groups.insert(id);
         // PlayOneShot (180aad970) links the one-shot only when SampleClip::AllocateChannel (180ab6120) gives a channel:
-        // none for a clip whose FMOD sound is not loaded.
-        if self.not_loaded.contains(&clip.clip.name.replace(' ', "_")) {
-            return;
+        // none for a clip whose FMOD sound is not loaded. fc41 r6: a clip with neither preloadAudioData nor loadInBackground
+        // (the railgun's ShootSounds) loads there and plays: fnrec6_52's PlayOneShot drops it from AudioClipsNotLoaded and
+        // isPlaying is 1 (from the recording; the load path in the player is not read).
+        let name = clip.clip.name.replace(' ', "_");
+        if self.not_loaded.contains(&name) {
+            if clip.clip.preload_audio_data || clip.clip.load_in_background {
+                return;
+            }
+            self.not_loaded.remove(&name);
         }
         let v = self.voice(clip.clone(), time, volume_scale);
         self.source(id).one_shots.push(v);
@@ -1090,7 +1096,7 @@ mod tests {
     fn clip(length: f32) -> ClipRef {
         Arc::new(Clip {
             asset: ObjRef { file: 0, path_id: 1 },
-            clip: crate::assets::classes::AudioClip { name: "c".into(), load_type: 0, channels: 1, frequency: 44100, length, resource: Default::default(), compression_format: 0 },
+            clip: crate::assets::classes::AudioClip { name: "c".into(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length, resource: Default::default(), compression_format: 0 },
             pcm: None,
             stream: None,
         })

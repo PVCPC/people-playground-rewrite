@@ -153,7 +153,7 @@ const PURE_DLL2: &[(&str, PureCall)] = &[
             pp.StabSound = Some(items.len());
             pp.clips.StabSound = items.iter().map(|t| (*t != "null").then(|| std::sync::Arc::new(Clip {
                 asset: Default::default(),
-                clip: crate::assets::classes::AudioClip { name: t.to_string(), load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
+                clip: crate::assets::classes::AudioClip { name: t.to_string(), load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
                 pcm: None,
                 stream: None,
             }))).collect();
@@ -734,7 +734,7 @@ fn dll2_ui_sound(c: &Case, kind: super::super::audio::UiSoundKind) -> Result<Str
         let t = dll_self_field(c, n)?;
         Ok((t != "null").then(|| std::sync::Arc::new(Clip {
             asset: Default::default(),
-            clip: crate::assets::classes::AudioClip { name: t, load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
+            clip: crate::assets::classes::AudioClip { name: t, load_type: 0, preload_audio_data: true, load_in_background: false, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
             pcm: None,
             stream: None,
         })))
