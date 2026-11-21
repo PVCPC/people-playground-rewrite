@@ -434,6 +434,11 @@ const RANDOM: &[(&str, fn([u32; 4]) -> String)] = &[
 const ARGS: &[(&str, fn(&[&str]) -> Result<String, String>)] = &[
     // DeltaInt(int value): Value = PreviousValueFixed = PreviousValue = value.
     ("DeltaInt.constructor", |a| Ok(format!("{:?}", crate::game::continuous::DeltaInt::new(a[0].parse().map_err(|_| format!("not an int: {}", a[0]))?)))),
+    // fnrec r1: GoreStringBehaviour.TissueString(float pos1, float pos2, float thickness, float strength, float thicknessRatio).
+    ("TissueString.constructor", |a| {
+        let x = |i: usize| a.get(i).ok_or(format!("too few args: {a:?}")).and_then(|t| u32::from_str_radix(t, 16).map(f32::from_bits).map_err(|_| format!("not a float: {t}")));
+        Ok(format!("{:?}", crate::game::limb::TissueString::new(x(0)?, x(1)?, x(2)?, x(3)?, x(4)?)))
+    }),
     // ActivationTarget(NodeBehaviour node, ushort channelMask): Channels compared (Node is a reference, the rewrite's an index: not compared).
     ("ActivationTarget.constructor", |a| Ok(format!("{:?}", crate::game::activations::NodeTarget::new(0, a.get(1).and_then(|c| c.parse().ok()).ok_or(format!("no channel mask: {a:?}"))?, 0)))),
     // gapB r7: LiquidMixInstructions(Liquid[] sourceLiquids, Liquid targetLiquid, float ratePerSecond): the array's items print as

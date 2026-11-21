@@ -416,8 +416,10 @@ impl BloodWire {
             // RopeBehaviour, SteelBindingBehaviour, WoodStrutBehaviour, CopperWireBehaviour, UseWireBehaviour and
             // NewUseWireBehaviour: breakForceBuffer = 1; SpringCableBehaviour: initialBreakForce = infinity (kept here).
             breakForceBuffer: match kind {
-                Rope | SteelBinding | WoodStrut | Copper | Use(..) | NewUse => 1.0,
-                Spring | StrongSpring | DestructibleSpring => f32::INFINITY,
+                // WoodenBindingBehaviour is a SteelBindingBehaviour (fnrec r1: WoodenBindingTool.OnJointCreate).
+                Rope | SteelBinding | WoodenBinding | WoodStrut | Copper | Use(..) | NewUse => 1.0,
+                // AppliedBandageBehaviour is a SpringCableBehaviour too (fnrec r1: BandageWireTool.OnJointCreate's initialBreakForce).
+                Spring | StrongSpring | DestructibleSpring | Bandage => f32::INFINITY,
                 _ => 0.0,
             },
             // UseWireBehaviour.Color (1, 11, 0) and NewUseWireBehaviour.Color (11, 1, 11).
@@ -820,12 +822,19 @@ impl Game {
         };
         if let Some((owner, f, connected)) = joint {
             super::stats::with_stats(|s| s.increment("WIRES_LAID", 1.0));
-            self.blood_wire_tool_on_joint_create(owner, f);
             let endpoint = if end_body.is_some() && connected.is_none() { start } else { end };
-            let local = self.inverse_transform_point(connected.unwrap_or(owner), [endpoint[0], endpoint[1], 0.0]);
-            self.blood_wires.last_mut().unwrap().localRenderEndpoint = [local[0], local[1]];
+            self.fixed_wire_tool_on_joint_create(owner, f, endpoint);
         }
         self.wire_tool.hasDragged = false;
+    }
+
+    /// FixedCableTool/SteelBindingTool/WoodenBindingTool.OnJointCreate(joint, worldSpaceEndpos): the shared wire-tool body, then
+    /// localRenderEndpoint = (connectedBody ? connectedBody.transform : joint.transform).InverseTransformPoint(worldSpaceEndpos).
+    pub(crate) fn fixed_wire_tool_on_joint_create(&mut self, owner: usize, f: usize, world_end: [f32; 2]) {
+        self.blood_wire_tool_on_joint_create(owner, f);
+        let frame = match self.fixed_joints[f].connected { Some(BodyOwner::Physical(c)) => c, Some(_) => unimplemented!("mod-only: a fixed wire connected to a bare Rigidbody2D"), None => owner };
+        let local = self.inverse_transform_point(frame, [world_end[0], world_end[1], 0.0]);
+        self.blood_wires.last_mut().unwrap().localRenderEndpoint = [local[0], local[1]];
     }
 
     fn wire_add_joint(&mut self, owner: usize, spring: bool) -> usize {

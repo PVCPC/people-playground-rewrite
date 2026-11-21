@@ -80,6 +80,15 @@ impl Game {
         let driven = (self.owner_rigidbody(owner).bodyType != 2).then(|| self.physicals[parent].rigidbody.body);
         self.set_driven_by(owner, driven);
         self.owner_rigidbody_mut(owner).movement.interpolating = false;
+        if crate::assets::il::is_1_28_45() && driven.is_some() {
+            // fnv52_6_gen (CrossbowBehaviour.OnPlayerDragStart/OnPreFlip, the syringe under the crossbow): a driven body leaves
+            // the interpolation list and its previous, current and body poses become the Transform's world pose.
+            let m = &mut self.owner_rigidbody_mut(owner).movement;
+            m.listed = false;
+            (m.previous, m.current, m.body) = (world, world, world);
+            // The clone's root too (the next sync reads its pose): parent rotation times local, -0 where the live pose has +0.
+            self.with_component_instance(id, |_, inst, o| inst.set_parent_null_at(o, (world.0, world.1, scale)));
+        }
         self.rigidbody_hierarchy_changed = true;
         // Destroy and SetActive of the parent reach it; its body, not the parent's Transform, moves it.
         let local = Trs { t: [local.0[0], local.0[1], local.0[2], 0.0], q: local.1, s: [local_scale[0], local_scale[1], local_scale[2], 0.0] };

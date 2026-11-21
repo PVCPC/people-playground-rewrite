@@ -149,15 +149,18 @@ Parameter name: source");
     /// JukeboxBehaviour.ShowPlayingNotification: the current track's name without its extension.
     pub(crate) fn jukebox_show_playing_notification(&mut self, j: usize) {
         // audioSource.clip.name: no clip throws in the try and again in the catch.
-        if self.audio.get(self.jukebox_source(j)).clip.is_none() {
+        let Some(clip) = self.audio.get(self.jukebox_source(j)).clip.clone() else {
             crate::game::menu::throw("NullReferenceException: JukeboxBehaviour.audioSource.clip");
-        }
-        // ponytail: the name is tracks[trackIndex], the clip Play set; read the clip's own name if they ever differ.
-        let s = &self.jukeboxes[j];
-        let name = &s.tracks[s.trackIndex as usize];
-        // Path.GetFileNameWithoutExtension
-        let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
-        let stem = file.rfind('.').map_or(file, |i| &file[..i]);
+        };
+        let name = clip.clip.name.as_str();
+        // Path.GetFileNameWithoutExtension; an invalid path char (Mono on Windows: " < > | and controls) throws
+        // ArgumentException and the catch shows the raw name.
+        let stem = if name.chars().any(|c| matches!(c, '"' | '<' | '>' | '|') || (c as u32) < 32) {
+            name
+        } else {
+            let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+            file.rfind('.').map_or(file, |i| &file[..i])
+        };
         let text = format!("Now playing <color=#ff54f9>{stem}</color>");
         self.notify(text);
     }

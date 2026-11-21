@@ -1649,7 +1649,8 @@ pub(crate) mod tests {
         let meta = save_contraption(&dir, "My Test", &states).unwrap();
         assert_eq!(std::fs::read(meta.PathToDataFile.as_ref().unwrap()).unwrap(), serialise_states(&states).unwrap());
         let text = std::fs::read_to_string(meta.PathToMetadata.as_ref().unwrap()).unwrap();
-        assert_eq!(text, r#"{"Name":"My Test","DisplayName":"My Test","Version":"1.28","PublishedFileID":0,"CreatorUGCIdentity":null,"RequiredMods":[],"IsCurrentVersion":true,"IsWorkshopItem":false,"RequiresMods":false}"#);
+        // 1.28.41 writes "1.28", 1.28.52 its GameInfo version "1.28.52".
+        assert_eq!(text, format!(r#"{{"Name":"My Test","DisplayName":"My Test","Version":"{}","PublishedFileID":0,"CreatorUGCIdentity":null,"RequiredMods":[],"IsCurrentVersion":true,"IsWorkshopItem":false,"RequiresMods":false}}"#, current_version()));
         let source = ContraptionFolderSource::new(&dir);
         let all = source.GetContraptions();
         assert_eq!(all.len(), 1);

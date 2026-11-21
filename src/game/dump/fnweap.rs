@@ -201,11 +201,14 @@ pub(super) fn load_wires(g: &mut Game, s: &Snapshot, rs: &physics::Restored) -> 
     }
     // batch4 r8: an OnJointCreate case's arg, a bare SpringJoint2D on a limb (the recorder's MakeArg, made as
     // SpringJointWireTool.OnDeselect makes one; no wire holds it yet): its `fixed_joints` entry, adopted by its id.
-    let arg = s.of("FnCase").next().filter(|r| r.name.ends_with(".OnJointCreate")).and_then(|r| r.get("args")).and_then(reference);
+    let arg = s.of("FnCase").next().filter(|r| r.name.ends_with(".OnJointCreate")).and_then(|r| r.get("args")).and_then(|a| reference(a.split(';').next().unwrap_or(a)));
     // batch1 r7: or a bare DistanceJoint2D (DistanceWireTool.OnDeselect's, maxDistanceOnly on: BloodWireTool.OnJointCreate's arg).
     let arg = arg.filter(|id| !wire_joint_ids(s).contains(id));
-    let found = arg.and_then(|id| s.of("SpringJoint2D").find(|x| x.id == id).map(|j| (j, true)).or_else(|| s.of("DistanceJoint2D").find(|x| x.id == id).map(|j| (j, false))));
+    // fnrec r1: or a bare FixedJoint2D (FixedWireTool.OnDeselect's: FixedCableTool/SteelBindingTool/WoodenBindingTool.OnJointCreate's arg).
+    let fixed = arg.and_then(|id| s.of("FixedJoint2D").find(|x| x.id == id));
+    let found = arg.and_then(|id| s.of("SpringJoint2D").find(|x| x.id == id).map(|j| (j, true)).or_else(|| s.of("DistanceJoint2D").find(|x| x.id == id).map(|j| (j, false)))).or(fixed.map(|j| (j, false)));
     if let Some((j, is_spring)) = found {
+        let is_fixed = fixed.is_some_and(|x| std::ptr::eq(x, j));
         let p = g.physicals.iter().position(|p| p.name == j.name).ok_or(format!("SpringJoint2D #{}: no physical {}", j.id, j.name))?;
         let mut state = crate::b2::weld::FixedJoint2d::reset();
         let (a, c): ([f32; 2], [f32; 2]) = (floats(j.req("anchor")?), floats(j.req("connectedAnchor")?));
@@ -217,7 +220,7 @@ pub(super) fn load_wires(g: &mut Game, s: &Snapshot, rs: &physics::Restored) -> 
         state.auto_configure_connected_anchor = j.req("autoConfigureConnectedAnchor")? == "1";
         state.anchor_configured = true;
         let spring = if is_spring { Some(super::super::spawn::SpringState { auto_configure_distance: j.req("autoConfigureDistance")? == "1", distance: f(j.req("distance")?), damping_ratio: f(j.req("dampingRatio")?), frequency: f(j.req("frequency")?) }) } else { None };
-        let distance = if is_spring { None } else { Some(super::super::spawn::DistanceState { auto_configure_distance: j.req("autoConfigureDistance")? == "1", distance: f(j.req("distance")?), max_distance_only: j.req("maxDistanceOnly")? == "1" }) };
+        let distance = if is_spring || is_fixed { None } else { Some(super::super::spawn::DistanceState { auto_configure_distance: j.req("autoConfigureDistance")? == "1", distance: f(j.req("distance")?), max_distance_only: j.req("maxDistanceOnly")? == "1" }) };
         let to = j.req("connected")?;
         let connected = reference(to).and_then(|_| g.physicals.iter().position(|p| p.name == name_of(to))).map(BodyOwner::Physical);
         let joint = rs.joints.get(&format!("{}#{}", j.name, j.id)).copied();

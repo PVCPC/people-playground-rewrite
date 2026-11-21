@@ -360,9 +360,10 @@ pub fn format_n1(x: f32) -> String {
 }
 
 /// MagneticBehaviour.GetForce
-fn magnetic_get_force(MagnetStrength: f32, a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+pub(crate) fn magnetic_get_force(MagnetStrength: f32, a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     let val = [b[0] - a[0], b[1] - a[1]];
-    let sqr = val[0] * val[0] + val[1] * val[1];
+    // Vector2.sqrMagnitude: one double-precision expression (Mono), rounded on return.
+    let sqr = super::mathf::sqr_magnitude(val);
     if sqr < 0.01 {
         return [0.0, 0.0];
     }
@@ -588,10 +589,11 @@ impl Game {
             val2 = [val2[0] + b[0], val2[1] + b[1]];
         }
         let (gn, gs) = (self.v45.magnets[m].globalNorthPole, self.v45.magnets[m].globalSouthPole);
-        if val[0] * val[0] + val[1] * val[1] > 0.0 {
+        // sqrMagnitude in double (Mono): a force too small to square in float still pushes.
+        if mathf::sqr_magnitude(val) > 0.0 {
             rb.add_force_at_position(&mut self.world, val, gn);
         }
-        if val2[0] * val2[0] + val2[1] * val2[1] > 0.0 {
+        if mathf::sqr_magnitude(val2) > 0.0 {
             rb.add_force_at_position(&mut self.world, val2, gs);
         }
     }
@@ -732,6 +734,10 @@ impl Game {
         // AddComponent<FixedJoint2D>: its instance id.
         self.allocate_instance_id();
         let j = self.add_fixed_joint_component(me);
+        // A second ConnectSyringe (OnAfterDeserialise with the syringe connected) leaves the old joint in place, no longer syringeJoint.
+        if let Some(old) = self.v45.crossbows[c].syringeJoint.filter(|&o| !self.fixed_joints[o].destroyed) {
+            self.loose_fixed_joints.push(old);
+        }
         self.fixed_joint_set_connected_body(j, Some(super::BodyOwner::Physical(sp)));
         self.fixed_joint_set_anchor(j, attach);
         self.fixed_joint_set_connected_anchor(j, [0.0, 0.0]);

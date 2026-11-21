@@ -336,7 +336,13 @@ Your script should either check if it is null or you should not destroy the obje
                     let ((lpos, _), (world, _)) = crate::unity::transform::set_world(&chain, pos, t.rotation);
                     (local.0, t.position) = (lpos, world);
                 }
-                None => t.position = pos,
+                // fnv52 r2: a kept local pose (no parent) is the world one: local_chain (lossy_scale) reads it.
+                None => {
+                    t.position = pos;
+                    if let Some(local) = t.local.as_mut() {
+                        local.0 = pos;
+                    }
+                }
             }
             return;
         }
@@ -347,6 +353,13 @@ Your script should either check if it is null or you should not destroy the obje
     pub(super) fn physical_set_rotation(&mut self, p: usize, q: [f32; 4]) {
         if self.is_recording() {
             // No clone: the next sync (SyncTransforms) takes the body's angle from the new rotation, with the position of any move queued before.
+            // fnv52 r2: and a kept local rotation (CrossbowBehaviour.ConnectSyringe's transform.rotation: the syringe's lossy scale
+            // for the joint's connected anchor reads it through local_chain).
+            if self.physicals[p].transform.local.is_some() {
+                let chain = self.parent_chain(p);
+                let lq = if chain.is_empty() { q } else { crate::unity::transform::set_world(&chain, self.physicals[p].transform.position, q).0 .1 };
+                self.physicals[p].transform.local.as_mut().unwrap().1 = lq;
+            }
             self.physicals[p].transform.rotation = q;
             match self.recorded_moves.iter_mut().find(|m| m.0 == p) {
                 Some(m) => m.1 = true,

@@ -1251,7 +1251,19 @@ impl Game {
             let wire_joints = fnweap::wire_joint_ids(s);
             // A FirearmAttachmentPointBehaviour's HingeJoint2D (ConnectAttachment added it) is the point's `joint`.
             let point_joints: Vec<i32> = s.of("ItemScript").filter(|r| r.get("class") == Some("FirearmAttachmentPointBehaviour")).filter_map(|r| r.get("joint").and_then(reference)).collect();
-            let sticky_joints: Vec<i32> = s.of("ItemScript").filter(|r| r.get("class") == Some("StickyGrenadeBehaviour")).filter_map(|r| r.get("joint").and_then(reference)).collect();
+            let mut sticky_joints: Vec<i32> = s.of("ItemScript").filter(|r| r.get("class") == Some("StickyGrenadeBehaviour")).filter_map(|r| r.get("joint").and_then(reference)).collect();
+            // fnv52 r2: a CrossbowBehaviour's syringeJoint (ConnectSyringe's AddComponent<FixedJoint2D>) is adopted the same way, on the
+            // crossbow's own PhysicalBehaviour (its Clone record's comps): several crossbows share the name.
+            let mut joint_owner: std::collections::HashMap<i32, i32> = std::collections::HashMap::new();
+            for r in s.of("ItemScript").filter(|r| r.get("class") == Some("CrossbowBehaviour")) {
+                let Some(j) = r.get("syringeJoint").and_then(reference) else { continue };
+                sticky_joints.push(j);
+                let me = format!("CrossbowBehaviour:{}", r.id);
+                let comps = s.of("Clone").filter_map(|c| c.get("comps")).find(|v| v.trim_matches(['[', ']']).split(';').any(|x| x == me));
+                if let Some(pid) = comps.and_then(|v| v.trim_matches(['[', ']']).split(';').find_map(|x| x.strip_prefix("PhysicalBehaviour:")?.parse().ok())) {
+                    joint_owner.insert(j, pid);
+                }
+            }
             for r in s.of("ItemHingeJoint2D").chain(s.of("ItemWheelJoint2D")).chain(s.of("ItemFixedJoint2D")).chain(s.of("ItemDistanceJoint2D")).chain(s.of("MapHingeJoint2D")).chain(s.of("MapFixedJoint2D")).chain(s.of("MapSpringJoint2D")).chain(s.of("MapDistanceJoint2D")) {
                 // A wire's joint on a pasted item (its Item and Map records) is the wire's (fnweap::load_wires), not the prefab's.
                 if wire_joints.contains(&r.id) || point_joints.contains(&r.id) {
@@ -1260,7 +1272,11 @@ impl Game {
                 // gapB r20: a stuck StickyGrenade's FixedJoint2D (CreateJoint's AddComponent, its `joint`): a `fixed_joints` entry
                 // adopted by its id, attached to the grenade's body and connected to the recorded one (sticky_joint_links sets `joint`).
                 if r.ty == "ItemFixedJoint2D" && sticky_joints.contains(&r.id) {
-                    let p = g.physicals.iter().position(|p| p.name == r.name).ok_or(format!("sticky joint #{}: no physical {}", r.id, r.name))?;
+                    let p = match joint_owner.get(&r.id) {
+                        Some(&pid) => g.physicals.iter().position(|p| p.id == pid),
+                        None => g.physicals.iter().position(|p| p.name == r.name),
+                    }
+                    .ok_or(format!("sticky joint #{}: no physical {}", r.id, r.name))?;
                     let fv = |k: &str| -> Result<[f32; 2], String> { Ok(floats(r.req(k)?)) };
                     let mut state = crate::b2::weld::FixedJoint2d::reset();
                     let (an, cn) = (fv("anchor")?, fv("connectedAnchor")?);
@@ -1270,7 +1286,15 @@ impl Game {
                     state.break_force = f(r.req("breakForce")?);
                     state.break_torque = f(r.req("breakTorque")?);
                     state.anchor_configured = true;
-                    let connected = reference(r.req("connected")?).and_then(|id| g.physicals.iter().position(|p| p.id == id || p.rigidbody.component == id)).map(BodyOwner::Physical);
+                    // `connected` names the body's Transform (Recorder's Ref(connectedBody.transform)): its Clone record's PhysicalBehaviour.
+                    let by_transform = |id: i32| {
+                        let me = format!("Transform:{id}");
+                        let comps = s.of("Clone").filter_map(|c| c.get("comps")).find(|v| v.trim_matches(['[', ']']).split(';').any(|x| x == me))?;
+                        comps.trim_matches(['[', ']']).split(';').find_map(|x| x.strip_prefix("PhysicalBehaviour:")?.parse::<i32>().ok())
+                    };
+                    let connected = reference(r.req("connected")?)
+                        .and_then(|id| g.physicals.iter().position(|p| p.id == id || p.rigidbody.component == id).or_else(|| by_transform(id).and_then(|pid| g.physicals.iter().position(|p| p.id == pid))))
+                        .map(BodyOwner::Physical);
                     let joint = rs.joints.get(&format!("{}#{}", r.name, r.id)).copied();
                     g.adopted_joints.insert(r.id, g.fixed_joints.len());
                     g.fixed_joints.push(super::simulate::FixedJoint { hinge: None, state, slider: None, spring: None, friction: None, distance: None, relative: None, joint, attached: BodyOwner::Physical(p), connected, active: true, enabled: r.req("enabled")? == "1", destroyed: false });
@@ -3289,9 +3313,13 @@ fn recorded_break_limits(g: &Game, s: &Snapshot) -> Option<Vec<super::BreakJoint
     let ids = r.get("ids").unwrap_or("");
     Some(ids.trim_matches(['[', ']']).split(';').filter(|x| !x.is_empty()).map(|id| {
         let id: i32 = id.parse().unwrap();
+        // An adopted joint first: a pin's HingeJoint2D has a record too, but its break limit is the adopted joint's
+        // (pin_fixed_update sets it there; read as Hinge, the list held it twice after the call, fc41 r3).
+        if let Some(&f) = g.adopted_joints.get(&id) {
+            return super::BreakJoint::Fixed(f);
+        }
         match s.of("HingeJoint2D").position(|h| h.id == id) {
             Some(h) => super::BreakJoint::Hinge(h),
-            None if g.adopted_joints.contains_key(&id) => super::BreakJoint::Fixed(g.adopted_joints[&id]),
             // An inactive limb's hinge (no HingeJoint2D record): the slot the limb loader gave it.
             None if s.of("LimbBehaviour").any(|l| l.get("Joint").and_then(reference) == Some(id)) => {
                 let rid = s.of("LimbBehaviour").find(|l| l.get("Joint").and_then(reference) == Some(id)).unwrap().id;
@@ -4721,7 +4749,8 @@ fn load_grip_joints(g: &mut Game, s: &Snapshot, rs: &physics::Restored) -> Resul
     // a loose grip joint (batch2 r5, fnb2g FixedWireTool.OnDeselect: it was counted twice).
     let wired: HashSet<i32> = s.records.iter().filter_map(|r| r.get("typedJoint")).filter_map(reference).collect();
     for j in records {
-        if wired.contains(&j.id) {
+        // fnrec r1: or a bare FixedJoint2D fnweap::load_wires adopted (FixedWireTool.OnJointCreate's arg on a hand limb).
+        if wired.contains(&j.id) || g.adopted_joints.contains_key(&j.id) {
             continue;
         }
         let Some(gi) = g.grips.iter().position(|x| g.physicals[x.PhysicalBehaviour].name == j.name) else { continue };

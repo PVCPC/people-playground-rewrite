@@ -37,6 +37,33 @@ fn pole(a: &str) -> Result<Pole, String> {
     }
 }
 
+/// fnv52 r2: the MagneticBehaviour the recorder added to a catalog item (V52Seed): no prefab has one, so its `magnets` entry is
+/// made here from the case's ItemScript record, on the PhysicalBehaviour its Clone record lists beside it.
+fn magnet(g: &mut Game, c: &Case) -> Result<usize, String> {
+    if let Some(m) = g.v45.magnets.iter().position(|x| x.id == c.sid) {
+        return Ok(m);
+    }
+    let me = format!("MagneticBehaviour:{}", c.sid);
+    let clone = c.s.of("Clone").find(|r| r.get("comps").is_some_and(|v| v.trim_matches(['[', ']']).split(';').any(|x| x == me))).ok_or_else(|| format!("no Clone record holds MagneticBehaviour #{}", c.sid))?;
+    let pid: i32 = clone.req("comps")?.trim_matches(['[', ']']).split(';').find_map(|x| x.strip_prefix("PhysicalBehaviour:")).ok_or("no PhysicalBehaviour beside the MagneticBehaviour")?.parse().map_err(|_| "PhysicalBehaviour id")?;
+    let phys = phys_by_id(g, pid)?;
+    g.v45.magnets.push(crate::game::v45_new::Magnetic { id: c.sid, phys, EffectiveDistance: 1.0, MagnetStrength: 1.0, ..Default::default() });
+    let m = g.v45.magnets.len() - 1;
+    let r = c.s.of("ItemScript").find(|r| r.id == c.sid).ok_or_else(|| format!("no ItemScript record of MagneticBehaviour #{}", c.sid))?;
+    let x = &mut g.v45.magnets[m];
+    for (k, f) in [("EffectiveDistance", &mut x.EffectiveDistance as &mut dyn Field), ("NorthPole", &mut x.NorthPole), ("SouthPole", &mut x.SouthPole), ("MagnetStrength", &mut x.MagnetStrength), ("globalNorthPole", &mut x.globalNorthPole), ("globalSouthPole", &mut x.globalSouthPole)] {
+        if let Some(v) = r.get(k) {
+            f.parse(v)?;
+        }
+    }
+    Ok(m)
+}
+/// A GameObject argument's PhysicalBehaviour (the physical on that object).
+fn go_physical(g: &mut Game, a: &str) -> Result<Option<usize>, String> {
+    let Some(id) = reference(a) else { return Ok(None) };
+    Ok((0..g.physicals.len()).find(|&p| !g.physicals[p].destroyed && g.physical_game_object(p) == id))
+}
+
 pub(super) const CALLS: &[(&str, Call)] = &[
     // The new liquids (Chemistry.cs): self is the registry liquid (`liquid=`).
     ("Nasumica.GetDisplayName", |_, c| Ok(Enc::enc(super::super::circulation::liquid_display_name(c.liq()?)))),
@@ -56,7 +83,8 @@ pub(super) const CALLS: &[(&str, Call)] = &[
     ("Liquid.OnUpdateNew", |g, c| { let c = c.with(2)?; let a0 = c.p_usize(g, 0)?; let a1 = c.p_owner(g, 1)?; g.liquid_on_update_new(a0, a1); VOID }),
     // SpeedometerBehaviour
     // The game's switch reads UserPreferenceManager.Current.SpeedUnit, not toUnit (a1).
-    ("SpeedometerBehaviour.ConvertSpeed", |g, c| { let c = c.with(2)?; let a0 = c.p_f32(0)?; Ok(Enc::enc(crate::game::v45_new::convert_speed(a0, SpeedUnit::from_index(g.prefs.SpeedUnit)))) }),
+    // fnv52 r2: the case's preference (V52Seed " su="), else ours.
+    ("SpeedometerBehaviour.ConvertSpeed", |g, c| { let su = c.field("su").and_then(|v| v.parse().ok()).unwrap_or(g.prefs.SpeedUnit); let c = c.with(2)?; let a0 = c.p_f32(0)?; Ok(Enc::enc(crate::game::v45_new::convert_speed(a0, SpeedUnit::from_index(su)))) }),
     ("SpeedometerBehaviour.Start", |g, c| { let s = speedometer(g, c)?; g.speedometer_start(s); VOID }),
     ("SpeedometerBehaviour.Use", |g, c| { let s = speedometer(g, c)?; g.speedometer_use(s); VOID }),
     ("SpeedometerBehaviour.UpdateActivation", |g, c| { let s = speedometer(g, c)?; g.speedometer_update_activation(s); VOID }),
@@ -80,6 +108,21 @@ pub(super) const CALLS: &[(&str, Call)] = &[
     ("CrossbowBehaviour.DisconnectSyringe", |g, c| { let x = crossbow(g, c)?; g.crossbow_disconnect_syringe(x); VOID }),
     ("CrossbowBehaviour.OnAfterDeserialise", |g, c| { let x = crossbow(g, c)?; g.crossbow_on_after_deserialise(x); VOID }),
     ("CrossbowBehaviour.OnPreFlip", |g, c| { let x = crossbow(g, c)?; g.crossbow_on_pre_flip(x); VOID }),
+    ("CrossbowBehaviour.OnPlayerDragStart", |g, c| { let x = crossbow(g, c)?; if let Some(s) = g.crossbow_attached(x) { let sp = g.syringes[s].Phys; g.crossbow_parent_syringe(x, sp); } VOID }),
+    ("CrossbowBehaviour.OnPlayerDragEnd", |g, c| { let x = crossbow(g, c)?; if g.crossbow_attached(x).is_some() { g.crossbow_unparent(x, false); } VOID }),
+    ("CrossbowBehaviour.OnJointBreak2D", |g, c| { let x = crossbow(g, c)?; c.with(1)?; if c.adopted_joint(g, 0).is_some() && c.adopted_joint(g, 0) == g.v45.crossbows[x].syringeJoint { g.crossbow_disconnect_syringe(x); } VOID }),
+    ("CrossbowBehaviour.OnCollisionEnter2D", |g, c| { let x = crossbow(g, c)?; let col = c.with(1)?.p_collision(0)?; g.crossbow_on_collision_enter(x, &col); VOID }),
+    // OnLaunch(sender, e): this crossbow's handler (the launcher's broadcast, on its own Launcher).
+    ("CrossbowBehaviour.OnLaunch", |g, c| { let x = crossbow(g, c)?; c.with(2)?; let bolt = go_physical(g, c.args[0])?; let l = g.v45.crossbows[x].Launcher; g.crossbow_on_launch(l, bolt); VOID }),
+    ("ProjectileLauncherBehaviour.get_PhysicalBehaviour", |g, c| { let l = g.launchers.iter().position(|x| x.id == c.sid).ok_or("no launchers entry")?; Ok(phys_ref(g, Some(g.launchers[l].physical))) }),
+    // BuzzerBehaviour.ClipFromData(bytes, out id): the clip, then out= the bytes and the id.
+    ("BuzzerBehaviour.ClipFromData", |g, c| { c.with(2)?; let b = bytes(c.args[0])?; let (clip, id) = g.buzzer_clip_from_data(b); Ok(format!("@{}#{} out={};{id}", clip.clip.name, clip.asset.path_id, c.args[0])) }),
+    // MagneticBehaviour (fnv52 r2: on the catalog item V52Seed gave one)
+    ("MagneticBehaviour.FixedUpdate", |g, c| { let m = magnet(g, c)?; g.magnetic_fixed_update(m); VOID }),
+    ("MagneticBehaviour.GetGlobalPole", |g, c| { let m = magnet(g, c)?; c.with(1)?; Ok(Enc::enc(g.magnetic_global_pole(m, pole(c.args[0])?))) }),
+    ("MagneticBehaviour.Attract", |g, c| { let m = magnet(g, c)?; let w = c.with(2)?; let o = w.p_usize(g, 0)?; let p = pole(c.args[1])?; Ok(Enc::enc(g.magnetic_attract(m, o, p))) }),
+    ("MagneticBehaviour.GetForce", |g, c| { let m = magnet(g, c)?; let w = c.with(2)?; let (a, b) = (w.p_arr::<2>(0)?, w.p_arr::<2>(1)?); Ok(Enc::enc(crate::game::v45_new::magnetic_get_force(g.v45.magnets[m].MagnetStrength, a, b))) }),
+    ("MagneticBehaviour.Awake", |g, c| { magnet(g, c)?; VOID }),
     ("CrossbowBehaviour.ConnectSyringe", |g, c| {
         let x = crossbow(g, c)?;
         c.with(1)?;
@@ -122,6 +165,7 @@ pub(in super::super) fn v45_fields<'a>(g: &'a mut Game, class: &str, id: i32) ->
             (vec![("enabled", &mut x.enabled as &mut dyn Field), ("LocalSyringeAttachPoint", &mut x.LocalSyringeAttachPoint), ("SyringeEjectForce", &mut x.SyringeEjectForce), ("SyringeFluidUsage", &mut x.SyringeFluidUsage), ("lastDisconnectTime", &mut x.lastDisconnectTime), ("hasSyringe", &mut x.hasSyringe)],
              vec![("AttachedSyringe", &mut x.AttachedSyringe as &mut dyn Field), ("syringeJoint", &mut x.syringeJoint)])
         }),
+        "MagneticBehaviour" => v.magnets.iter_mut().find(|x| x.id == id).map(|x| (vec![("EffectiveDistance", &mut x.EffectiveDistance as &mut dyn Field), ("NorthPole", &mut x.NorthPole), ("SouthPole", &mut x.SouthPole), ("MagnetStrength", &mut x.MagnetStrength), ("globalNorthPole", &mut x.globalNorthPole), ("globalSouthPole", &mut x.globalSouthPole)], Vec::new())),
         "DrippingBloodParticleController" => v.drips.iter_mut().find(|x| x.id == id).map(|x| (vec![("Colour", &mut x.Colour as &mut dyn Field), ("Amount", &mut x.Amount), ("DecaySpeed", &mut x.DecaySpeed)], Vec::new())),
         _ => None,
     }

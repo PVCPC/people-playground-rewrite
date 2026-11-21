@@ -674,6 +674,30 @@ fn arena<T>(v: &[T], id: i32, of: fn(&T) -> i32, what: &str) -> Result<usize, St
 /// (FnTiny.ToolPre's `tpre=<WireWidth>|<line>`): the self's component exists, the controller's LineRenderer as recorded;
 /// the result is the line after the call (" tline=", FnTiny.ToolLine's form) as the rewrite's kind leaves it. The block's
 /// _Flow: BloodWireTool's 0, else the recorded one (OnToolChosen leaves it).
+/// fnrec r1: <WireTool>.OnJointCreate(joint): use_wire_tool_on_joint_create with the FnCase class's WireKind, on the adopted joint.
+fn wire_tool_on_joint_create(g: &mut Game, c: &Case) -> Result<String, String> {
+    c.with(1)?;
+    let f = c.adopted_joint(g, 0).ok_or("joint arg: not adopted")?;
+    let name = &c.s.of("FnCase").next().ok_or("no FnCase")?.name;
+    let ty = name.split('.').next().unwrap_or("");
+    let kind = super::super::blood_wire::WireKind::of_tool(ty).ok_or(format!("not a wire tool: {ty}"))?;
+    g.use_wire_tool_on_joint_create(f, kind);
+    VOID
+}
+/// fnrec r1: <FixedWireTool>.OnJointCreate(joint, worldSpaceEndpos) with the FnCase class's WireKind, on the adopted joint.
+fn fixed_wire_tool_on_joint_create(g: &mut Game, c: &Case) -> Result<String, String> {
+    c.with(2)?;
+    let f = c.adopted_joint(g, 0).ok_or("joint arg: not adopted")?;
+    let end = c.arg::<[f32; 2]>(1)?;
+    let name = &c.s.of("FnCase").next().ok_or("no FnCase")?.name;
+    let ty = name.split('.').next().unwrap_or("");
+    let kind = super::super::blood_wire::WireKind::of_tool(ty).ok_or(format!("not a wire tool: {ty}"))?;
+    let super::super::BodyOwner::Physical(owner) = g.fixed_joints[f].attached else { return Err("joint on a bare Rigidbody2D".into()) };
+    let saved = std::mem::replace(&mut g.wire_tool.kind, kind);
+    g.fixed_wire_tool_on_joint_create(owner, f, end);
+    g.wire_tool.kind = saved;
+    VOID
+}
 fn wire_tool_chosen(g: &mut Game, c: &Case) -> Result<String, String> {
     use crate::game::blood_wire::WireKind;
     c.with(0)?;
@@ -1222,6 +1246,35 @@ fn use_wire_signal(g: &mut Game, c: &Case) -> Result<(usize, crate::game::signal
     let (direct, channel, _) = signal_arg(c.args.first().copied().unwrap_or("signal"))?;
     let w = c.record_index(g, c.sid)?.1;
     Ok((w, g.signal_direct(direct, channel)))
+}
+/// fc41 r3: a signal entry point's " st=sg:<ActivationPropagation.CurrentlyActiveSignals>" (FnTiny.StateOf): the game's count
+/// before the call (" stpre=", the arg already made) plus the traversal sets ours took in the call (`n0`: ours before it).
+/// Nothing without a stpre (recordings before fc41 r3).
+fn signal_sets_state(g: &Game, c: &Case, n0: usize) -> Result<String, String> {
+    let Some(pre) = st_pre(c) else { return VOID };
+    let pre: usize = pre.strip_prefix("sg:").and_then(|v| v.parse().ok()).ok_or(format!("bad sg stpre {pre}"))?;
+    Ok(format!(" st=sg:{}", pre + g.signals.currently_active() - n0))
+}
+fn signal_entry(g: &mut Game, c: &Case, f: impl FnOnce(&mut Game, usize, &crate::game::signal::Act)) -> Result<String, String> {
+    let (w, a) = use_wire_signal(g, c)?;
+    let n0 = g.signals.currently_active();
+    f(g, w, &a);
+    signal_sets_state(g, c, n0)
+}
+/// fc41 r3: PinBehaviour OnEnable/OnDisable/SyncChildPos from the recorder's opposite state (" stpre=pin:<SpriteChild active, 2:
+/// none>,<ParentConstraint source 0 translation offset>"), the call, then the same after (" st=pin:").
+fn pin_state_entry(g: &mut Game, c: &Case, f: impl FnOnce(&mut Game, usize)) -> Result<String, String> {
+    let c = c.with(1)?;
+    let p = c.p_usize(g, 0)?;
+    let Some(pre) = st_pre(c.c) else { f(g, p); return VOID };
+    let w: Vec<&str> = pre.strip_prefix("pin:").ok_or(format!("bad pin stpre {pre}"))?.split(',').collect();
+    let [a, x, y, z] = w[..] else { return Err(format!("bad pin stpre {pre}")) };
+    if let Some(r) = g.pins[p].renderer { g.renderers[r].visible = a == "1"; }
+    if let Some(k) = g.pins[p].constraint { g.parent_constraints[k].sources[0].translation_offset = [x, y, z].map(|v| f32::from_bits(u32::from_str_radix(v, 16).unwrap_or(0))); }
+    f(g, p);
+    let a = g.pins[p].renderer.map_or("2".into(), |r| bit(g.renderers[r].visible));
+    let o = g.pins[p].constraint.map_or([0.0; 3], |k| g.parent_constraints[k].sources[0].translation_offset);
+    Ok(format!(" st=pin:{a},{},{},{}", hex(o[0]), hex(o[1]), hex(o[2])))
 }
 fn sorting_neighbour(c: &Case, above: bool) -> Result<String, String> {
     if c.args.len() != 2 { return Err(format!("arity: 2 args, the game passed {}", c.args.len())) }
@@ -1872,7 +1925,7 @@ const CALLS: &[(&str, Call)] = &[
     // `signal:0,0,0` drops the path), so it is rebuilt from the self's root.
     ("TransmitterBehaviour.Transmit", |g, c| { let w = c.with(3)?; let t = w.p_usize(g, 0)?; let name = w.p_string(1)?; let root = g.root_id(g.transmitters[t].phys); let content = g.signal_from(root, 0); g.transmitter_transmit(t, &name, &content); VOID }),
     // UseContinuous(ActivationPropagation): GenRun's `signal:<direct>,<channel>,<target>` (the gen entry read it as the self).
-    ("TransmitterBehaviour.UseContinuous", |g, c| { let t = c.record_index(g, c.sid)?.1; let (direct, channel, _) = signal_arg(c.args.first().copied().unwrap_or("signal"))?; let act = g.signal_direct(direct, channel); g.transmitter_use_continuous(t, &act); VOID }),
+    ("TransmitterBehaviour.UseContinuous", |g, c| { let t = c.record_index(g, c.sid)?.1; let (direct, channel, _) = signal_arg(c.args.first().copied().unwrap_or("signal"))?; let act = g.signal_direct(direct, channel); let n0 = g.signals.currently_active(); g.transmitter_use_continuous(t, &act); signal_sets_state(g, c, n0) }),
     ("TransmitterBehaviour.Blink", |g, c| { let t = c.with(1)?.p_usize(g, 0)?; let mut r = g.transmitter_blink_routine(t); Ok(routine_step(g, &mut r)) }),
     // FixedUpdate() of the self: the generated entry passed the component id as a game arg.
     ("TruckDoorBehaviour.FixedUpdate", |g, c| { let t = c.with(1)?.p_usize(g, 0)?; let id = g.truck_doors[t].0; g.truck_door_fixed_update(t, id); VOID }),
@@ -2156,6 +2209,8 @@ const CALLS: &[(&str, Call)] = &[
     ("UltraStrengthSyringe.GetLiquidID", |g, c| { let _ = g; let n = c.s.of("FnCase").next().ok_or("no FnCase")?.name.clone(); Ok(Enc::enc(super::super::syringe::liquid_id(n.split('.').next().unwrap_or("")))) }),
     ("WaterBreathingSyringe.GetLiquidID", |g, c| { let _ = g; let n = c.s.of("FnCase").next().ok_or("no FnCase")?.name.clone(); Ok(Enc::enc(super::super::syringe::liquid_id(n.split('.').next().unwrap_or("")))) }),
     ("ZombieSyringe.GetLiquidID", |g, c| { let _ = g; let n = c.s.of("FnCase").next().ok_or("no FnCase")?.name.clone(); Ok(Enc::enc(super::super::syringe::liquid_id(n.split('.').next().unwrap_or("")))) }),
+    ("EmptySyringe.GetLiquidID", |g, c| { let _ = g; let n = c.s.of("FnCase").next().ok_or("no FnCase")?.name.clone(); Ok(Enc::enc(super::super::syringe::liquid_id(n.split('.').next().unwrap_or("")))) }),
+    ("PinkSyringe.GetLiquidID", |g, c| { let _ = g; let n = c.s.of("FnCase").next().ok_or("no FnCase")?.name.clone(); Ok(Enc::enc(super::super::syringe::liquid_id(n.split('.').next().unwrap_or("")))) }),
     ("AcidLiquid.GetDisplayName", |g, c| { let _ = g; Ok(Enc::enc(super::super::circulation::liquid_display_name(c.liq()?))) }),
     ("AdrenalineLiquid.GetDisplayName", |g, c| { let _ = g; Ok(Enc::enc(super::super::circulation::liquid_display_name(c.liq()?))) }),
     ("BeverageM04.GetDisplayName", |g, c| { let _ = g; Ok(Enc::enc(super::super::circulation::liquid_display_name(c.liq()?))) }),
@@ -2350,18 +2405,29 @@ const CALLS: &[(&str, Call)] = &[
     ("PhysicalBehaviour.HandleSounds", |g, c| { let c = c.with(3)?; let a0 = c.p_usize(g, 0)?; let a1 = c.p_f32(2)?; g.handle_sounds(a0, a1); VOID }),
     // fnweap: UseWireBehaviour.IsolatedActivation / IsolatedContinuousActivation(signal): the recorder's signal has a Path, so Use(activation) /
     // UseContinuous(activation): use_wire_receive on a fresh direct channel-0 signal.
-    ("UseWireBehaviour.IsolatedActivation", |g, c| { let (w, a) = use_wire_signal(g, c)?; g.use_wire_receive(w, &a, false); VOID }),
-    ("UseWireBehaviour.IsolatedContinuousActivation", |g, c| { let (w, a) = use_wire_signal(g, c)?; g.use_wire_receive(w, &a, true); VOID }),
+    ("UseWireBehaviour.IsolatedActivation", |g, c| signal_entry(g, c, |g, w, a| g.use_wire_receive(w, a, false))),
+    ("UseWireBehaviour.IsolatedContinuousActivation", |g, c| signal_entry(g, c, |g, w, a| g.use_wire_receive(w, a, true))),
     // fnweap: Use / UseContinuous with the recorder's signal (direct, channel 0); ContinuousActivationBehaviour.AssertState only reads.
-    ("UseWireBehaviour.Use", |g, c| { let (w, a) = use_wire_signal(g, c)?; g.use_wire_receive(w, &a, false); VOID }),
-    ("UseWireBehaviour.UseContinuous", |g, c| { let (w, a) = use_wire_signal(g, c)?; g.use_wire_receive(w, &a, true); VOID }),
+    ("UseWireBehaviour.Use", |g, c| signal_entry(g, c, |g, w, a| g.use_wire_receive(w, a, false))),
+    ("UseWireBehaviour.UseContinuous", |g, c| signal_entry(g, c, |g, w, a| g.use_wire_receive(w, a, true))),
     // fnweap: the coroutines' first MoveNext, on the recorder's signal itself.
     ("UseWireBehaviour.SendUseMessage", |g, c| { let (w, a) = use_wire_signal(g, c)?; let mut r = g.use_wire_send_routine(w, a, false); Ok(routine_step(g, &mut r)) }),
     ("UseWireBehaviour.SendUseContinuousMessage", |g, c| { let (w, a) = use_wire_signal(g, c)?; let mut r = g.use_wire_send_routine(w, a, true); Ok(routine_step(g, &mut r)) }),
     // fnweap: UseWireBehaviour.Tick: base.Tick (currentDistance, read only by the save), then the burn while CanBreak.
     ("UseWireBehaviour.Tick", |g, c| { let c = c.with(1)?; let w = c.p_usize(g, 0)?; if g.blood_wires[w].CanBreak { g.wire_burn(w); } VOID }),
     // fnweap: OnContinuousUpdate(float dt) does not read dt.
-    ("UseWireBehaviour.OnContinuousUpdate", |g, c| { let c = c.with(2)?; let w = c.p_usize(g, 0)?; g.use_wire_on_continuous_update(w); VOID }),
+    // fc41 r3: the recorder's waiting signals (" stpre=q:<toSendOut.Count>", new non-direct ones on the wire's channel), drained:
+    // " st=q:" after.
+    ("UseWireBehaviour.OnContinuousUpdate", |g, c| {
+        let c = c.with(2)?;
+        let w = c.p_usize(g, 0)?;
+        let Some(pre) = st_pre(c.c) else { g.use_wire_on_continuous_update(w); return VOID };
+        let n: usize = pre.strip_prefix("q:").and_then(|v| v.parse().ok()).ok_or(format!("bad q stpre {pre}"))?;
+        let ch = g.blood_wires[w].Channel;
+        g.blood_wires[w].toSendOut = (0..n).map(|_| g.signal_direct(false, ch)).collect();
+        g.use_wire_on_continuous_update(w);
+        Ok(format!(" st=q:{}", g.blood_wires[w].toSendOut.len()))
+    }),
     // fnweap: WireBehaviour.GetNormalisedStress: untypedJoint.reactionForce.sqrMagnitude / (breakForce * breakForce).
     ("WireBehaviour.GetNormalisedStress", |g, c| { let c = c.with(1)?; let w = c.p_usize(g, 0)?; let f = g.blood_wires[w].joint; let r = g.fixed_joint_reaction_force(f); let bf = g.fixed_joints[f].state.break_force; Ok(Enc::enc((r[0] * r[0] + r[1] * r[1]) / (bf * bf))) }),
     // fnweap: WireBehaviour.Initialise, called again on a live wire: the Initialise part of the wires' Start, then its new InvisibilityTracker.
@@ -2528,7 +2594,7 @@ const CALLS: &[(&str, Call)] = &[
     ("JukeboxBehaviour.ShowPlayingNotification", |g, c| { let c = c.with(1)?; let j = c.p_usize(g, 0)?; g.jukebox_show_playing_notification(j); VOID }),
     // fnweap: PinBehaviour. OnEnable/OnDisable: SpriteChild.SetActive; OnUserDelete: empty.
     ("PinBehaviour.get_AttachedToWall", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; Ok(bit(g.pin_attached_to_wall(p))) }),
-    ("PinBehaviour.SyncChildPos", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; g.pin_sync_child_pos(p); VOID }),
+    ("PinBehaviour.SyncChildPos", |g, c| pin_state_entry(g, c, |g, p| g.pin_sync_child_pos(p))),
     ("PinBehaviour.Update", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; g.pin_update(p); VOID }),
     ("PinBehaviour.FixedUpdate", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; g.pin_fixed_update(p); VOID }),
     ("PinBehaviour.GetVisualBounds", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; let (cn, e) = g.pin_visual_bounds(p); Ok(format!("Bounds(m_Center={} m_Extents={})", vec(cn), vec(e))) }),
@@ -2537,8 +2603,8 @@ const CALLS: &[(&str, Call)] = &[
     ("PinBehaviour.Awake", |g, c| { c.with(1)?; VOID }),
     ("PinBehaviour.CanBeDeleted", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; Ok(bit(g.pin_can_be_deleted(p))) }),
     ("PinBehaviour.IsMouseInsideCollider", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; Ok(bit(g.pin_is_mouse_inside_collider(p))) }),
-    ("PinBehaviour.OnDisable", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; g.pin_sprite_child_set_active(g.pins[p].id, false); VOID }),
-    ("PinBehaviour.OnEnable", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; g.pin_sprite_child_set_active(g.pins[p].id, true); VOID }),
+    ("PinBehaviour.OnDisable", |g, c| pin_state_entry(g, c, |g, p| g.pin_sprite_child_set_active(g.pins[p].id, false))),
+    ("PinBehaviour.OnEnable", |g, c| pin_state_entry(g, c, |g, p| g.pin_sprite_child_set_active(g.pins[p].id, true))),
     ("PinBehaviour.CreateJoint", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; g.pin_create_joint(p); VOID }),
     ("PinBehaviour.Start", |g, c| { let c = c.with(1)?; let p = c.p_usize(g, 0)?; g.pin_start_run(p); VOID }),
     // PinBehaviour.OnDestroy called directly: the pin's teardown, then Destroy(Joint) and Destroy(this) (both delayed, disabled at once).
@@ -3003,6 +3069,24 @@ const CALLS: &[(&str, Call)] = &[
         g.use_wire_tool_on_joint_create(f, kind);
         VOID
     }),
+    // fnrec r1: the other wire tools' OnJointCreate(joint) on the recorder's MakeArg DistanceJoint2D / SpringJoint2D (fnweap::load_wires
+    // adopts it), as BloodWireTool's and SpringWireTool's: the shared body with the self class's kind.
+    ("RopeTool.OnJointCreate", wire_tool_on_joint_create),
+    ("CableWireTool.OnJointCreate", wire_tool_on_joint_create),
+    ("ChainWireTool.OnJointCreate", wire_tool_on_joint_create),
+    ("CopperWireTool.OnJointCreate", wire_tool_on_joint_create),
+    ("EnergyWireTool.OnJointCreate", wire_tool_on_joint_create),
+    ("HeatPipeTool.OnJointCreate", wire_tool_on_joint_create),
+    ("RigidWireTool.OnJointCreate", wire_tool_on_joint_create),
+    ("WoodStrutTool.OnJointCreate", wire_tool_on_joint_create),
+    ("BandageWireTool.OnJointCreate", wire_tool_on_joint_create),
+    ("StrongSpringWireTool.OnJointCreate", wire_tool_on_joint_create),
+    ("DestructibleSpringWireTool.OnJointCreate", wire_tool_on_joint_create),
+    // fnrec r1: the fixed wire tools' OnJointCreate(joint, worldSpaceEndpos) on the recorder's MakeArg FixedJoint2D (fnweap::load_wires
+    // adopts it): the shared body with the self class's kind, then localRenderEndpoint from the end point.
+    ("FixedCableTool.OnJointCreate", fixed_wire_tool_on_joint_create),
+    ("SteelBindingTool.OnJointCreate", fixed_wire_tool_on_joint_create),
+    ("WoodenBindingTool.OnJointCreate", fixed_wire_tool_on_joint_create),
     ("CopperWireBehaviour.JointBroken", |g, c| { let c = c.with(1)?; let w = c.p_usize(g, 0)?; g.wire_joint_broken(w); VOID }),
     ("CopperWireBehaviour.SetWireColours", |g, c| { c.with(1)?; VOID }),
     ("CopperWireBehaviour.Start", |g, c| { let c = c.with(1)?; let w = c.p_usize(g, 0)?; g.blood_wires[w].started = false; g.blood_wire_start(w); VOID }),
