@@ -7058,7 +7058,8 @@ impl Game {
     /// CatalogBehaviour.Update (no pause menu, dialog or UI block): releasing "spawnRight" spawns the selected contraption (its ObjectStates pasted
     /// at Global.MousePosition, Spawn(Contraption)) or SelectedItem facing right, else releasing "spawnLeft" spawns it flipped.
     pub fn catalog_update(&mut self) {
-        if self.catalog_selected.is_none() && self.catalog_contraption.is_none() {
+        // Global.main.GetPausedMenu() || DialogBox.IsAnyDialogboxOpen || Global.ActiveUiBlock: nothing.
+        if self.paused_menu || self.dialog_open || self.global_active_ui_block() || (self.catalog_selected.is_none() && self.catalog_contraption.is_none()) {
             return;
         }
         let up = |k: &str| self.input.controls.get(k).is_some_and(|c| c.up);

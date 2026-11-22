@@ -652,6 +652,11 @@ const STATICS_HAND: &[(&str, fn() -> Vec<(&'static str, String)>)] = &[
 const CTORS_HAND: &[(&str, fn() -> String)] = &[
     // TemperatureGaugeBehaviour: GaugeBehaviour's LabelCount/MinAngle/MaxAngle/GaugeRadius/LabelOffset, its MaxTemperatureDisplay.
     ("TemperatureGaugeBehaviour.constructor", || format!("{:?}", crate::game::gauge::PowerGauge::default())),
+    // 1.28.54's fire (lights.rs): FireEffect's FloatParameters, FireEffectRenderer's shader, FireCameraBehaviour's
+    // lastResolution (its cameras and volume are the scene's, set after construction).
+    ("FireEffect.constructor", || format!("{:?}", crate::lights::FireEffect::new())),
+    ("FireEffectRenderer.constructor", || format!("{:?}", crate::lights::FireEffectRenderer::default())),
+    ("FireCameraBehaviour.constructor", || { let [x, y] = crate::lights::FireCameraBehaviour::default().lastResolution; format!("FireCameraBehaviour {{ lastResolution: Vector2Int {{ m_X: {x}, m_Y: {y} }} }}") }),
 ];
 
 /// A static's Debug text as its type's default: 0, false, "" or an empty list (the static constructor skipped).

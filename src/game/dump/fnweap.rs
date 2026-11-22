@@ -516,8 +516,11 @@ fn load_pins(g: &mut Game, s: &Snapshot, rs: &physics::Restored) -> Result<(), S
     let physical = |g: &Game, t: &str| reference(t).and_then(|id| g.physicals.iter().position(|p| p.id == id));
     let mut joints = std::collections::HashMap::new();
     let mut seen = std::collections::HashSet::new();
+    // sc4: a hinge a PinBehaviour record names is the pin's even when it is the first of its name (the limb's own one broke
+    // before the case: a world pin on a MiddleBody whose joint is gone).
+    let pinned: std::collections::HashSet<i32> = s.of("PinBehaviour").filter_map(|r| reference(r.get("Joint")?)).collect();
     for j in s.of("HingeJoint2D") {
-        if seen.insert(j.name.as_str()) {
+        if seen.insert(j.name.as_str()) && !pinned.contains(&j.id) {
             continue;
         }
         let p = g.physicals.iter().position(|p| p.name == j.name).ok_or(format!("hinge #{}: no body {}", j.id, j.name))?;

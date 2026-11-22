@@ -64,7 +64,81 @@ fn toolbar_walk(b: &crate::ui::view::ToolButton, fl: &mut crate::ui::view::Flyou
     s
 }
 
+/// sc4 biga:firecam: FireCameraBehaviour's methods on the scene's FireCamera, the cameras' state seeded. Args: Main
+/// Camera's position, rotation, orthographicSize; FireCamera's the same; lastResolution; MainCamera.pixelWidth,Height;
+/// Screen.width,height (floats hex bits, sizes "x,y"). Ret: FireCamera's position, rotation, size, lastResolution, the
+/// texture made ("WxH", "-" none; CreateNewRendertexture's return) and UserPreferenceManager.Current.Resolution (null
+/// before the case).
+fn firecam(c: &Case, update: bool, f: fn(&mut crate::lights::FireCameraBehaviour, &mut bevy::prelude::Transform, &mut f32, &bevy::prelude::Transform, f32, [i32; 2]) -> Option<[i32; 2]>) -> Result<String, String> {
+    use bevy::prelude::{Quat, Transform, Vec3};
+    let w = c.with(9)?;
+    let ints = |j: usize| -> Result<[i32; 2], String> {
+        let s = w.p_string(j)?;
+        let (x, y) = s.split_once(',').ok_or(format!("arg {j} not x,y: {s}"))?;
+        Ok([x.parse().map_err(|_| format!("arg {j}: {s}"))?, y.parse().map_err(|_| format!("arg {j}: {s}"))?])
+    };
+    let t = |p: [f32; 3], q: [f32; 4]| Transform { translation: Vec3::from(p), rotation: Quat::from_array(q), ..Default::default() };
+    let main = t(w.p_arr::<3>(0)?, w.p_arr::<4>(1)?);
+    let mut my = t(w.p_arr::<3>(3)?, w.p_arr::<4>(4)?);
+    let mut size = w.p_f32(5)?;
+    let mut b = crate::lights::FireCameraBehaviour { lastResolution: ints(6)? };
+    let screen = ints(8)?;
+    let made = f(&mut b, &mut my, &mut size, &main, w.p_f32(2)?, ints(7)?);
+    // Update's ResetRT sets the preference first (ui::window keeps it in the rewrite); ResetRT alone does not.
+    let pref = match (made, update) {
+        (Some(_), true) => format!("{}x{}", screen[0], screen[1]),
+        _ => "null".into(),
+    };
+    let h = |v: &[f32]| v.iter().map(|x| format!("{:08x}", x.to_bits())).collect::<Vec<_>>().join(",");
+    Ok(quoted(&format!(
+        "{};{};{:08x};{},{};{};{pref}",
+        h(&my.translation.to_array()),
+        h(&my.rotation.to_array()),
+        size.to_bits(),
+        b.lastResolution[0],
+        b.lastResolution[1],
+        made.map_or("-".into(), |[x, y]| format!("{x}x{y}"))
+    )))
+}
+
 pub(super) const CALLS: &[(&str, Call)] = &[
+    // sc4 biga:firecam (firecam above).
+    // FireEffectRenderer.Init on a new renderer: the shader's name and isSupported.
+    ("FireEffectRenderer.Init", |_g, _c| {
+        let mut r = crate::lights::FireEffectRenderer::default();
+        r.init();
+        Ok(quoted(&r.shader.map_or("null".into(), |s| format!("{s},1"))))
+    }),
+    ("FireCameraBehaviour.SyncTransform", |_g, c| firecam(c, false, |_, my, _, main, _, _| { crate::lights::FireCameraBehaviour::sync_transform(my, main); None })),
+    ("FireCameraBehaviour.SyncOrthographicSize", |_g, c| firecam(c, false, |_, _, size, _, main, _| { crate::lights::FireCameraBehaviour::sync_orthographic_size(size, main); None })),
+    ("FireCameraBehaviour.OnPreRender", |_g, c| firecam(c, false, |_, my, size, main_t, main, _| { crate::lights::FireCameraBehaviour::on_pre_render(my, size, main_t, main); None })),
+    ("FireCameraBehaviour.CreateNewRendertexture", |_g, c| firecam(c, false, |b, _, _, _, _, px| Some(b.create_new_rendertexture(px)))),
+    ("FireCameraBehaviour.ResetRT", |_g, c| firecam(c, false, |b, _, _, _, _, px| Some(b.reset_rt(px)))),
+    ("FireCameraBehaviour.Start", |_g, c| firecam(c, false, |b, _, _, _, _, px| Some(b.start(px)))),
+    ("FireCameraBehaviour.Update", |_g, c| firecam(c, true, |b, _, _, _, _, px| b.update(px))),
+    // sc4 biga:catalog: CatalogBehaviour.Update with the gates, the up key, the seeded SelectedItem and MousePosition from
+    // the args (a snapshot game has none of them); the return is the spawned roots (count, name, localScale.x). A gen case
+    // (no args) is the generated probe's: nothing selected.
+    ("CatalogBehaviour.Update", |g, c| {
+        if c.args.is_empty() { g.catalog_update(); return VOID }
+        let w = c.with(6)?;
+        let key = w.p_string(0)?;
+        if key != "-" { g.input.controls.insert(key.clone(), crate::game::tool::Control { up: true, ..Default::default() }); }
+        g.paused_menu = w.p_bool(1)?;
+        g.dialog_open = w.p_bool(2)?;
+        g.ActiveUiBlockers = w.p_int(3)?;
+        let item = w.p_string(4)?.replace('_', " ");
+        g.catalog_selected = Some(item.clone());
+        g.MousePosition = w.p_arr::<3>(5)?;
+        let n0 = g.unsynced.len();
+        g.catalog_update();
+        let made = &g.unsynced[n0..];
+        let r = match made.first() {
+            Some(i) => format!("{},{},{:08x}", made.len(), item.replace(' ', "_"), i.objects[0].trs.s[0].to_bits()),
+            None => format!("{},-,-", made.len()),
+        };
+        Ok(quoted(&r))
+    }),
     // biga:toolbar: CreateButton(list[index], a temporary container, list) on the scene's ToolBarGenerator; the list is the
     // case's (the real Tools or Powers, or a seeded one). The return walks the made buttons (toolbar_walk) through the
     // view's own spec and flyout state.

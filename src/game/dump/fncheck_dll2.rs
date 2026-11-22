@@ -98,6 +98,10 @@ fn dll2_cell_fields(s: &super::super::temperature::Cell) -> Vec<(&'static str, S
 }
 
 const PURE_DLL2: &[(&str, PureCall)] = &[
+    // sc4: Pressure/TemperatureGaugeBehaviour on `DllCheck seeded` rows (no prefab or map of 1.28.54 has either: the gen
+    // probe finds no target). args[0] the seeded self, args[1] the progress; the call changes nothing.
+    ("PressureGaugeBehaviour.GetDisplayValueFor", |c| { let w = c.with(2)?; let mut g = dll_game(); g.power_gauges.push(super::super::gauge::PowerGauge { MaxChargeDisplay: dll_f32(c, "MaxChargeDisplay")?, ..Default::default() }); Ok(dll_seeded_row(g.power_gauge_display_value_for(0, w.p_f32(1)?).enc(), &[], &[], &[c.args[1].to_string()])) }),
+    ("TemperatureGaugeBehaviour.GetDisplayValueFor", |c| { let w = c.with(2)?; let mut g = dll_game(); g.power_gauges.push(super::super::gauge::PowerGauge { temperature: true, MaxTemperatureDisplay: dll_f32(c, "MaxTemperatureDisplay")?, ..Default::default() }); Ok(dll_seeded_row(g.power_gauge_display_value_for(0, w.p_f32(1)?).enc(), &[], &[], &[c.args[1].to_string()])) }),
     // sc2: FilePicker.Windows.WindowsFileSelector's filter lambda (1.28.53: CleanExtensions(in, includePeriod)) on `DllCheck run`
     // rows, args[0] `Filter(Name="<s>" Extensions=["<s>";...])` (DllCheck's strings hold no quote, bracket, ';' or space).
     ("<>c.<SelectFile>b__0_0", |c| {

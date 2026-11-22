@@ -65,6 +65,91 @@ impl LightsEffect {
     }
 }
 
+/// 1.28.54's FireEffect (Custom/Fire, BeforeStack): its FloatParameters (the textures are FireCamera's and the profile's).
+#[derive(Debug, Default)]
+pub(crate) struct FireEffect {
+    intensity: f32,
+    lookup_multiplier: f32,
+    lookup_offset: f32,
+}
+
+impl FireEffect {
+    /// FireEffect..ctor: the FloatParameters' initial values (FireTexture, ColorRamp and WarpSequence start null).
+    pub(crate) const fn new() -> Self {
+        FireEffect { intensity: 1.0, lookup_multiplier: 0.5, lookup_offset: 0.0 }
+    }
+
+    /// DEFAULT POST PROCESSING PROFILE's FireEffect: the constructed settings, then FIRE_PROFILE.
+    const fn profile() -> Self {
+        let mut s = Self::new();
+        [s.intensity, s.lookup_offset, s.lookup_multiplier] = FIRE_PROFILE;
+        s
+    }
+}
+
+/// 1.28.54's FireEffectRenderer: the shader Init finds.
+#[derive(Debug, Default)]
+pub(crate) struct FireEffectRenderer {
+    pub(crate) shader: Option<&'static str>,
+}
+
+impl FireEffectRenderer {
+    /// Init: Shader.Find("Hidden/Custom/FirePost"), kept when supported (here fire.wesl, which every GPU runs).
+    pub(crate) fn init(&mut self) {
+        self.shader = Some("Hidden/Custom/FirePost");
+    }
+}
+
+/// 1.28.54's FireCameraBehaviour (on FireCamera; MyCamera, MainCamera and PostProcessVolume are the scene's): the main
+/// camera's pixel size when the texture was made. Sizes are [width, height] in pixels.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct FireCameraBehaviour {
+    #[allow(non_snake_case)]
+    pub(crate) lastResolution: [i32; 2],
+}
+
+impl FireCameraBehaviour {
+    /// Start: ResetRT.
+    pub(crate) fn start(&mut self, main_px: [i32; 2]) -> [i32; 2] {
+        self.reset_rt(main_px)
+    }
+
+    /// ResetRT: MyCamera's texture released and destroyed, CreateNewRendertexture's made MyCamera's target and the
+    /// profile's FireEffect.FireTexture (Override). The new texture's size.
+    pub(crate) fn reset_rt(&mut self, main_px: [i32; 2]) -> [i32; 2] {
+        self.create_new_rendertexture(main_px)
+    }
+
+    /// CreateNewRendertexture: MainCamera.pixelWidth / 3 by pixelHeight / 3 (16-bit depth, DefaultFormat.HDR: the HDR
+    /// format renders on every GPU the rewrite runs on), lastResolution the main camera's pixel size.
+    pub(crate) fn create_new_rendertexture(&mut self, main_px: [i32; 2]) -> [i32; 2] {
+        self.lastResolution = main_px;
+        [main_px[0] / 3, main_px[1] / 3]
+    }
+
+    /// Update: ResetRT when the main camera's pixel size is not lastResolution (it also sets
+    /// UserPreferenceManager.Current.Resolution to Screen's size, as LightRenderCameraBehaviour.Update does: ui::window).
+    pub(crate) fn update(&mut self, main_px: [i32; 2]) -> Option<[i32; 2]> {
+        (self.lastResolution != main_px).then(|| self.reset_rt(main_px))
+    }
+
+    /// OnPreRender: SyncTransform, then SyncOrthographicSize.
+    pub(crate) fn on_pre_render(my: &mut Transform, my_size: &mut f32, main: &Transform, main_size: f32) {
+        Self::sync_transform(my, main);
+        Self::sync_orthographic_size(my_size, main_size);
+    }
+
+    /// SyncTransform: SetPositionAndRotation from the main camera's (the scale stays).
+    pub(crate) fn sync_transform(my: &mut Transform, main: &Transform) {
+        (my.translation, my.rotation) = (main.translation, main.rotation);
+    }
+
+    /// SyncOrthographicSize.
+    pub(crate) fn sync_orthographic_size(my_size: &mut f32, main_size: f32) {
+        *my_size = main_size;
+    }
+}
+
 /// The camera the game's Main Camera is: the world view scripts and the mouse go through.
 #[derive(Component)]
 pub struct MainCamera;
@@ -74,7 +159,7 @@ struct LightsCamera;
 
 /// 1.28.54's FireCamera: Main Camera's view of the Fire layer, cleared to (0, 0, 0, 0).
 #[derive(Component)]
-struct FireCamera;
+struct FireCamera(FireCameraBehaviour);
 
 /// On screen UI camera: the ScreenUI layer in world space over the post stack (Main Camera's view).
 #[derive(Component)]
@@ -953,9 +1038,12 @@ fn setup(
     ));
     // FireCameraBehaviour.CreateNewRendertexture: MainCamera.pixelWidth / 3 by pixelHeight / 3, R32G32B32_SFloat (here
     // Rgba16Float: wgpu filters 32-bit floats only with a feature), bilinear.
-    let fire = images.add(level_image((w / 3).max(1), (h / 3).max(1)));
+    // FireCameraBehaviour.Start.
+    let mut behaviour = FireCameraBehaviour::default();
+    let [fw, fh] = behaviour.start([w as i32, h as i32]);
+    let fire = images.add(level_image((fw as u32).max(1), (fh as u32).max(1)));
     commands.spawn((
-        FireCamera,
+        FireCamera(behaviour),
         Camera2d,
         Camera { order: -1, clear_color: black.clone(), ..default() },
         target(&fire, factor / 3.0),
@@ -963,6 +1051,8 @@ fn setup(
         Tonemapping::None,
         DebandDither::Disabled,
         RenderLayers::layer(FIRE_LAYER),
+        // Main.unity's FireCamera is set up as Main Camera; OnPreRender syncs the size.
+        start_projection(),
     ));
     // LightsEffect, then FireEffect, run BeforeStack (Main Camera's PostProcessLayer lists them so): the stack (auto
     // exposure, bloom) reads their result.
@@ -1043,22 +1133,32 @@ fn setup(
     commands.insert_resource(Targets { lit_material, scene, lights, lit, exposure, white, quad, composite, graded, heat, baker, screen, fire, fired, fire_material });
 }
 
-/// FireCameraBehaviour.OnPreRender (SyncTransform, SyncOrthographicSize) and FireEffectRenderer.Render's properties. The
-/// effect runs in the Main scene of 1.28.54 (the DEFAULT profile's FireEffect); elsewhere the pass hands LightsEffect's
+/// FireCameraBehaviour.Update and OnPreRender, FireEffectRenderer.Init and Render's properties. The effect runs in the Main scene of 1.28.54 (the DEFAULT profile's FireEffect); elsewhere the pass hands LightsEffect's
 /// result on.
 fn fire(
     play: Option<Res<crate::play::Play>>,
     (window, settings): (Single<&Window, With<PrimaryWindow>>, Option<Res<crate::ui::Settings>>),
     targets: Res<Targets>,
     main: Single<(&Transform, &Projection), (With<MainCamera>, Without<FireCamera>)>,
-    mut camera: Single<(&mut Transform, &mut Projection), With<FireCamera>>,
+    mut camera: Single<(&mut Transform, &mut Projection, &mut FireCamera)>,
     mut fires: ResMut<Assets<Fire>>,
     mut images: ResMut<Assets<Image>>,
     mut textures: Local<crate::play::Textures>,
-    mut loaded: Local<Option<(Handle<Image>, Handle<Image>)>>,
+    (mut loaded, mut renderer): (Local<Option<(Handle<Image>, Handle<Image>)>>, Local<FireEffectRenderer>),
 ) {
-    *camera.0 = *main.0;
-    *camera.1 = main.1.clone();
+    let (w, h, _) = render_size(&window, settings.as_deref());
+    let (my, my_projection, behaviour) = &mut *camera;
+    if let Some([fw, fh]) = behaviour.0.update([w as i32, h as i32]) {
+        if let Some(mut i) = images.get_mut(&targets.fire) {
+            i.resize(Extent3d { width: (fw as u32).max(1), height: (fh as u32).max(1), depth_or_array_layers: 1 });
+        }
+    }
+    if let (Projection::Orthographic(mine), Projection::Orthographic(o)) = (&mut **my_projection, main.1) {
+        FireCameraBehaviour::on_pre_render(my, &mut mine.scale, main.0, o.scale);
+    }
+    if renderer.shader.is_none() {
+        renderer.init();
+    }
     let game = play.as_ref().filter(|_| crate::assets::il::is_1_28_45()).map(|p| &p.game);
     if loaded.is_none() {
         let db = game.and_then(|g| g.assets.as_deref());
@@ -1067,11 +1167,10 @@ fn fire(
             *loaded = Some((ramp, warp));
         }
     }
-    let (w, h, _) = render_size(&window, settings.as_deref());
     let ortho = if let Projection::Orthographic(o) = main.1 { o.scale } else { 1.0 };
     let aspect = w as f32 / h as f32;
-    let on = game.is_some() && loaded.is_some();
-    let [intensity, offset, multiplier] = FIRE_PROFILE;
+    let on = renderer.shader.is_some() && game.is_some() && loaded.is_some();
+    let FireEffect { intensity, lookup_offset: offset, lookup_multiplier: multiplier } = FireEffect::profile();
     let new_settings = Vec4::new(intensity, offset, multiplier, on as u32 as f32);
     // Physics2D.gravity * 0.11f; Time.timeSinceLevelLoad as _Time.y.
     let (time, gravity) = game.map_or((0.0, Vec2::ZERO), |g| (g.time.time, Vec2::new(g.world.gravity.x * 0.11, g.world.gravity.y * 0.11)));
@@ -1232,10 +1331,6 @@ fn follow(
             }
             if let Some(mut i) = images.get_mut(&targets.lights) {
                 i.resize(size((w / 2).max(1), (h / 2).max(1)));
-            }
-            // FireCameraBehaviour.Update: ResetRT on a resolution change.
-            if let Some(mut i) = images.get_mut(&targets.fire) {
-                i.resize(size((w / 3).max(1), (h / 3).max(1)));
             }
             for (mut render_target, light, fire) in &mut scales {
                 *render_target = match (light, fire) {
