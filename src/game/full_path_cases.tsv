@@ -1,0 +1,813 @@
+# Path.GetFullPath under the game's Mono (1.28.54): the path as UTF-8 hex, then the result with the working folder
+# C:\Windows\System32, then with F:\Users\billy\Projects (ok<TAB>path, or exc<TAB>Class: message).
+	exc	ArgumentException: The specified path is not of a legal form (empty).	exc	ArgumentException: The specified path is not of a legal form (empty).
+20	exc	ArgumentException: The specified path is not of a legal form (empty).	exc	ArgumentException: The specified path is not of a legal form (empty).
+2020	exc	ArgumentException: The specified path is not of a legal form (empty).	exc	ArgumentException: The specified path is not of a legal form (empty).
+09	exc	ArgumentException: The specified path is not of a legal form (empty).	exc	ArgumentException: The specified path is not of a legal form (empty).
+200920	exc	ArgumentException: The specified path is not of a legal form (empty).	exc	ArgumentException: The specified path is not of a legal form (empty).
+61	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+612f62	ok	C:\Windows\System32\a\b	ok	F:\Users\billy\Projects\a\b
+615c62	ok	C:\Windows\System32\a\b	ok	F:\Users\billy\Projects\a\b
+2e2f61	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+2e2e2f61	ok	C:\Windows\a	ok	F:\Users\billy\a
+612f2e2e2f2e2e2f2e2e	ok	C:\	ok	F:\Users
+2e2e	ok	C:\Windows	ok	F:\Users\billy
+2e	ok	C:\Windows\System32	ok	F:\Users\billy\Projects
+612e	ok	C:\Windows\System32\a.	ok	F:\Users\billy\Projects\a.
+612e2e	ok	C:\Windows\System32\a..	ok	F:\Users\billy\Projects\a..
+612e20	ok	C:\Windows\System32\a.	ok	F:\Users\billy\Projects\a.
+61202e	ok	C:\Windows\System32\a .	ok	F:\Users\billy\Projects\a .
+612f2e	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+612f2e2e	ok	C:\Windows\System32	ok	F:\Users\billy\Projects
+612f20	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+61202f62	ok	C:\Windows\System32\a\b	ok	F:\Users\billy\Projects\a\b
+612e202f62	ok	C:\Windows\System32\a.\b	ok	F:\Users\billy\Projects\a.\b
+612e2f62	ok	C:\Windows\System32\a.\b	ok	F:\Users\billy\Projects\a.\b
+612e2e2f62	ok	C:\Windows\System32\a..\b	ok	F:\Users\billy\Projects\a..\b
+2e2e2e	ok	C:\Windows\System32\...	ok	F:\Users\billy\Projects\...
+612f2e2e2e2f62	ok	C:\Windows\System32\a\...\b	ok	F:\Users\billy\Projects\a\...\b
+2f	ok	C:\	ok	F:\
+5c	ok	C:\	ok	F:\
+2f61	ok	C:\a	ok	F:\a
+5c61	ok	C:\a	ok	F:\a
+2f2f	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+5c5c	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+5c5c736572766572	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+5c5c7365727665725c	ok	\\server\\\server\	ok	\\server\\\server\
+5c5c7365727665725c7368617265	ok	\\server\share	ok	\\server\share
+5c5c7365727665725c73686172655c	ok	\\server\share\	ok	\\server\share\
+5c5c7365727665725c73686172655c615c2e2e5c2e2e	ok	\\server\share	ok	\\server\share
+2f2f7365727665722f73686172652f61	ok	\\server\share\a	ok	\\server\share\a
+2f2f7365727665722f73686172652f612f2e2e2f2e2e2f2e2e	ok	\\server\share	ok	\\server\share
+5c5c7365727665725c73686172655c612e	ok	\\server\share\a.	ok	\\server\share\a.
+5c5c3f5c433a5c61	ok	\\?\C:\a	ok	\\?\C:\a
+5c5c2e5c433a5c61	ok	\\.\C:\\C:\a	ok	\\.\C:\\C:\a
+5c5c3f5c433a5c615c2e2e5c62	ok	\\?\C:\b	ok	\\?\C:\b
+433a	ok	C:\Windows\System32	ok	C:\
+433a61	ok	C:\Windows\System32\a	ok	C:\a
+433a5c	ok	C:\	ok	C:\
+433a2f	ok	C:\	ok	C:\
+433a2f612f2e2e2f2e2e	ok	C:/	ok	C:/
+633a61	ok	C:\Windows\System32\a	ok	C:\a
+633a5c41	ok	c:\A	ok	c:\A
+783a79	ok	X:\y	ok	X:\y
+783a	ok	X:\	ok	X:\
+583a5c79	ok	X:\y	ok	X:\y
+783a2f792f2e2e2f7a	ok	x:\z	ok	x:\z
+783a2e2e	ok	X:\	ok	X:\
+613a623a63	ok	A:\b:c	ok	A:\b:c
+433a783a79	ok	x:y	ok	C:\x:y
+433a5c783a79	ok	C:\x:y	ok	C:\x:y
+433a2f612f623a63	ok	C:\a\b:c	ok	C:\a\b:c
+3a78	ok	C:\Windows\System32\:x	ok	F:\Users\billy\Projects\:x
+3a	ok	C:\Windows\System32\:	ok	F:\Users\billy\Projects\:
+613a	ok	A:\	ok	A:\
+61623a63	ok	C:\Windows\System32\ab:c	ok	F:\Users\billy\Projects\ab:c
+4d6f64732f415c783a792e6373	ok	C:\Windows\System32\Mods\A\x:y.cs	ok	F:\Users\billy\Projects\Mods\A\x:y.cs
+4d6f64732f412f783a79	ok	C:\Windows\System32\Mods\A\x:y	ok	F:\Users\billy\Projects\Mods\A\x:y
+313a32	ok	1:2	ok	1:2
+c3a93a78	ok	É:\x	ok	É:\x
+617c62	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+613c62	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+613e62	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+612262	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+612a62	ok	C:\Windows\System32\a*b	ok	F:\Users\billy\Projects\a*b
+613f62	ok	C:\Windows\System32\a?b	ok	F:\Users\billy\Projects\a?b
+610162	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+433a5c615c625c2e2e5c632e	ok	C:\a\c.	ok	C:\a\c.
+433a5c612020	ok	C:\a	ok	C:\a
+433a5c612e202e20	ok	C:\a. .	ok	C:\a. .
+433a5c615c20	ok	C:\a	ok	C:\a
+433a5c615c2e20	ok	C:\a	ok	C:\a
+615c5c62	ok	C:\Windows\System32\a\b	ok	F:\Users\billy\Projects\a\b
+612f2f62	ok	C:\Windows\System32\a\b	ok	F:\Users\billy\Projects\a\b
+433a5c5c61	ok	C:\a	ok	C:\a
+612020	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+202061	ok	C:\Windows\System32\  a	ok	F:\Users\billy\Projects\  a
+202f61	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+20433a5c61	ok	C:\Windows\System32\ C:\a	ok	F:\Users\billy\Projects\ C:\a
+612f622f	ok	C:\Windows\System32\a\b\	ok	F:\Users\billy\Projects\a\b\
+615c	ok	C:\Windows\System32\a\	ok	F:\Users\billy\Projects\a\
+612f2e2f62	ok	C:\Windows\System32\a\b	ok	F:\Users\billy\Projects\a\b
+433a2e2e	ok	C:\Windows	ok	C:\
+433a2e	ok	C:\Windows\System32	ok	C:\
+433a5c2e2e	ok	C:\	ok	C:\
+433a5c2e2e5c2e2e5c61	ok	C:\a	ok	C:\a
+5c2e2e5c61	ok	C:\a	ok	F:\a
+2f2e2e2f61	ok	C:/a	ok	F:/a
+7e	ok	C:\Windows\System32\~	ok	F:\Users\billy\Projects\~
+636f6e	ok	C:\Windows\System32\con	ok	F:\Users\billy\Projects\con
+612f636f6e	ok	C:\Windows\System32\a\con	ok	F:\Users\billy\Projects\a\con
+6e756c2e747874	ok	C:\Windows\System32\nul.txt	ok	F:\Users\billy\Projects\nul.txt
+612f62202f63	ok	C:\Windows\System32\a\b\c	ok	F:\Users\billy\Projects\a\b\c
+612f622e202f63	ok	C:\Windows\System32\a\b.\c	ok	F:\Users\billy\Projects\a\b.\c
+612f622e2e202f63	ok	C:\Windows\System32\a\b..\c	ok	F:\Users\billy\Projects\a\b..\c
+612f202e2f62	ok	C:\Windows\System32\a\ .\b	ok	F:\Users\billy\Projects\a\ .\b
+612f2e202f62	ok	C:\Windows\System32\a\b	ok	F:\Users\billy\Projects\a\b
+612f2e2e202f62	ok	C:\Windows\System32\b	ok	F:\Users\billy\Projects\b
+612f202e202f62	ok	C:\Windows\System32\a\ .\b	ok	F:\Users\billy\Projects\a\ .\b
+783a5c	ok	x:\	ok	x:\
+783a5c2e2e5c2e2e	ok	x:\	ok	x:\
+433a612f2e2e2f2e2e	ok	C:\Windows	ok	C:\
+433a612f2e2e	ok	C:\Windows\System32	ok	C:\
+2f612f622f2e2e2f2e2e2f2e2e	ok	C:/	ok	F:/
+5c5c615c625c635c2e2e5c2e2e5c2e2e5c64	ok	\\a\b\d	ok	\\a\b\d
+5c5c61	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+5c5c615c	ok	\\a\\\a\	ok	\\a\\\a\
+5c5c5c61	ok	\\\a\\a	ok	\\\a\\a
+2f2f2f612f62	ok	\\\a\\a\b	ok	\\\a\\a\b
+61c2a0	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+612fc2a0	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+61e38080	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+612f6220202e	ok	C:\Windows\System32\a\b  .	ok	F:\Users\billy\Projects\a\b  .
+612e2e5c62	ok	C:\Windows\System32\a..\b	ok	F:\Users\billy\Projects\a..\b
+61202e2e2e	ok	C:\Windows\System32\a ...	ok	F:\Users\billy\Projects\a ...
+433a5c2061	ok	C:\ a	ok	C:\ a
+433a5c615c2e2e5c2e	ok	C:\	ok	C:\
+3f	ok	C:\Windows\System32\?	ok	F:\Users\billy\Projects\?
+2a	ok	C:\Windows\System32\*	ok	F:\Users\billy\Projects\*
+612f2a	ok	C:\Windows\System32\a\*	ok	F:\Users\billy\Projects\a\*
+4d6f64732f412f78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878	ok	C:\Windows\System32\Mods\A\xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx	ok	F:\Users\billy\Projects\Mods\A\xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+433a5c79797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979	ok	C:\yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy	ok	C:\yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+433a5c797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979797979	ok	C:\yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy	ok	C:\yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f612f	ok	C:\Windows\System32\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\	ok	F:\Users\billy\Projects\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\a\
+2e3a61627862	ok	.:abxb	ok	.:abxb
+2e2e6178206162	ok	C:\Windows\System32\..ax ab	ok	F:\Users\billy\Projects\..ax ab
+3a622062783a61	ok	C:\Windows\System32\:b bx:a	ok	F:\Users\billy\Projects\:b bx:a
+202e2e	ok	C:\Windows\System32\ ..	ok	F:\Users\billy\Projects\ ..
+612061782e2f3a	ok	C:\Windows\System32\a ax.\:	ok	F:\Users\billy\Projects\a ax.\:
+78622e2e	ok	C:\Windows\System32\xb..	ok	F:\Users\billy\Projects\xb..
+782e622e2e2e2e	ok	C:\Windows\System32\x.b....	ok	F:\Users\billy\Projects\x.b....
+5c627862	ok	C:\bxb	ok	F:\bxb
+43783a5c	ok	C:\Windows\System32\Cx:\	ok	F:\Users\billy\Projects\Cx:\
+2e2e435c2f202e2062	ok	C:\Windows\System32\..C\ . b	ok	F:\Users\billy\Projects\..C\ . b
+78435c432f	ok	C:\Windows\System32\xC\C\	ok	F:\Users\billy\Projects\xC\C\
+6278	ok	C:\Windows\System32\bx	ok	F:\Users\billy\Projects\bx
+2e5c2e433a6162	ok	C:\Windows\System32\.C:ab	ok	F:\Users\billy\Projects\.C:ab
+2e2e5c5c5c2e2e432e2e4362	ok	C:\Windows\..C..Cb	ok	F:\Users\billy\..C..Cb
+2f43	ok	C:\C	ok	F:\C
+612f	ok	C:\Windows\System32\a\	ok	F:\Users\billy\Projects\a\
+2f3a5c61435c2e2e2e	ok	C:\:\aC\...	ok	F:\:\aC\...
+4361	ok	C:\Windows\System32\Ca	ok	F:\Users\billy\Projects\Ca
+2f2e203a	ok	C:\. :	ok	F:\. :
+43622e433a782f	ok	C:\Windows\System32\Cb.C:x\	ok	F:\Users\billy\Projects\Cb.C:x\
+3a782f	ok	C:\Windows\System32\:x\	ok	F:\Users\billy\Projects\:x\
+5c3a202e622e2e	ok	C:\: .b..	ok	F:\: .b..
+2061432e2e	ok	C:\Windows\System32\ aC..	ok	F:\Users\billy\Projects\ aC..
+2f2f61	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+3a785c	ok	C:\Windows\System32\:x\	ok	F:\Users\billy\Projects\:x\
+2e782e2e614378	ok	C:\Windows\System32\.x..aCx	ok	F:\Users\billy\Projects\.x..aCx
+3a3a3a62433a61	ok	:::bC:a	ok	:::bC:a
+6220432e	ok	C:\Windows\System32\b C.	ok	F:\Users\billy\Projects\b C.
+5c2e2e	ok	C:\	ok	F:\
+62	ok	C:\Windows\System32\b	ok	F:\Users\billy\Projects\b
+78625c	ok	C:\Windows\System32\xb\	ok	F:\Users\billy\Projects\xb\
+2e2e3a2e2f	ok	C:\Windows\System32\..:.\	ok	F:\Users\billy\Projects\..:.\
+2e2e5c43626243	ok	C:\Windows\CbbC	ok	F:\Users\billy\CbbC
+43432f622e625c2f	ok	C:\Windows\System32\CC\b.b\	ok	F:\Users\billy\Projects\CC\b.b\
+2e786120785c2e78	ok	C:\Windows\System32\.xa x\.x	ok	F:\Users\billy\Projects\.xa x\.x
+78	ok	C:\Windows\System32\x	ok	F:\Users\billy\Projects\x
+622f785c2e	ok	C:\Windows\System32\b\x	ok	F:\Users\billy\Projects\b\x
+207878785c20	ok	C:\Windows\System32\ xxx	ok	F:\Users\billy\Projects\ xxx
+203a2020	ok	C::	ok	F::
+435c61612f432f202e2e	ok	C:\Windows\System32\C\aa\C\ ..	ok	F:\Users\billy\Projects\C\aa\C\ ..
+435c5c622062	ok	C:\Windows\System32\C\b b	ok	F:\Users\billy\Projects\C\b b
+43205c20	ok	C:\Windows\System32\C	ok	F:\Users\billy\Projects\C
+2e2e2e2e61435c62623a	ok	C:\Windows\System32\....aC\bb:	ok	F:\Users\billy\Projects\....aC\bb:
+432e3a5c	ok	C:\Windows\System32\C.:\	ok	F:\Users\billy\Projects\C.:\
+3a43	ok	C:\Windows\System32\:C	ok	F:\Users\billy\Projects\:C
+622e2e2e612e2e2e	ok	C:\Windows\System32\b...a...	ok	F:\Users\billy\Projects\b...a...
+2e2e2e2e2e435c2e7878	ok	C:\Windows\System32\.....C\.xx	ok	F:\Users\billy\Projects\.....C\.xx
+616162	ok	C:\Windows\System32\aab	ok	F:\Users\billy\Projects\aab
+2e3a2020612f202f78	ok	.:  a\x	ok	.:  a\x
+2e2e5c2f78	ok	C:\Windows\x	ok	F:\Users\billy\x
+2e615c432e2e783a	ok	C:\Windows\System32\.a\C..x:	ok	F:\Users\billy\Projects\.a\C..x:
+2e782e787861432e2e2e	ok	C:\Windows\System32\.x.xxaC...	ok	F:\Users\billy\Projects\.x.xxaC...
+2e432e2e	ok	C:\Windows\System32\.C..	ok	F:\Users\billy\Projects\.C..
+7861	ok	C:\Windows\System32\xa	ok	F:\Users\billy\Projects\xa
+787878436278	ok	C:\Windows\System32\xxxCbx	ok	F:\Users\billy\Projects\xxxCbx
+2f616278	ok	C:\abx	ok	F:\abx
+786162435c2e2e782e2e	ok	C:\Windows\System32\xabC\..x..	ok	F:\Users\billy\Projects\xabC\..x..
+202f43787843782078	ok	C:\Windows\System32\CxxCx x	ok	F:\Users\billy\Projects\CxxCx x
+7820432e3a	ok	C:\Windows\System32\x C.:	ok	F:\Users\billy\Projects\x C.:
+62203a62202f	ok	C:\Windows\System32\b :b\	ok	F:\Users\billy\Projects\b :b\
+2e5c	ok	C:\Windows\System32\	ok	F:\Users\billy\Projects\
+2f2e43	ok	C:\.C	ok	F:\.C
+623a432e	ok	B:\C	ok	B:\C
+2e3a783a	ok	.:x:	ok	.:x:
+3a205c5c625c	ok	C:\Windows\System32\:\b\	ok	F:\Users\billy\Projects\:\b\
+4343613a5c782e2e2f78	ok	C:\Windows\System32\CCa:\x..\x	ok	F:\Users\billy\Projects\CCa:\x..\x
+6220	ok	C:\Windows\System32\b	ok	F:\Users\billy\Projects\b
+622f	ok	C:\Windows\System32\b\	ok	F:\Users\billy\Projects\b\
+612e2f2e3a	ok	C:\Windows\System32\a.\.:	ok	F:\Users\billy\Projects\a.\.:
+3a2e78782e2e	ok	C:\Windows\System32\:.xx..	ok	F:\Users\billy\Projects\:.xx..
+5c622f612e3a622f	ok	C:\b\a.:b\	ok	F:\b\a.:b\
+622e2e20622f	ok	C:\Windows\System32\b.. b\	ok	F:\Users\billy\Projects\b.. b\
+783a2f2e2e2e61	ok	x:\...a	ok	x:\...a
+20622e2f612e202f2f	ok	C:\Windows\System32\ b.\a.\	ok	F:\Users\billy\Projects\ b.\a.\
+202f43782e2f5c612f	ok	C:\Windows\System32\Cx.\a\	ok	F:\Users\billy\Projects\Cx.\a\
+2078432043623a4378	ok	C:\Windows\System32\ xC Cb:Cx	ok	F:\Users\billy\Projects\ xC Cb:Cx
+782f20205c202e	ok	C:\Windows\System32\x\ .	ok	F:\Users\billy\Projects\x\ .
+5c612e61622f3a	ok	C:\a.ab\:	ok	F:\a.ab\:
+61623a	ok	C:\Windows\System32\ab:	ok	F:\Users\billy\Projects\ab:
+2f2e2e202f61432e2e2f	ok	C:/aC..\	ok	F:/aC..\
+612f5c5c785c2061	ok	C:\Windows\System32\a\x\ a	ok	F:\Users\billy\Projects\a\x\ a
+205c2e615c	ok	C:\Windows\System32\.a\	ok	F:\Users\billy\Projects\.a\
+62432f78202078	ok	C:\Windows\System32\bC\x  x	ok	F:\Users\billy\Projects\bC\x  x
+622e3a2e2e61	ok	C:\Windows\System32\b.:..a	ok	F:\Users\billy\Projects\b.:..a
+612f2f20622e2e78	ok	C:\Windows\System32\a\ b..x	ok	F:\Users\billy\Projects\a\ b..x
+2e2e3a5c	ok	C:\Windows\System32\..:\	ok	F:\Users\billy\Projects\..:\
+2e2f2e2e2e61783a78	ok	C:\Windows\System32\...ax:x	ok	F:\Users\billy\Projects\...ax:x
+78782e2e	ok	C:\Windows\System32\xx..	ok	F:\Users\billy\Projects\xx..
+6261612e	ok	C:\Windows\System32\baa.	ok	F:\Users\billy\Projects\baa.
+623a43786161	ok	B:\Cxaa	ok	B:\Cxaa
+20432f614362787862	ok	C:\Windows\System32\ C\aCbxxb	ok	F:\Users\billy\Projects\ C\aCbxxb
+62432f622f20202043	ok	C:\Windows\System32\bC\b\   C	ok	F:\Users\billy\Projects\bC\b\   C
+3a62432f612e2e2062	ok	C:\Windows\System32\:bC\a.. b	ok	F:\Users\billy\Projects\:bC\a.. b
+5c2f2f	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+614361	ok	C:\Windows\System32\aCa	ok	F:\Users\billy\Projects\aCa
+2f6220432f782f43	ok	C:\b C\x\C	ok	F:\b C\x\C
+436278202f624361	ok	C:\Windows\System32\Cbx\bCa	ok	F:\Users\billy\Projects\Cbx\bCa
+436278432f	ok	C:\Windows\System32\CbxC\	ok	F:\Users\billy\Projects\CbxC\
+2020622e2e622e78	ok	C:\Windows\System32\  b..b.x	ok	F:\Users\billy\Projects\  b..b.x
+5c2e2e2e782f	ok	C:\...x\	ok	F:\...x\
+5c20	ok	C:\	ok	F:\
+433a612e6143433a	ok	C:\Windows\System32\a.aCC:	ok	C:\a.aCC:
+2e3a5c3a5c	ok	.:\:\	ok	.:\:\
+5c3a6220612f	ok	C:\:b a\	ok	F:\:b a\
+5c623a3a2e2e	ok	C:\b::..	ok	F:\b::..
+5c3a	ok	C:\:	ok	F:\:
+612f62612f	ok	C:\Windows\System32\a\ba\	ok	F:\Users\billy\Projects\a\ba\
+202f3a	ok	C:\Windows\System32\:	ok	F:\Users\billy\Projects\:
+5c205c3a613a787820	ok	C:\:a:xx	ok	F:\:a:xx
+2e2e2e2f4361782e2e	ok	C:\Windows\System32\...\Cax..	ok	F:\Users\billy\Projects\...\Cax..
+3a5c2f2f2f2f3a20	ok	C:\Windows\System32\:\:	ok	F:\Users\billy\Projects\:\:
+43783a622e	ok	C:\Windows\System32\Cx:b.	ok	F:\Users\billy\Projects\Cx:b.
+622078	ok	C:\Windows\System32\b x	ok	F:\Users\billy\Projects\b x
+7820435c433a2e78	ok	C:\Windows\System32\x C\C:.x	ok	F:\Users\billy\Projects\x C\C:.x
+20622e5c	ok	C:\Windows\System32\ b.\	ok	F:\Users\billy\Projects\ b.\
+625c205c2f2e2e20613a	ok	C:\Windows\System32\b\.. a:	ok	F:\Users\billy\Projects\b\.. a:
+3a78203a2f5c61	ok	C:\Windows\System32\:x :\a	ok	F:\Users\billy\Projects\:x :\a
+2f2e2e5c2e78782062	ok	C:/.xx b	ok	F:/.xx b
+203a3a433a	ok	::C:	ok	::C:
+612e613a43	ok	C:\Windows\System32\a.a:C	ok	F:\Users\billy\Projects\a.a:C
+61623a7843432062	ok	C:\Windows\System32\ab:xCC b	ok	F:\Users\billy\Projects\ab:xCC b
+2e2e7862	ok	C:\Windows\System32\..xb	ok	F:\Users\billy\Projects\..xb
+627861612e202e2e61	ok	C:\Windows\System32\bxaa. ..a	ok	F:\Users\billy\Projects\bxaa. ..a
+2e2f783a62	ok	C:\Windows\System32\x:b	ok	F:\Users\billy\Projects\x:b
+2e2e203a2f202e2e616178	ok	C:\Windows\System32\.. :\ ..aax	ok	F:\Users\billy\Projects\.. :\ ..aax
+432f5c2043	ok	C:\Windows\System32\C\ C	ok	F:\Users\billy\Projects\C\ C
+207820613a2f616120	ok	C:\Windows\System32\ x a:\aa	ok	F:\Users\billy\Projects\ x a:\aa
+3a622f203a5c2043	ok	C:\Windows\System32\:b\ :\ C	ok	F:\Users\billy\Projects\:b\ :\ C
+5c3a20612f7862	ok	C:\: a\xb	ok	F:\: a\xb
+43202f20	ok	C:\Windows\System32\C	ok	F:\Users\billy\Projects\C
+43202f2f	ok	C:\Windows\System32\C\	ok	F:\Users\billy\Projects\C\
+2e2e43	ok	C:\Windows\System32\..C	ok	F:\Users\billy\Projects\..C
+20433a	ok	C:\Windows\System32\ C:	ok	F:\Users\billy\Projects\ C:
+3a6120	ok	C:\Windows\System32\:a	ok	F:\Users\billy\Projects\:a
+3a6161	ok	C:\Windows\System32\:aa	ok	F:\Users\billy\Projects\:aa
+3a435c	ok	C:\Windows\System32\:C\	ok	F:\Users\billy\Projects\:C\
+622e	ok	C:\Windows\System32\b.	ok	F:\Users\billy\Projects\b.
+202e7843612f	ok	C:\Windows\System32\ .xCa\	ok	F:\Users\billy\Projects\ .xCa\
+5c5c432e626162	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+625c3a6278	ok	C:\Windows\System32\b\:bx	ok	F:\Users\billy\Projects\b\:bx
+3a5c2f3a	ok	C:\Windows\System32\:\:	ok	F:\Users\billy\Projects\:\:
+6143	ok	C:\Windows\System32\aC	ok	F:\Users\billy\Projects\aC
+5c784320	ok	C:\xC	ok	F:\xC
+5c43613a203a	ok	C:\Ca: :	ok	F:\Ca: :
+43	ok	C:\Windows\System32\C	ok	F:\Users\billy\Projects\C
+622e2e5c5c	ok	C:\Windows\System32\b..\	ok	F:\Users\billy\Projects\b..\
+5c2e2e612f5c	ok	C:\..a\	ok	F:\..a\
+2f612e2e6261	ok	C:\a..ba	ok	F:\a..ba
+6243433a	ok	C:\Windows\System32\bCC:	ok	F:\Users\billy\Projects\bCC:
+3a432e432e	ok	C:\Windows\System32\:C.C.	ok	F:\Users\billy\Projects\:C.C.
+2e2e205c	ok	C:\Windows\	ok	F:\Users\billy\
+435c2e2e627820	ok	C:\Windows\System32\C\..bx	ok	F:\Users\billy\Projects\C\..bx
+2e203a62614378	ok	C:\Windows\System32\. :baCx	ok	F:\Users\billy\Projects\. :baCx
+5c2e3a62622f2e2e6220	ok	C:\.:bb\..b	ok	F:\.:bb\..b
+2e202e3a432e2e2078	ok	C:\Windows\System32\. .:C.. x	ok	F:\Users\billy\Projects\. .:C.. x
+2e2e2f5c2f2f	ok	C:\Windows\	ok	F:\Users\billy\
+43202e20	ok	C:\Windows\System32\C .	ok	F:\Users\billy\Projects\C .
+2e2f2e2e20	ok	C:\Windows	ok	F:\Users\billy
+623a2f207878	ok	b:\ xx	ok	b:\ xx
+62436162	ok	C:\Windows\System32\bCab	ok	F:\Users\billy\Projects\bCab
+435c612f	ok	C:\Windows\System32\C\a\	ok	F:\Users\billy\Projects\C\a\
+6261202e2e	ok	C:\Windows\System32\ba ..	ok	F:\Users\billy\Projects\ba ..
+625c782e	ok	C:\Windows\System32\b\x.	ok	F:\Users\billy\Projects\b\x.
+2e2e2f61622e2e2e2e5c20	ok	C:\Windows\ab....	ok	F:\Users\billy\ab....
+2e61202f612e2e	ok	C:\Windows\System32\.a\a..	ok	F:\Users\billy\Projects\.a\a..
+615c3a5c	ok	C:\Windows\System32\a\:\	ok	F:\Users\billy\Projects\a\:\
+2e2e2f62	ok	C:\Windows\b	ok	F:\Users\billy\b
+61437843	ok	C:\Windows\System32\aCxC	ok	F:\Users\billy\Projects\aCxC
+3a62	ok	C:\Windows\System32\:b	ok	F:\Users\billy\Projects\:b
+782e78622e3a2f	ok	C:\Windows\System32\x.xb.:\	ok	F:\Users\billy\Projects\x.xb.:\
+2f2f3a612f2e2e5c	ok	\\:a\..\\:a\	ok	\\:a\..\\:a\
+3a615c203a3a20	ok	C:\Windows\System32\:a\ ::	ok	F:\Users\billy\Projects\:a\ ::
+3a6262	ok	C:\Windows\System32\:bb	ok	F:\Users\billy\Projects\:bb
+2e2e5c432e2e6161	ok	C:\Windows\C..aa	ok	F:\Users\billy\C..aa
+2e3a622e2e2e2e5c782e2e	ok	.:b....\x..	ok	.:b....\x..
+2f2e782e6262	ok	C:\.x.bb	ok	F:\.x.bb
+43202f2e61435c	ok	C:\Windows\System32\C\.aC\	ok	F:\Users\billy\Projects\C\.aC\
+622e2e2e202e2e3a2e2e	ok	C:\Windows\System32\b... ..:..	ok	F:\Users\billy\Projects\b... ..:..
+432e2e2e20	ok	C:\Windows\System32\C...	ok	F:\Users\billy\Projects\C...
+2e3a5c622e20206178	ok	.:\b.  ax	ok	.:\b.  ax
+3a2e2e	ok	C:\Windows\System32\:..	ok	F:\Users\billy\Projects\:..
+782f3a2f2e2e203a3a	ok	C:\Windows\System32\x\:\.. ::	ok	F:\Users\billy\Projects\x\:\.. ::
+4378432e6161	ok	C:\Windows\System32\CxC.aa	ok	F:\Users\billy\Projects\CxC.aa
+4320432e2e432e433a	ok	C:\Windows\System32\C C..C.C:	ok	F:\Users\billy\Projects\C C..C.C:
+3a5c62437878	ok	C:\Windows\System32\:\bCxx	ok	F:\Users\billy\Projects\:\bCxx
+625c78	ok	C:\Windows\System32\b\x	ok	F:\Users\billy\Projects\b\x
+6178	ok	C:\Windows\System32\ax	ok	F:\Users\billy\Projects\ax
+2e61622e2e62202e	ok	C:\Windows\System32\.ab..b .	ok	F:\Users\billy\Projects\.ab..b .
+2f2e20625c2e2e2f2e	ok	C:\	ok	F:\
+2e2e2f432e2f78	ok	C:\Windows\C.\x	ok	F:\Users\billy\C.\x
+202e2e2f2e2e78205c5c	ok	C:\Windows\System32\ ..\..x\	ok	F:\Users\billy\Projects\ ..\..x\
+3a2e2f	ok	C:\Windows\System32\:.\	ok	F:\Users\billy\Projects\:.\
+3a2e2f627861	ok	C:\Windows\System32\:.\bxa	ok	F:\Users\billy\Projects\:.\bxa
+4378782e2e622f	ok	C:\Windows\System32\Cxx..b\	ok	F:\Users\billy\Projects\Cxx..b\
+3a5c2f3a5c2e2e2e5c5c	ok	C:\Windows\System32\:\:\...\	ok	F:\Users\billy\Projects\:\:\...\
+4320	ok	C:\Windows\System32\C	ok	F:\Users\billy\Projects\C
+2e2e612f	ok	C:\Windows\System32\..a\	ok	F:\Users\billy\Projects\..a\
+2f2f2e2e5c6161202e2f	ok	\\..\aa .\\aa .\	ok	\\..\aa .\\aa .\
+3a785c612e4320	ok	C:\Windows\System32\:x\a.C	ok	F:\Users\billy\Projects\:x\a.C
+2f62785c7820	ok	C:\bx\x	ok	F:\bx\x
+2e2e2f2e2e2e205c2e2e	ok	C:\Windows	ok	F:\Users\billy
+2e2e61202e436262	ok	C:\Windows\System32\..a .Cbb	ok	F:\Users\billy\Projects\..a .Cbb
+2f3a2f	ok	C:\:\	ok	F:\:\
+5c2e2e2e2e432e2e7843202e	ok	C:\....C..xC .	ok	F:\....C..xC .
+202e61	ok	C:\Windows\System32\ .a	ok	F:\Users\billy\Projects\ .a
+202e3a20782e2e783a2e2e	ok	C:\Windows\System32\ .: x..x:..	ok	F:\Users\billy\Projects\ .: x..x:..
+782f62	ok	C:\Windows\System32\x\b	ok	F:\Users\billy\Projects\x\b
+614378613a	ok	C:\Windows\System32\aCxa:	ok	F:\Users\billy\Projects\aCxa:
+4362432e20622f	ok	C:\Windows\System32\CbC. b\	ok	F:\Users\billy\Projects\CbC. b\
+61625c2f	ok	C:\Windows\System32\ab\	ok	F:\Users\billy\Projects\ab\
+3a782f2f206278612e	ok	C:\Windows\System32\:x\ bxa.	ok	F:\Users\billy\Projects\:x\ bxa.
+20202e5c20	ok	C:\Windows\System32\  .	ok	F:\Users\billy\Projects\  .
+5c2e2e203a784343	ok	C:\.. :xCC	ok	F:\.. :xCC
+61613a202e2e2f203a2e2e	ok	C:\Windows\System32\aa: ..\ :..	ok	F:\Users\billy\Projects\aa: ..\ :..
+2e6161612e61	ok	C:\Windows\System32\.aaa.a	ok	F:\Users\billy\Projects\.aaa.a
+6162	ok	C:\Windows\System32\ab	ok	F:\Users\billy\Projects\ab
+2078623a6220	ok	C:\Windows\System32\ xb:b	ok	F:\Users\billy\Projects\ xb:b
+20626161	ok	C:\Windows\System32\ baa	ok	F:\Users\billy\Projects\ baa
+2e62	ok	C:\Windows\System32\.b	ok	F:\Users\billy\Projects\.b
+2f5c5c3a	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+615c2f2f61	ok	C:\Windows\System32\a\a	ok	F:\Users\billy\Projects\a\a
+5c2e2e78432f2e2e	ok	C:\	ok	F:\
+625c4361782e2e20622e2e	ok	C:\Windows\System32\b\Cax.. b..	ok	F:\Users\billy\Projects\b\Cax.. b..
+2e3a617820	ok	.:ax	ok	.:ax
+61615c4362	ok	C:\Windows\System32\aa\Cb	ok	F:\Users\billy\Projects\aa\Cb
+2e432e2e5c782f2e2e2e	ok	C:\Windows\System32\.C..\x\...	ok	F:\Users\billy\Projects\.C..\x\...
+2020432e62	ok	C:\Windows\System32\  C.b	ok	F:\Users\billy\Projects\  C.b
+4378	ok	C:\Windows\System32\Cx	ok	F:\Users\billy\Projects\Cx
+3a3a	ok	::\	ok	::\
+3a61	ok	C:\Windows\System32\:a	ok	F:\Users\billy\Projects\:a
+202f2f3a7878	ok	C:\Windows\System32\:xx	ok	F:\Users\billy\Projects\:xx
+3a2043	ok	C:\Windows\System32\: C	ok	F:\Users\billy\Projects\: C
+782e2e2e2e	ok	C:\Windows\System32\x....	ok	F:\Users\billy\Projects\x....
+782e43785c2e	ok	C:\Windows\System32\x.Cx	ok	F:\Users\billy\Projects\x.Cx
+432f2e2e202e5c4320	ok	C:\Windows\System32\C\.. .\C	ok	F:\Users\billy\Projects\C\.. .\C
+202f2f2e2e2e2e205c2e2e	ok	C:\Windows\System32	ok	F:\Users\billy\Projects
+5c2e205c202f622e62	ok	C:\b.b	ok	F:\b.b
+3a2e2e2f	ok	C:\Windows\System32\:..\	ok	F:\Users\billy\Projects\:..\
+3a2f206262	ok	C:\Windows\System32\:\ bb	ok	F:\Users\billy\Projects\:\ bb
+203a436161	ok	C::Caa	ok	F::Caa
+3a20782f43612e	ok	C:\Windows\System32\: x\Ca.	ok	F:\Users\billy\Projects\: x\Ca.
+2e2e3a61203a	ok	C:\Windows\System32\..:a :	ok	F:\Users\billy\Projects\..:a :
+202e2e202e62433a	ok	C:\Windows\System32\ .. .bC:	ok	F:\Users\billy\Projects\ .. .bC:
+2f623a203a2e	ok	C:\b: :.	ok	F:\b: :.
+3a4343612e2e	ok	C:\Windows\System32\:CCa..	ok	F:\Users\billy\Projects\:CCa..
+782e5c613a4362	ok	C:\Windows\System32\x.\a:Cb	ok	F:\Users\billy\Projects\x.\a:Cb
+202e20785c622e2e4378	ok	C:\Windows\System32\ . x\b..Cx	ok	F:\Users\billy\Projects\ . x\b..Cx
+4378615c	ok	C:\Windows\System32\Cxa\	ok	F:\Users\billy\Projects\Cxa\
+5c3a43202e3a78622e2e	ok	C:\:C .:xb..	ok	F:\:C .:xb..
+783a612e	ok	X:\a	ok	X:\a
+783a612e20	ok	X:\a	ok	X:\a
+783a612e2f62	ok	X:\a\b	ok	X:\a\b
+783a612f622e	ok	X:\a\b	ok	X:\a\b
+783a2e2e2e	ok	X:\	ok	X:\
+783a612f2e2e2f2e2e	ok	X:\	ok	X:\
+633a612e	ok	C:\Windows\System32\a	ok	C:\a
+633a612e202e	ok	C:\Windows\System32\a	ok	C:\a
+633a612f622e20	ok	C:\Windows\System32\a\b	ok	C:\a\b
+783a2061	ok	X:\ a	ok	X:\ a
+783a6120	ok	X:\a	ok	X:\a
+783a2e2f	ok	X:\	ok	X:\
+783a615c	ok	X:\a\	ok	X:\a\
+783a612f	ok	X:\a\	ok	X:\a\
+783a612e5c	ok	X:\a\	ok	X:\a\
+633a2e2e	ok	C:\Windows	ok	C:\
+633a2e2e2f2e2e	ok	C:\	ok	C:\
+633a	ok	C:\Windows\System32	ok	C:\
+783a2e	ok	X:\	ok	X:\
+783a612f2e2f622f2e2e	ok	X:\a	ok	X:\a
+783a612e2e	ok	X:\a	ok	X:\a
+783a2e202e	ok	X:\	ok	X:\
+633a612f202f62	ok	C:\Windows\System32\a\b	ok	C:\a\b
+783a612f202e2f62	ok	X:\a\b	ok	X:\a\b
+783ac3a9	ok	X:\é	ok	X:\é
+c3a93a	ok	É:\	ok	É:\
+c39f3a61	ok	ß:\a	ok	ß:\a
+313a	ok	1:\	ok	1:\
+5f3a61	ok	_:a	ok	_:a
+783a612f622f2e2e2f2e2e2f2e2e2f2e2e	ok	X:\	ok	X:\
+633a615c2e2e5c2e2e5c2e2e	ok	C:\	ok	C:\
+783a612e202f622e20	ok	X:\a.\b	ok	X:\a.\b
+5c5c735c685c612e20	ok	\\s\h\a.	ok	\\s\h\a.
+5c5c732f682f61	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+2f2f735c68	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+5c2f732f682f78	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+2f5c735c68	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+5c5c735c5c68	ok	\\s\\\s\h	ok	\\s\\\s\h
+5c5c735c685c2e2e5c2e2e5c2e2e5c78	ok	\\s\h\x	ok	\\s\h\x
+5c5c735c685c2e5c785c20	ok	\\s\h\x	ok	\\s\h\x
+433a5c615c2e2e5c2e2e5c2e2e5c62	ok	C:\b	ok	C:\b
+433a2f2e	ok	C:\	ok	C:\
+433a2f2e2e	ok	C:/	ok	C:/
+433a5c2e5c	ok	C:\	ok	C:\
+2f2e	ok	C:\	ok	F:\
+2f612f2e	ok	C:\a	ok	F:\a
+205c61	ok	C:\Windows\System32\a	ok	F:\Users\billy\Projects\a
+092f61	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6109	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+61092f62	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4663460943436346	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+202e0963432e2e78092e62	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f2e626309c3a92e2e61	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3a432e2ec3a9782e2e2e786146	ok	C:\Windows\System32\:C..éx...xaF	ok	F:\Users\billy\Projects\:C..éx...xaF
+626161202078610943	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+437846206320	ok	C:\Windows\System32\CxF c	ok	F:\Users\billy\Projects\CxF c
+43612e2e6243	ok	C:\Windows\System32\Ca..bC	ok	F:\Users\billy\Projects\Ca..bC
+3a634662c3a9	ok	C:\Windows\System32\:cFbé	ok	F:\Users\billy\Projects\:cFbé
+5c0920632f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+09623a62462f3a626146	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+61433ac3a9	ok	C:\Windows\System32\aC:é	ok	F:\Users\billy\Projects\aC:é
+3a62782e2e20092e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+5c622f5c61	ok	C:\b\a	ok	F:\b\a
+09622e20c3a96261	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e2e6320436320c3a9	ok	C:\Windows\System32\...c Cc é	ok	F:\Users\billy\Projects\...c Cc é
+3a2e2e3a	ok	C:\Windows\System32\:..:	ok	F:\Users\billy\Projects\:..:
+612f4609	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f61202e3a46782e2e7862	ok	C:\a .:Fx..xb	ok	F:\a .:Fx..xb
+432f6109	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+5c462f3a62626220782e2e	ok	C:\F\:bbb x..	ok	F:\F\:bbb x..
+61785c5c	ok	C:\Windows\System32\ax\	ok	F:\Users\billy\Projects\ax\
+432e784346782e463a2e	ok	C:\Windows\System32\C.xCFx.F:.	ok	F:\Users\billy\Projects\C.xCFx.F:.
+2f2046	ok	C:\ F	ok	F:\ F
+20c3a9202ec3a92e2e63202e2e3a	ok	C:\Windows\System32\ é .é..c ..:	ok	F:\Users\billy\Projects\ é .é..c ..:
+78623a6162626163	ok	C:\Windows\System32\xb:abbac	ok	F:\Users\billy\Projects\xb:abbac
+20c3a9c3a93a2f	ok	C:\Windows\System32\ éé:\	ok	F:\Users\billy\Projects\ éé:\
+4678432f632ec3a9	ok	C:\Windows\System32\FxC\c.é	ok	F:\Users\billy\Projects\FxC\c.é
+2e20	ok	C:\Windows\System32	ok	F:\Users\billy\Projects
+632e2e467878622f20	ok	C:\Windows\System32\c..Fxxb	ok	F:\Users\billy\Projects\c..Fxxb
+c3a961622f	ok	C:\Windows\System32\éab\	ok	F:\Users\billy\Projects\éab\
+432061612e2f5c	ok	C:\Windows\System32\C aa.\	ok	F:\Users\billy\Projects\C aa.\
+782e625c2e435c2e2ec3a9	ok	C:\Windows\System32\x.b\.C\..é	ok	F:\Users\billy\Projects\x.b\.C\..é
+782e786161435cc3a92f	ok	C:\Windows\System32\x.xaaC\é\	ok	F:\Users\billy\Projects\x.xaaC\é\
+2e2e624362c3a92f5c2e6262	ok	C:\Windows\System32\..bCbé\.bb	ok	F:\Users\billy\Projects\..bCbé\.bb
+635cc3a961c3a9c3a9c3a92e	ok	C:\Windows\System32\c\éaééé.	ok	F:\Users\billy\Projects\c\éaééé.
+5c622e2e436246	ok	C:\b..CbF	ok	F:\b..CbF
+09614643786178	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3a786178626262	ok	C:\Windows\System32\:xaxbbb	ok	F:\Users\billy\Projects\:xaxbbb
+2f3a	ok	C:\:	ok	F:\:
+3ac3a9c3a9784343	ok	C:\Windows\System32\:ééxCC	ok	F:\Users\billy\Projects\:ééxCC
+466362630963612f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+62436120c3a9624309782e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f615c2f2e2e2e7820	ok	C:\a\...x	ok	F:\a\...x
+2e095c2e2e4343205c3a	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+202e2e3a0909	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+203a2078	ok	C:: x	ok	F:: x
+202e2e435c46	ok	C:\Windows\System32\ ..C\F	ok	F:\Users\billy\Projects\ ..C\F
+c3a9	ok	C:\Windows\System32\é	ok	F:\Users\billy\Projects\é
+2f46	ok	C:\F	ok	F:\F
+624343	ok	C:\Windows\System32\bCC	ok	F:\Users\billy\Projects\bCC
+20463a3a2e2e	ok	C:\Windows\System32\ F::..	ok	F:\Users\billy\Projects\ F::..
+432e2e5cc3a9464678435c	ok	C:\Windows\System32\C..\éFFxC\	ok	F:\Users\billy\Projects\C..\éFFxC\
+4661	ok	C:\Windows\System32\Fa	ok	F:\Users\billy\Projects\Fa
+4678612e2ec3a9	ok	C:\Windows\System32\Fxa..é	ok	F:\Users\billy\Projects\Fxa..é
+785c2f2e2e09	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+612e2e2e3a43206109462f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+092e0961	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4362	ok	C:\Windows\System32\Cb	ok	F:\Users\billy\Projects\Cb
+2e2e2e2e095c622e2e202046	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f2ec3a961094363c3a9	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f095c63	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6378092e3a4609c3a920	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3ac3a9	ok	C:\Windows\System32\:é	ok	F:\Users\billy\Projects\:é
+2e4343202e2e613a	ok	C:\Windows\System32\.CC ..a:	ok	F:\Users\billy\Projects\.CC ..a:
+782e2e6309465c435c2e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+62c3a94646	ok	C:\Windows\System32\béFF	ok	F:\Users\billy\Projects\béFF
+622f63095c2fc3a9	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6261435c633a092f43	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3a09	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+5c2e2e092e432e63c3a963	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4378c3a96209204363	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f46c3a9632e2e2e636346	ok	C:\Féc...ccF	ok	F:\Féc...ccF
+2f2f2e2e3a464678202f	ok	\\..:FFx \\\..:FFx\	ok	\\..:FFx \\\..:FFx\
+63632f	ok	C:\Windows\System32\cc\	ok	F:\Users\billy\Projects\cc\
+43203a63626361783a61	ok	C:\Windows\System32\C :cbcax:a	ok	F:\Users\billy\Projects\C :cbcax:a
+61633a630978624362	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+626343	ok	C:\Windows\System32\bcC	ok	F:\Users\billy\Projects\bcC
+093a2f2043432e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3a4643635c62	ok	C:\Windows\System32\:FCc\b	ok	F:\Users\billy\Projects\:FCc\b
+3a78612f	ok	C:\Windows\System32\:xa\	ok	F:\Users\billy\Projects\:xa\
+c3a90961	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+20612e2e	ok	C:\Windows\System32\ a..	ok	F:\Users\billy\Projects\ a..
+5cc3a95c2078	ok	C:\é\ x	ok	F:\é\ x
+6243c3a97862466378	ok	C:\Windows\System32\bCéxbFcx	ok	F:\Users\billy\Projects\bCéxbFcx
+c3a920c3a9633a	ok	C:\Windows\System32\é éc:	ok	F:\Users\billy\Projects\é éc:
+4663782e632046	ok	C:\Windows\System32\Fcx.c F	ok	F:\Users\billy\Projects\Fcx.c F
+2e2e2063204663787846	ok	C:\Windows\System32\.. c FcxxF	ok	F:\Users\billy\Projects\.. c FcxxF
+20c3a92e2e	ok	C:\Windows\System32\ é..	ok	F:\Users\billy\Projects\ é..
+2e5c785c2020	ok	C:\Windows\System32\x	ok	F:\Users\billy\Projects\x
+622e202e	ok	C:\Windows\System32\b. .	ok	F:\Users\billy\Projects\b. .
+3a46	ok	C:\Windows\System32\:F	ok	F:\Users\billy\Projects\:F
+6309c3a92e203a2e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+782e2e5c46	ok	C:\Windows\System32\x..\F	ok	F:\Users\billy\Projects\x..\F
+62c3a9632e2e095c	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e4620096243626161	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+786378432e202e6220	ok	C:\Windows\System32\xcxC. .b	ok	F:\Users\billy\Projects\xcxC. .b
+462e2f	ok	C:\Windows\System32\F.\	ok	F:\Users\billy\Projects\F.\
+2e2e4362	ok	C:\Windows\System32\..Cb	ok	F:\Users\billy\Projects\..Cb
+3a635c3a20785c61	ok	C:\Windows\System32\:c\: x\a	ok	F:\Users\billy\Projects\:c\: x\a
+46	ok	C:\Windows\System32\F	ok	F:\Users\billy\Projects\F
+2e3a435c	ok	.:C\	ok	.:C\
+3a20782e6263	ok	C:\Windows\System32\: x.bc	ok	F:\Users\billy\Projects\: x.bc
+0946	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+78782063785c09	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f62c3a9c3a909	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+463a2e	ok	F:\	ok	F:\Users\billy\Projects
+63c3a95c093a09	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3a20c3a9	ok	C:\Windows\System32\: é	ok	F:\Users\billy\Projects\: é
+62095c	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4362615c2e2e	ok	C:\Windows\System32	ok	F:\Users\billy\Projects
+61202f2e2e2f5c202e2e3a78	ok	C:\Windows\System32\ ..:x	ok	F:\Users\billy\Projects\ ..:x
+63623a	ok	C:\Windows\System32\cb:	ok	F:\Users\billy\Projects\cb:
+432e2e20c3a962093a7861	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+7862	ok	C:\Windows\System32\xb	ok	F:\Users\billy\Projects\xb
+2f433a63	ok	C:\C:c	ok	F:\C:c
+2e2e3a6162	ok	C:\Windows\System32\..:ab	ok	F:\Users\billy\Projects\..:ab
+2f2f5c6363	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+3a637846622e2e43092e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6378	ok	C:\Windows\System32\cx	ok	F:\Users\billy\Projects\cx
+3a432e	ok	C:\Windows\System32\:C.	ok	F:\Users\billy\Projects\:C.
+637878613a433a2f	ok	C:\Windows\System32\cxxa:C:\	ok	F:\Users\billy\Projects\cxxa:C:\
+3a782f5c632f432e2e2f	ok	C:\Windows\System32\:x\c\C..\	ok	F:\Users\billy\Projects\:x\c\C..\
+2f2e2ec3a9c3a92f61610920	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+612e2e2e3a092e2e3a615cc3a9	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6178c3a95c620920	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+c3a9432f09206163	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+09c3a9	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e462078c3a9626178	ok	C:\Windows\System32\.F xébax	ok	F:\Users\billy\Projects\.F xébax
+43622046615c63	ok	C:\Windows\System32\Cb Fa\c	ok	F:\Users\billy\Projects\Cb Fa\c
+625c43	ok	C:\Windows\System32\b\C	ok	F:\Users\billy\Projects\b\C
+2e2e3a43	ok	C:\Windows\System32\..:C	ok	F:\Users\billy\Projects\..:C
+2f2e2e782e2e3a5c09c3a96346	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2fc3a92e	ok	C:\é.	ok	F:\é.
+4362632f	ok	C:\Windows\System32\Cbc\	ok	F:\Users\billy\Projects\Cbc\
+78465c2f2f782e2ec3a978	ok	C:\Windows\System32\xF\x..éx	ok	F:\Users\billy\Projects\xF\x..éx
+202e2e2f09202020632e2e20	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f3a617861	ok	C:\:axa	ok	F:\:axa
+2063	ok	C:\Windows\System32\ c	ok	F:\Users\billy\Projects\ c
+6209622e2e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+202e2e5c43435c205c5c	ok	C:\Windows\System32\ ..\CC\	ok	F:\Users\billy\Projects\ ..\CC\
+c3a92e464662096243	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+46090920433ac3a92f3a09	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+5c2e2e2e	ok	C:\...	ok	F:\...
+5c2f6309c3a9462e3a2e2e5c	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+62435c6263623a787843	ok	C:\Windows\System32\bC\bcb:xxC	ok	F:\Users\billy\Projects\bC\bcb:xxC
+2f460961622f202e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+62c3a92f43c3a909c3a95c2f2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+5c2e2ec3a95c	ok	C:\..é\	ok	F:\..é\
+625cc3a9437878	ok	C:\Windows\System32\b\éCxx	ok	F:\Users\billy\Projects\b\éCxx
+4363092f43	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+203ac3a9632062	ok	C::éc b	ok	F::éc b
+465c615c2e2e3a	ok	C:\Windows\System32\F\a\..:	ok	F:\Users\billy\Projects\F\a\..:
+3a0920c3a9785c093a632e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+782e2e620943462f0961	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6361632e	ok	C:\Windows\System32\cac.	ok	F:\Users\billy\Projects\cac.
+2f612e2e46093a6278632f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+625c622fc3a9625c6261	ok	C:\Windows\System32\b\b\éb\ba	ok	F:\Users\billy\Projects\b\b\éb\ba
+62c3a946	ok	C:\Windows\System32\béF	ok	F:\Users\billy\Projects\béF
+20c3a9204309635c	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3a5c5c095c2e2e2e43	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6309c3a962c3a978613a	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4661093a4662	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+632e2e61635cc3a96109	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+20c3a92e	ok	C:\Windows\System32\ é.	ok	F:\Users\billy\Projects\ é.
+2e2e2e5c203a3a63	ok	C:\Windows\System32\...\ ::c	ok	F:\Users\billy\Projects\...\ ::c
+2f61432fc3a9	ok	C:\aC\é	ok	F:\aC\é
+2f2e2e	ok	C:/	ok	F:/
+092e61	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+61784309615c6220	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+5c2078	ok	C:\ x	ok	F:\ x
+78c3a94378	ok	C:\Windows\System32\xéCx	ok	F:\Users\billy\Projects\xéCx
+20432e2f3a2e092f2e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+466343462f433a5c2e2e	ok	C:\Windows\System32\FcCF	ok	F:\Users\billy\Projects\FcCF
+09624346203a61202e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+630963092f0961	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6146435c	ok	C:\Windows\System32\aFC\	ok	F:\Users\billy\Projects\aFC\
+0920c3a93a78462e3a	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+095c2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4609632e2e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f6363612e78092e6120	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+462e62	ok	C:\Windows\System32\F.b	ok	F:\Users\billy\Projects\F.b
+2f78c3a9636243	ok	C:\xécbC	ok	F:\xécbC
+62c3a9786346632f61	ok	C:\Windows\System32\béxcFc\a	ok	F:\Users\billy\Projects\béxcFc\a
+3a202e2e62	ok	C:\Windows\System32\: ..b	ok	F:\Users\billy\Projects\: ..b
+2061633a63432e46	ok	C:\Windows\System32\ ac:cC.F	ok	F:\Users\billy\Projects\ ac:cC.F
+5c2f3a6263	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+432e2ec3a9625c	ok	C:\Windows\System32\C..éb\	ok	F:\Users\billy\Projects\C..éb\
+2e2e3a	ok	C:\Windows\System32\..:	ok	F:\Users\billy\Projects\..:
+c3a90946622e2e436146	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+c3a9c3a943202f7862	ok	C:\Windows\System32\ééC\xb	ok	F:\Users\billy\Projects\ééC\xb
+0961464609c3a92078	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f2e2e3a	ok	C:\..:	ok	F:\..:
+c3a92f5c093a632e2e622f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+203ac3a962	ok	C::éb	ok	F::éb
+2f2f7843c3a92e2e	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+43463a62622e	ok	C:\Windows\System32\CF:bb.	ok	F:\Users\billy\Projects\CF:bb.
+622e2e2e2e2ec3a92e2e203a61	ok	C:\Windows\System32\b.....é.. :a	ok	F:\Users\billy\Projects\b.....é.. :a
+78c3a9626220612e62	ok	C:\Windows\System32\xébb a.b	ok	F:\Users\billy\Projects\xébb a.b
+3a09625c463a63	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e2009	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+46c3a93a	ok	C:\Windows\System32\Fé:	ok	F:\Users\billy\Projects\Fé:
+5c3a7861c3a93a78c3a9	ok	C:\:xaé:xé	ok	F:\:xaé:xé
+0909202e2e7863	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+205c2f2e2e4362	ok	C:\Windows\System32\..Cb	ok	F:\Users\billy\Projects\..Cb
+3a20635c092f466278	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f0963	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+63205c7863	ok	C:\Windows\System32\c\xc	ok	F:\Users\billy\Projects\c\xc
+2e78c3a92063c3a9c3a94620	ok	C:\Windows\System32\.xé cééF	ok	F:\Users\billy\Projects\.xé cééF
+612e2e2e2e2009622e204378	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+c3a95c5c62465c2f	ok	C:\Windows\System32\é\bF\	ok	F:\Users\billy\Projects\é\bF\
+6243c3a92e20786363	ok	C:\Windows\System32\bCé. xcc	ok	F:\Users\billy\Projects\bCé. xcc
+62632f2ec3a9465c782e	ok	C:\Windows\System32\bc\.éF\x.	ok	F:\Users\billy\Projects\bc\.éF\x.
+2e2e5c200978	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+462e2e786309	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e092e2e2e2f092e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+78782e2e0909612e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3a43612e	ok	C:\Windows\System32\:Ca.	ok	F:\Users\billy\Projects\:Ca.
+3a62783a2e5c632e2f	ok	C:\Windows\System32\:bx:.\c.\	ok	F:\Users\billy\Projects\:bx:.\c.\
+785c612e2e	ok	C:\Windows\System32\x\a..	ok	F:\Users\billy\Projects\x\a..
+3a4378	ok	C:\Windows\System32\:Cx	ok	F:\Users\billy\Projects\:Cx
+435c	ok	C:\Windows\System32\C\	ok	F:\Users\billy\Projects\C\
+78c3a978093a092f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+434646c3a93a463a62	ok	C:\Windows\System32\CFFé:F:b	ok	F:\Users\billy\Projects\CFFé:F:b
+62635c63633a3a615c61	ok	C:\Windows\System32\bc\cc::a\a	ok	F:\Users\billy\Projects\bc\cc::a\a
+c3a9783ac3a93a	ok	C:\Windows\System32\éx:é:	ok	F:\Users\billy\Projects\éx:é:
+5c09092f786220624643	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+63463a61	ok	C:\Windows\System32\cF:a	ok	F:\Users\billy\Projects\cF:a
+c3a9626320632f2e2e3a	ok	C:\Windows\System32\ébc c\..:	ok	F:\Users\billy\Projects\ébc c\..:
+62c3a9462e2e	ok	C:\Windows\System32\béF..	ok	F:\Users\billy\Projects\béF..
+46633a78092e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2ec3a93a78	ok	C:\Windows\System32\..é:x	ok	F:\Users\billy\Projects\..é:x
+6262	ok	C:\Windows\System32\bb	ok	F:\Users\billy\Projects\bb
+092e62637843612f20	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+615c2e6243	ok	C:\Windows\System32\a\.bC	ok	F:\Users\billy\Projects\a\.bC
+46633a2e5cc3a97820	ok	C:\Windows\System32\Fc:.\éx	ok	F:\Users\billy\Projects\Fc:.\éx
+2f5c432e0909	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+20202f46c3a961205c	ok	C:\Windows\System32\Féa\	ok	F:\Users\billy\Projects\Féa\
+43612e2e2ec3a963	ok	C:\Windows\System32\Ca...éc	ok	F:\Users\billy\Projects\Ca...éc
+632e2e2020	ok	C:\Windows\System32\c..	ok	F:\Users\billy\Projects\c..
+2fc3a9	ok	C:\é	ok	F:\é
+2f463ac3a92e5c	ok	C:\F:é.\	ok	F:\F:é.\
+3a622e20462f62c3a9	ok	C:\Windows\System32\:b. F\bé	ok	F:\Users\billy\Projects\:b. F\bé
+2f2ec3a920	ok	C:\.é	ok	F:\.é
+2e2e2f092f5c092e2e6362	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+63202f2e2e2e202f2e2e2e2e2e	ok	C:\Windows\System32\c\...\.....	ok	F:\Users\billy\Projects\c\...\.....
+636263616178782f	ok	C:\Windows\System32\cbcaaxx\	ok	F:\Users\billy\Projects\cbcaaxx\
+2f3a0978622e2f0920	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2fc3a963	ok	C:\Windows\System32\éc	ok	F:\Users\billy\Projects\éc
+617843	ok	C:\Windows\System32\axC	ok	F:\Users\billy\Projects\axC
+3a6143612e6263092e2e5c	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e430961632f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+46462e2e2e2e63c3a9632e78	ok	C:\Windows\System32\FF....céc.x	ok	F:\Users\billy\Projects\FF....céc.x
+62783a	ok	C:\Windows\System32\bx:	ok	F:\Users\billy\Projects\bx:
+2e2e436309	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+09c3a909c3a920	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4363204678	ok	C:\Windows\System32\Cc Fx	ok	F:\Users\billy\Projects\Cc Fx
+432f612078c3a961784346	ok	C:\Windows\System32\C\a xéaxCF	ok	F:\Users\billy\Projects\C\a xéaxCF
+5c2e78	ok	C:\.x	ok	F:\.x
+093a6343c3a92f4609	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e78	ok	C:\Windows\System32\.x	ok	F:\Users\billy\Projects\.x
+7809c3a920782e612f3a	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4678c3a963092f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+43622e2e46632e3a2f202e	ok	C:\Windows\System32\Cb..Fc.:\ .	ok	F:\Users\billy\Projects\Cb..Fc.:\ .
+c3a92e2e46780943615c	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+435cc3a920c3a9612e	ok	C:\Windows\System32\C\é éa.	ok	F:\Users\billy\Projects\C\é éa.
+0909782e2ec3a94363	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+3a632e62	ok	C:\Windows\System32\:c.b	ok	F:\Users\billy\Projects\:c.b
+632f433a62612e2e	ok	C:\Windows\System32\c\C:ba..	ok	F:\Users\billy\Projects\c\C:ba..
+202f2f626346203a4362	ok	C:\Windows\System32\bcF :Cb	ok	F:\Users\billy\Projects\bcF :Cb
+5c2f5c78	ok	\\\x\\x	ok	\\\x\\x
+612e3a78	ok	C:\Windows\System32\a.:x	ok	F:\Users\billy\Projects\a.:x
+78c3a946782e43	ok	C:\Windows\System32\xéFx.C	ok	F:\Users\billy\Projects\xéFx.C
+46203a3a096120	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+5c202e0963092e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+203a207843092f43	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+432e2e2e2e2e46432063	ok	C:\Windows\System32\C.....FC c	ok	F:\Users\billy\Projects\C.....FC c
+3a6261c3a92f5c2f	ok	C:\Windows\System32\:baé\	ok	F:\Users\billy\Projects\:baé\
+61632ec3a92f633a782e2ec3a9	ok	C:\Windows\System32\ac.é\c:x..é	ok	F:\Users\billy\Projects\ac.é\c:x..é
+2f625c61	ok	C:\b\a	ok	F:\b\a
+c3a9095c	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+0920c3a9	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4362463a5c2f09	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e612f3a7820436120	ok	C:\Windows\System32\..a\:x Ca	ok	F:\Users\billy\Projects\..a\:x Ca
+63782e	ok	C:\Windows\System32\cx.	ok	F:\Users\billy\Projects\cx.
+3a3a4363c3a9	ok	::Ccé	ok	::Ccé
+63c3a963	ok	C:\Windows\System32\céc	ok	F:\Users\billy\Projects\céc
+5cc3a9432e2e3a	ok	C:\éC..:	ok	F:\éC..:
+20462f	ok	C:\Windows\System32\ F\	ok	F:\Users\billy\Projects\ F\
+c3a9433a2e3a63465c20	ok	C:\Windows\System32\éC:.:cF	ok	F:\Users\billy\Projects\éC:.:cF
+2f5c	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+78202e614661	ok	C:\Windows\System32\x .aFa	ok	F:\Users\billy\Projects\x .aFa
+78610909c3a92f2e2e2e2e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4620	ok	C:\Windows\System32\F	ok	F:\Users\billy\Projects\F
+c3a95c2e2e6209465c2009	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+62093a623a	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+61433a5c2f43c3a92f	ok	C:\Windows\System32\aC:\Cé\	ok	F:\Users\billy\Projects\aC:\Cé\
+2e3a2043	ok	.: C	ok	.: C
+5c2e2ec3a9	ok	C:\..é	ok	F:\..é
+6362c3a95c	ok	C:\Windows\System32\cbé\	ok	F:\Users\billy\Projects\cbé\
+092e43782fc3a946	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2fc3a9613a625c623a2f	ok	C:\éa:b\b:\	ok	F:\éa:b\b:\
+46782f43c3a95c2f62	ok	C:\Windows\System32\Fx\Cé\b	ok	F:\Users\billy\Projects\Fx\Cé\b
+5c5c782f2f46	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+2e2e433a	ok	C:\Windows\System32\..C:	ok	F:\Users\billy\Projects\..C:
+5c5c6178c3a92009622e2e61	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+633a783a622f62464343	ok	C:\Windows\System32\x:b\bFCC	ok	C:\x:b\bFCC
+3a61092e2e2e632f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+435c43612e	ok	C:\Windows\System32\C\Ca.	ok	F:\Users\billy\Projects\C\Ca.
+202f202f2e2e2020636163	ok	C:\Windows\System32\..  cac	ok	F:\Users\billy\Projects\..  cac
+61206343462e2e09	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6278466346c3a9095c2f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+62615c09c3a920	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e2e20462e2e5c	ok	C:\Windows\System32\... F..\	ok	F:\Users\billy\Projects\... F..\
+c3a94309782f5c3a2f5cc3a9	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+43202e2e205c5cc3a92e63	ok	C:\Windows\System32\C ..\é.c	ok	F:\Users\billy\Projects\C ..\é.c
+626246	ok	C:\Windows\System32\bbF	ok	F:\Users\billy\Projects\bbF
+c3a92f	ok	C:\Windows\System32\é\	ok	F:\Users\billy\Projects\é\
+4643	ok	C:\Windows\System32\FC	ok	F:\Users\billy\Projects\FC
+092e2e43612e78463a46	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+615c2f3a63c3a909c3a9	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2fc3a92e2e2f5cc3a92e2e	ok	C:\é..\é..	ok	F:\é..\é..
+2e5c46092046	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+462e783a2e2ec3a92e78c3a946	ok	C:\Windows\System32\F.x:..é.xéF	ok	F:\Users\billy\Projects\F.x:..é.xéF
+092e2e203a	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e2f202e2e2e614378c3a909	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2fc3a92f	ok	C:\é\	ok	F:\é\
+2f2e2e2e2e3a3a2e2e2e	ok	C:\....::...	ok	F:\....::...
+2f5cc3a963	exc	ArgumentException: UNC paths should be of the form \\server\share.	exc	ArgumentException: UNC paths should be of the form \\server\share.
+3a5c	ok	C:\Windows\System32\:\	ok	F:\Users\billy\Projects\:\
+46432e5c622f430946	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+203ac3a9783a	ok	C::éx:	ok	F::éx:
+632f0946	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+432e46	ok	C:\Windows\System32\C.F	ok	F:\Users\billy\Projects\C.F
+632f	ok	C:\Windows\System32\c\	ok	F:\Users\billy\Projects\c\
+3a622e5c612f7878	ok	C:\Windows\System32\:b.\a\xx	ok	F:\Users\billy\Projects\:b.\a\xx
+5c20624320	ok	C:\ bC	ok	F:\ bC
+632f63612e62	ok	C:\Windows\System32\c\ca.b	ok	F:\Users\billy\Projects\c\ca.b
+2e2e62612e5c	ok	C:\Windows\System32\..ba.\	ok	F:\Users\billy\Projects\..ba.\
+2e0920463a43613a	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+09633a636120	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+782e2e46782f2f202f46	ok	C:\Windows\System32\x..Fx\F	ok	F:\Users\billy\Projects\x..Fx\F
+09437846	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+622e2e622f5c6109632f	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+6343	ok	C:\Windows\System32\cC	ok	F:\Users\billy\Projects\cC
+2f092009c3a9433a2f09	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+462e2e09090962433a46	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2f786161782e20	ok	C:\xaax.	ok	F:\xaax.
+3ac3a95c632e2e2f	ok	C:\Windows\System32\:é\c..\	ok	F:\Users\billy\Projects\:é\c..\
+2e2e2e2e435c2f2f	ok	C:\Windows\System32\....C\	ok	F:\Users\billy\Projects\....C\
+2e2e5c	ok	C:\Windows\	ok	F:\Users\billy\
+622f5c20c3a92e2061c3a92e	ok	C:\Windows\System32\b\ é. aé.	ok	F:\Users\billy\Projects\b\ é. aé.
+2f2e2e202e5c622e2e5c	ok	C:\.. .\b..\	ok	F:\.. .\b..\
+2e3a61613a63	ok	.:aa:c	ok	.:aa:c
+5c63	ok	C:\c	ok	F:\c
+612e5c62	ok	C:\Windows\System32\a.\b	ok	F:\Users\billy\Projects\a.\b
+62785c3a4320433a09c3a9	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+462f62	ok	C:\Windows\System32\F\b	ok	F:\Users\billy\Projects\F\b
+5c2e095c63612e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e612078785c43	ok	C:\Windows\System32\..a xx\C	ok	F:\Users\billy\Projects\..a xx\C
+6378626246c3a9c3a9	ok	C:\Windows\System32\cxbbFéé	ok	F:\Users\billy\Projects\cxbbFéé
+3a2e2e433a463a6320	ok	C:\Windows\System32\:..C:F:c	ok	F:\Users\billy\Projects\:..C:F:c
+78637861636163	ok	C:\Windows\System32\xcxacac	ok	F:\Users\billy\Projects\xcxacac
+432f786178615c2e	ok	C:\Windows\System32\C\xaxa	ok	F:\Users\billy\Projects\C\xaxa
+435c2fc3a9785c20c3a943	ok	C:\Windows\System32\C\éx\ éC	ok	F:\Users\billy\Projects\C\éx\ éC
+3a61462e094362202e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+466209	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+622e4661c3a9	ok	C:\Windows\System32\b.Faé	ok	F:\Users\billy\Projects\b.Faé
+2f63095c4320	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+61463a20432f2e2e2062	ok	C:\Windows\System32\aF: C\.. b	ok	F:\Users\billy\Projects\aF: C\.. b
+2062094346610946	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+62092e095c2e625c61	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+4620462f623a	ok	C:\Windows\System32\F F\b:	ok	F:\Users\billy\Projects\F F\b:
+783a61	ok	X:\a	ok	X:\a
+434362622e2e20632e2e5cc3a9	ok	C:\Windows\System32\CCbb.. c..\é	ok	F:\Users\billy\Projects\CCbb.. c..\é
+632e2e3a3a	ok	C:\Windows\System32\c..::	ok	F:\Users\billy\Projects\c..::
+c3a95c462e2e2f2e2e	ok	C:\Windows\System32\é	ok	F:\Users\billy\Projects\é
+20c3a9202e092e2ec3a97843	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+622f5c7878	ok	C:\Windows\System32\b\xx	ok	F:\Users\billy\Projects\b\xx
+2f206162c3a920	ok	C:\ abé	ok	F:\ abé
+462f093a202e	exc	ArgumentException: Illegal characters in path.	exc	ArgumentException: Illegal characters in path.
+2e2e2f	ok	C:\Windows\	ok	F:\Users\billy\

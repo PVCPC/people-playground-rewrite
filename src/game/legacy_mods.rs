@@ -109,42 +109,271 @@ pub fn path_combine(a: Option<&str>, b: Option<&str>) -> Result<String, &'static
     Ok(format!("{a}{sep}{b}"))
 }
 
-/// Path.GetFullPath(p) against the working directory `base`: blank or with an invalid char throws ArgumentException; then
-/// Windows' normalisation: `.` and `..` segments resolved, a segment's single trailing `.` dropped, and (when the path does
-/// not end in a separator) its trailing `.` and ` ` trimmed. Separators come out as `/`.
+/// Path.GetFullPath(p) against the working directory `base` (Err: the exception's class); `full_path` has its message.
 pub fn get_full_path(base: &Path, p: &str) -> Result<String, &'static str> {
-    if p.trim().is_empty() || bad_path_char(p) {
-        return Err("ArgumentException");
+    full_path(base, p).map_err(|e| e.class)
+}
+
+/// Path.GetFullPath(p) as Mono's Path.InsecureGetFullPath makes it on Windows, against the working directory `base`:
+/// WindowsDriveAdjustment (a drive-relative `X:rest` through GetFullPathNameW), the UNC check, the working folder (or its
+/// drive) put in front, then CanonicalizePath, and the trailing separator kept. Separators come out as `/` (Mono's `\`;
+/// the few places Mono keeps a `/` look the same). A `base` with no drive (not Windows) stands as drive C: for the
+/// working folder, and a result on C: loses the "C:" again. Checked against Mono's GetFullPath in the game's Mono:
+/// full_path_cases.tsv (811 paths, two working folders).
+pub fn full_path(base: &Path, p: &str) -> Result<String, Exc> {
+    let mut cwd = base.to_string_lossy().replace('/', "\\");
+    while cwd.len() > 3 && cwd.ends_with('\\') {
+        cwd.pop();
     }
-    if p.char_indices().any(|(i, c)| c == ':' && i != 1) {
-        return Err("NotSupportedException");
+    let no_drive = cwd.as_bytes().get(1) != Some(&b':');
+    if no_drive {
+        cwd = format!("C:{cwd}");
     }
-    let full = if is_rooted(p) { p.to_string() } else { format!("{}/{p}", base.to_string_lossy()) };
-    let (root, rest) = if full.len() >= 2 && full.as_bytes()[1] == b':' { (format!("{}/", &full[..2]), &full[2..]) } else { ("/".to_string(), full.as_str()) };
-    let trailing_sep = rest.ends_with(['/', '\\']);
-    let mut segs: Vec<String> = Vec::new();
-    for s in rest.split(['/', '\\']) {
-        match s {
-            "" | "." => {}
-            ".." => {
-                segs.pop();
+    let out = mono_full_path(p, &cwd.chars().collect::<Vec<_>>())?;
+    let out = if no_drive { out.strip_prefix("C:").map(str::to_string).unwrap_or(out) } else { out };
+    Ok(out.replace('\\', "/"))
+}
+
+fn mono_sep(c: char) -> bool {
+    c == '\\' || c == '/'
+}
+fn arg_exc(m: &str) -> Exc {
+    Exc::new("ArgumentException", m)
+}
+/// Path.IsPathRooted: an invalid char throws; a separator first, or ':' second.
+fn mono_rooted(p: &[char]) -> Result<bool, Exc> {
+    if p.is_empty() {
+        return Ok(false);
+    }
+    if p.iter().any(|&c| matches!(c, '"' | '<' | '>' | '|' | '\0'..='\u{1f}')) {
+        return Err(arg_exc("Illegal characters in path."));
+    }
+    Ok(mono_sep(p[0]) || (p.len() > 1 && p[1] == ':'))
+}
+/// Path.GetPathRoot
+fn mono_root(p: &[char], cwd: &[char]) -> Result<Vec<char>, Exc> {
+    if p.iter().all(|c| c.is_whitespace()) {
+        return Err(arg_exc("The specified path is not of a legal form."));
+    }
+    if !mono_rooted(p)? {
+        return Ok(vec![]);
+    }
+    if p.len() == 1 && mono_sep(p[0]) {
+        return Ok(vec!['\\']);
+    }
+    if p.len() < 2 {
+        return Ok(vec![]);
+    }
+    if mono_sep(p[0]) && mono_sep(p[1]) {
+        return Ok(['\\', '\\'].into_iter().chain(server_share(p)).collect());
+    }
+    if mono_sep(p[0]) {
+        return Ok(vec!['\\']);
+    }
+    if p[1] != ':' {
+        return Ok(cwd[..2].to_vec());
+    }
+    Ok(p[..if p.len() >= 3 && mono_sep(p[2]) { 3 } else { 2 }].to_vec())
+}
+/// Path.GetServerAndShare: after the leading two chars, up to the second separator, `/` as `\`.
+fn server_share(p: &[char]) -> Vec<char> {
+    let mut n = 2;
+    while n < p.len() && !mono_sep(p[n]) {
+        n += 1;
+    }
+    if n < p.len() {
+        n += 1;
+        while n < p.len() && !mono_sep(p[n]) {
+            n += 1;
+        }
+    }
+    p[2..n].iter().map(|&c| if c == '/' { '\\' } else { c }).collect()
+}
+/// Path.SameRoot
+fn same_root(root: &[char], p: &[char]) -> bool {
+    if root.len() < 2 || p.len() < 2 {
+        return false;
+    }
+    if mono_sep(root[0]) && mono_sep(root[1]) {
+        let low = |v: Vec<char>| v.into_iter().collect::<String>().to_lowercase();
+        return mono_sep(p[0]) && mono_sep(p[1]) && low(server_share(root)) == low(server_share(p));
+    }
+    if root[0] != p[0] || p[1] != ':' {
+        return false;
+    }
+    if root.len() > 2 && p.len() > 2 {
+        return mono_sep(root[2]) && mono_sep(p[2]);
+    }
+    true
+}
+/// A drive letter as RtlUpcaseUnicodeChar makes it (one char; one that would grow stays).
+fn upper1(c: char) -> char {
+    let mut u = c.to_uppercase();
+    match (u.next(), u.next()) {
+        (Some(x), None) => x,
+        _ => c,
+    }
+}
+/// GetFullPathNameW on `X:rest` (rest not starting with a separator): the drive's current folder (the working folder
+/// when it is that drive, else its root: the game's process has no other drive's) joined with rest; `.` and `..`
+/// resolved, a middle part's single trailing `.` dropped, the last part's trailing dots and spaces, a part left empty
+/// gone, and a trailing separator kept when rest ends in one (or in a part trimmed away).
+fn win32_full_path(p: &[char], cwd: &[char]) -> Vec<char> {
+    let d = upper1(p[0]);
+    let start: Vec<char> = if d == upper1(cwd[0]) { cwd.to_vec() } else { vec![d, ':', '\\'] };
+    let rest: String = p[2..].iter().map(|&c| if c == '/' { '\\' } else { c }).collect();
+    let head: String = start.iter().skip(3).collect();
+    let mut segs: Vec<&str> = if head.is_empty() { vec![] } else { head.split('\\').collect() };
+    if !rest.is_empty() {
+        segs.extend(rest.split('\\'));
+    }
+    let (mut parts, mut trailing) = (Vec::<String>::new(), false);
+    for (k, s) in segs.iter().enumerate() {
+        let last = k + 1 == segs.len();
+        let s = match *s {
+            "" => {
+                trailing = last;
+                continue;
             }
-            _ => segs.push(match s.strip_suffix('.') {
-                Some(t) if !t.ends_with('.') => t.to_string(),
-                _ => s.to_string(),
-            }),
+            "." => continue,
+            ".." => {
+                parts.pop();
+                continue;
+            }
+            s if last => {
+                let t = s.trim_end_matches(['.', ' ']);
+                trailing = t.is_empty();
+                t
+            }
+            s => match s.strip_suffix('.') {
+                Some(t) if !t.ends_with('.') => t,
+                _ => s,
+            },
+        };
+        if !s.is_empty() {
+            parts.push(s.to_string());
         }
     }
-    let mut out = root + &segs.join("/");
-    if trailing_sep {
-        if !out.ends_with('/') {
-            out.push('/');
-        }
-    } else {
-        let keep = out.trim_end_matches(['.', ' ']).len().max(root_len(&out));
-        out.truncate(keep);
+    let mut out: String = start[..3].iter().collect::<String>() + &parts.join("\\");
+    if trailing && !parts.is_empty() {
+        out.push('\\');
     }
+    out.chars().collect()
+}
+/// Path.WindowsDriveAdjustment: `\` or `/` alone is the working folder's root; `X:` (X a letter) the working folder when
+/// X is its drive (case-sensitive), else GetFullPathNameW; `X:rest` without a separator after the ':' likewise
+/// Path.Combine(working folder, rest) or GetFullPathNameW.
+fn drive_adjust(p: Vec<char>, cwd: &[char]) -> Result<Vec<char>, Exc> {
+    if p.len() < 2 {
+        if p.len() == 1 && mono_sep(p[0]) {
+            return mono_root(cwd, cwd);
+        }
+        return Ok(p);
+    }
+    if p[1] != ':' || !p[0].is_alphabetic() {
+        return Ok(p);
+    }
+    if p.len() == 2 {
+        return Ok(if cwd[0] == p[0] { cwd.to_vec() } else { win32_full_path(&p, cwd) });
+    }
+    if mono_sep(p[2]) {
+        return Ok(p);
+    }
+    if cwd[0] != p[0] {
+        return Ok(win32_full_path(&p, cwd));
+    }
+    // Path.Combine(cwd, rest): a rooted rest wins.
+    let rest = &p[2..];
+    if mono_rooted(rest)? {
+        return Ok(rest.to_vec());
+    }
+    let mut out = cwd.to_vec();
+    if !matches!(out.last(), Some('\\' | '/' | ':')) {
+        out.push('\\');
+    }
+    out.extend_from_slice(rest);
     Ok(out)
+}
+/// Path.CanonicalizePath (Windows): trimmed; split at both separators; each part's trailing white space trimmed, `.` and
+/// empty parts (but the first) dropped, `..` going back but never below a UNC path's server and share; joined with `\`
+/// and the root put back in front (or the working folder's drive).
+fn canonicalize(path: &[char], cwd: &[char]) -> Result<Vec<char>, Exc> {
+    let s: String = path.iter().collect();
+    let path: Vec<char> = s.trim().chars().collect();
+    if path.is_empty() {
+        return Ok(path);
+    }
+    let root = mono_root(&path, cwd)?;
+    let text: String = path.iter().collect();
+    let mut dirs: Vec<String> = text.split(['\\', '/']).map(|d| d.trim_end().to_string()).collect();
+    let unc = root.len() > 2 && mono_sep(root[0]) && mono_sep(root[1]);
+    let limit = if unc { 3 } else { 0 };
+    let mut t = 0;
+    for i in 0..dirs.len() {
+        if dirs[i] == "." || (i != 0 && dirs[i].is_empty()) {
+            continue;
+        } else if dirs[i] == ".." {
+            if t > limit {
+                t -= 1;
+            }
+        } else {
+            dirs[t] = dirs[i].clone();
+            t += 1;
+        }
+    }
+    if t == 0 || (t == 1 && dirs[0].is_empty()) {
+        return Ok(root);
+    }
+    let mut ret: Vec<char> = dirs[..t].join("\\").chars().collect();
+    if unc {
+        ret.insert(0, '\\');
+    }
+    if !same_root(&root, &ret) {
+        ret = root.iter().chain(ret.iter()).copied().collect();
+    }
+    if unc {
+        return Ok(ret);
+    }
+    if !mono_sep(path[0]) && same_root(&root, &path) {
+        if ret.len() <= 2 && ret.last() != Some(&'\\') {
+            ret.push('\\');
+        }
+        return Ok(ret);
+    }
+    if ret.is_empty() || mono_sep(ret[0]) {
+        ret.push('\\');
+    }
+    Ok(cwd[..2].iter().chain(ret.iter()).copied().collect())
+}
+/// Path.InsecureGetFullPath (Windows), `cwd` the working folder with its drive.
+fn mono_full_path(p: &str, cwd: &[char]) -> Result<String, Exc> {
+    if p.trim().is_empty() {
+        return Err(arg_exc(EMPTY_PATH));
+    }
+    let mut path = drive_adjust(p.chars().collect(), cwd)?;
+    let end = *path.last().unwrap();
+    if path.len() >= 2 && mono_sep(path[0]) && mono_sep(path[1]) {
+        if path.len() == 2 || !path[2..].contains(&path[0]) {
+            return Err(arg_exc("UNC paths should be of the form \\\\server\\share."));
+        }
+        if path[0] != '\\' {
+            path = path.into_iter().map(|c| if c == '/' { '\\' } else { c }).collect();
+        }
+    } else if !mono_rooted(&path)? {
+        let mut full = cwd.to_vec();
+        if full.last() != Some(&'\\') {
+            full.push('\\');
+        }
+        full.extend(path);
+        path = full;
+    } else if path.len() >= 2 && mono_sep(path[0]) && !mono_sep(path[1]) {
+        path = cwd[..2].iter().chain(path.iter()).copied().collect();
+    }
+    let mut path = canonicalize(&path, cwd)?;
+    if mono_sep(end) && path.last() != Some(&'\\') {
+        path.push('\\');
+    }
+    Ok(path.into_iter().collect())
 }
 fn root_len(p: &str) -> usize {
     if p.len() >= 3 && p.as_bytes()[1] == b':' { 3 } else { 1 }
@@ -506,12 +735,12 @@ pub(crate) fn path_exc(e: &'static str) -> Exc {
 
 /// ModLoader.GetOutputAssemblyPath: GetFullPath("CompiledMods/" + AlphaNumeric(AssemblyName, or GetUniqueName when empty) + ".dll").
 pub fn GetOutputAssemblyPath(base: &Path, m: &ModMetaData) -> Result<String, Exc> {
-    get_full_path(base, &format!("CompiledMods/{}.dll", AlphaNumeric(&stem(m)?))).map_err(path_exc)
+    full_path(base, &format!("CompiledMods/{}.dll", AlphaNumeric(&stem(m)?)))
 }
 
 /// ModLoader.GetModHashPath: GetFullPath("CompiledMods/." + the same name + ".hash").
 pub fn GetModHashPath(base: &Path, m: &ModMetaData) -> Result<String, Exc> {
-    get_full_path(base, &format!("CompiledMods/.{}.hash", AlphaNumeric(&stem(m)?))).map_err(path_exc)
+    full_path(base, &format!("CompiledMods/.{}.hash", AlphaNumeric(&stem(m)?)))
 }
 
 /// ModLoader.GetModSourcePaths: each script's GetFullPath(Path.Combine(MetaLocation, script)); a null Scripts throws
@@ -525,13 +754,7 @@ pub fn GetModSourcePaths(base: &Path, m: &ModMetaData) -> Result<Vec<String>, Ex
             _ => path_exc(e),
         })
     };
-    let full = |p: String| {
-        get_full_path(base, &p).map_err(|e| match e {
-            "ArgumentException" => Exc::new(e, EMPTY_PATH),
-            _ => path_exc(e),
-        })
-    };
-    scripts.iter().map(|s| full(combine(s.as_deref())?)).collect()
+    scripts.iter().map(|s| full_path(base, &combine(s.as_deref())?)).collect()
 }
 
 /// Path.GetFullPath's ArgumentException for a blank path.
@@ -735,7 +958,7 @@ fn source_paths_trace(e: Exc) -> Exc {
         ("NullReferenceException", _) => (vec![], 0x6f),
         ("ArgumentNullException", m) => (vec![frame("mscorlib", "System.IO.Path.Combine (System.String path1, System.String path2)", if m.ends_with("path1") { 0x03 } else { 0x11 })], 0x33),
         ("ArgumentException", EMPTY_PATH) => (vec![frame("mscorlib", "System.IO.Path.InsecureGetFullPath (System.String path)", 0x25), frame("mscorlib", "System.IO.Path.GetFullPath (System.String path)", 0)], 0x45),
-        ("ArgumentException", _) => (vec![frame("mscorlib", "System.IO.Path.Combine (System.String path1, System.String path2)", 0x57)], 0x33),
+        ("ArgumentException", "Illegal characters in path.") => (vec![frame("mscorlib", "System.IO.Path.Combine (System.String path1, System.String path2)", 0x57)], 0x33),
         _ => return e,
     };
     let mut t = thrower;
@@ -771,13 +994,13 @@ fn directory_info_full_name(base: &Path, p: Option<&str>) -> Result<String, Exc>
     if p.chars().position(|c| c == ':').is_some_and(|i| i != 1) {
         return check("ArgumentException", "path", 0x52);
     }
-    get_full_path(base, p).map_err(|e| match e {
-        "ArgumentException" => Exc::new(e, EMPTY_PATH).at(ctor(vec![
+    full_path(base, p).map_err(|e| match e.message.as_str() {
+        EMPTY_PATH => e.at(ctor(vec![
             frame("mscorlib", "System.IO.Path.InsecureGetFullPath (System.String path)", 0x25),
             frame("mscorlib", "System.IO.Path.GetFullPath (System.String path)", 0),
             frame("mscorlib", "System.IO.DirectoryInfo..ctor (System.String path, System.Boolean simpleOriginalPath)", 0x0d),
         ])),
-        _ => path_exc(e),
+        _ => e,
     })
 }
 
@@ -1423,7 +1646,7 @@ impl ModCompilerSockets {
     /// GetFullPath("ppgModCompiler") with this process's id.
     pub fn StartServer(&mut self, base: &Path) -> Result<(), Exc> {
         kill_all_server_processes()?;
-        let dir = get_full_path(base, "ppgModCompiler").map_err(path_exc)?;
+        let dir = full_path(base, "ppgModCompiler")?;
         let p = start_process(base, "PPGModCompiler.exe", &dir, &std::process::id().to_string(), true)?;
         self.serverProcess = Some(p);
         Ok(())
@@ -1496,11 +1719,11 @@ impl ModCompilerPipes {
         let name = self.GetPipeName();
         self.shouldStop = false;
         kill_all_server_processes()?;
-        let exe = get_full_path(base, "ppgModCompiler/PPGModCompiler.exe").map_err(path_exc)?;
+        let exe = full_path(base, "ppgModCompiler/PPGModCompiler.exe")?;
         // NamedPipeServerStream: no OS pipe is made, since nothing gets past the connection wait below (mod-only), so no
         // compiler could ever use it.
         self.pipeServer = true;
-        let dir = get_full_path(base, "ppgModCompiler").map_err(path_exc)?;
+        let dir = full_path(base, "ppgModCompiler")?;
         self.pipeClient = None;
         self.pipeClient = Some(start_process(base, &exe, &dir, &name, false)?);
         unimplemented!("mod-only: waiting for PPGModCompiler to connect to the pipe")
@@ -2060,6 +2283,30 @@ mod tests {
         cache.Save(&root).unwrap();
         assert_eq!(std::fs::read(root.join(cache.path())).unwrap(), encode_uint_hashset(&cache.trusted()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Path.GetFullPath as the game's Mono gives it (full_path_cases.tsv: 811 paths, two working folders): drive-relative
+    /// paths, ':' anywhere, UNC, `..`, blanks, trailing dots and spaces, random mixes.
+    #[test]
+    fn full_path_matches_mono() {
+        for line in include_str!("full_path_cases.tsv").lines().filter(|l| !l.starts_with('#')) {
+            let c: Vec<&str> = line.split('\t').collect();
+            let p = String::from_utf8((0..c[0].len()).step_by(2).map(|i| u8::from_str_radix(&c[0][i..i + 2], 16).unwrap()).collect()).unwrap();
+            for (base, kind, want) in [("C:\\Windows\\System32", c[1], c[2]), ("F:\\Users\\billy\\Projects", c[3], c[4])] {
+                let got = get_full_path(Path::new(base), &p);
+                match kind {
+                    "ok" => assert_eq!(got, Ok(want.replace('\\', "/")), "{p:?} in {base}"),
+                    _ => assert_eq!(got, Err(want.split(':').next().unwrap()), "{p:?} in {base}"),
+                }
+                if kind == "exc" {
+                    let e = full_path(Path::new(base), &p).unwrap_err();
+                    assert_eq!(format!("{}: {}", e.class, e.message), want, "{p:?} in {base}");
+                }
+            }
+        }
+        // new DirectoryInfo("C:x:y") (CheckPath passes: the first ':' is second): Mono's GetFullPath of it.
+        assert_eq!(directory_info_full_name(Path::new("C:\\Windows\\System32"), Some("C:x:y")), Ok("x:y".into()));
+        assert_eq!(directory_info_full_name(Path::new("F:\\Users\\billy\\Projects"), Some("C:x:y")), Ok("C:/x:y".into()));
     }
 
     /// The text a failed compile gives the mod (TryCompileMod's catch: Exception.ToString with Mono's stack trace), against the

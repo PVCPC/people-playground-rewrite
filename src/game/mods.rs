@@ -1006,7 +1006,7 @@ pub mod mod_api {
         OnItemRemoved.clear();
     }
 
-    use super::super::legacy_mods::{get_full_path, io_exc, path_combine, path_exc, Exc, ModRef, MODIFICATION_MANAGER};
+    use super::super::legacy_mods::{full_path, io_exc, path_combine, path_exc, Exc, ModRef, MODIFICATION_MANAGER};
     use std::collections::{HashMap, HashSet};
     use std::path::Path;
     use std::sync::Mutex;
@@ -1160,8 +1160,8 @@ pub mod mod_api {
         if !path.ends_with(".json") {
             return Err(Exc::new("ArgumentException", crate::il!(str "ModAPI::DeleteJSON" 1)));
         }
-        let mods = get_full_path(base, "Mods").map_err(path_exc)?;
-        let full = get_full_path(base, &path_combine(Some(&mods), Some(path)).map_err(path_exc)?).map_err(path_exc)?;
+        let mods = full_path(base, "Mods")?;
+        let full = full_path(base, &path_combine(Some(&mods), Some(path)).map_err(path_exc)?)?;
         if !full.starts_with(&mods) {
             return Err(Exc::new("ArgumentException", format!("given path '{full}' is not inside the game mod directory")));
         }
