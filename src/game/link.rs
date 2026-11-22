@@ -5499,6 +5499,14 @@ impl Game {
         for o in 0..n {
             let Some((_, _, v)) = script(prefab, o, "LocalFirePropagationMap") else { continue };
             let p = *l.arenas.physical.get(&o).unwrap_or_else(|| unimplemented!("mod-only: LocalFirePropagationMap without a PhysicalBehaviour (NullReferenceException)"));
+            // A loaded clone's map came from its record (dump.rs, before the clone is linked): the clone's behaviours run that one.
+            if let Some(k) = self.fire_maps.iter().position(|x| x.physical == p) {
+                self.physicals[p].fire_map = Some(k);
+                fire_maps.insert(o, k);
+                // dump.rs queued it with the load's maps; the clone's link adds it with the clone's behaviours.
+                self.behaviours.remove(super::Behaviour::FireMap(k));
+                continue;
+            }
             let mut m = super::fire::FireMap::new(p);
             m.GridStep = float(v, "GridStep")?;
             m.FireIntensityDampening = float(v, "FireIntensityDampening")?;

@@ -33,6 +33,8 @@ pub struct FireMap {
     pub RandomisedIndices: Vec<i32>,
     /// PhysicalBehaviour.fireEmissionInterval (MaxCycles 2); only the fire map's emission uses it.
     pub fireEmissionInterval: FixedIntervalDistributor,
+    /// Loaded from a recording whose Start had run: a loaded clone's queued Start leaves the recorded state.
+    pub started: bool,
 }
 
 impl Default for FireMap {
@@ -50,6 +52,7 @@ impl Default for FireMap {
             neighbours_null: Default::default(),
             RandomisedIndices: Default::default(),
             fireEmissionInterval: Default::default(),
+            started: false,
         }
     }
 }
@@ -120,6 +123,7 @@ impl FireMap {
             neighbours_null: false,
             RandomisedIndices: Vec::new(),
             fireEmissionInterval: FixedIntervalDistributor { MaxCycles: 2, ..FixedIntervalDistributor::with_rate(60.0) },
+            started: false,
         }
     }
 }
@@ -194,6 +198,9 @@ impl Game {
 
     /// LocalFirePropagationMap.Start
     pub fn fire_map_start(&mut self, f: usize) {
+        if std::mem::take(&mut self.fire_maps[f].started) {
+            return;
+        }
         let n = self.fire_maps[f].Points.len();
         let mut indices = Vec::with_capacity(n);
         for i in 0..n {

@@ -1001,6 +1001,7 @@ impl Game {
             };
             let pr = s.of("PhysicalBehaviour").find(|x| x.id == phys).unwrap();
             m.fireEmissionInterval = distributor(pr.req("fireEmissionInterval")?);
+            m.started = true;
             g.physicals[p].fire_map = Some(g.fire_maps.len());
             g.fire_maps.push(m);
         }
