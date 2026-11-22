@@ -20,10 +20,11 @@ use super::clr::{AttrArg, Assembly, FIELD, METHOD_DEF, TYPE_DEF};
 
 /// SHA-256 of People Playground 1.28.41's Assembly-CSharp.dll.
 const DLL_SHA256: &str = "36b6db3364d94e24899943994f739859663760d75a520647a9c09c4d73c69352";
-/// SHA-256 of the newer build's: 1.28.54 (GameInfo.Version; Steam, 2026-11-22). "1.28.45" is the rewrite's name for the
+/// SHA-256 of the newer build's: 1.28.54's hotfix (GameInfo.Version 1.28.54; Steam build 26851557, 2026-11-22 14:03; the first
+/// 1.28.54, dfb48880..., had 12:03-14:03 and is not supported). "1.28.45" is the rewrite's name for the
 /// newer build: it was 1.28.51 (6825452f..., Steam 2026-11-17), then 1.28.52 (d9b0e6fb..., 2026-11-20), then 1.28.53
 /// (a5f500c4..., 2026-11-21), until 1.28.54 replaced it; the older ones are no longer supported, as Steam updates every install.
-const DLL_SHA256_45: &str = "dfb48880d92d07fa05be0ed1d0a7e4f2d714e76130de6665d1f931d24b436ac7";
+const DLL_SHA256_45: &str = "ac2291cc310aac0cef9a3e7028abe45560f7ca9670104d418de6f10ef7f1e118";
 
 /// The installed game's version: the rewrite follows each version's code where 1.28.45 (now 1.28.54) changed it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

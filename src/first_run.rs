@@ -723,6 +723,6 @@ mod tests {
     fn hash_lists_cover_the_same_files() {
         let files = |l: &str| l.lines().map(|e| { let (h, f) = e.split_once("  ").unwrap(); assert_eq!(h.len(), 64); f.to_string() }).collect::<Vec<_>>();
         assert_eq!(files(GAME_HASHES), files(GAME_HASHES_45));
-        assert!(GAME_HASHES_45.contains("dfb48880d92d07fa05be0ed1d0a7e4f2d714e76130de6665d1f931d24b436ac7  People Playground_Data/Managed/Assembly-CSharp.dll"));
+        assert!(GAME_HASHES_45.contains("ac2291cc310aac0cef9a3e7028abe45560f7ca9670104d418de6f10ef7f1e118  People Playground_Data/Managed/Assembly-CSharp.dll"));
     }
 }
