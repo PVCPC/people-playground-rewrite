@@ -1983,6 +1983,34 @@ mod tests {
         assert!(!g.limbs[l].IsZombie);
     }
 
+    /// A pasted person with a DulcamarusBehaviour: Reconstruct's AddComponent and its Awake's "siphoning tendrils" (GameObject,
+    /// Transform, Optout) take four ids in a row, so an allowed component listed after it gets the id after those four. A
+    /// game-made state lists the root's SerialisableIdentity first (SerialiseInstructions.Start adds it at spawn); here it is moved
+    /// after the DulcamarusBehaviour (an order a mod-written state can have), so its id shows where the tendrils' ids went.
+    #[test]
+    fn pasted_dulcamarus_takes_its_ids_before_the_next_add() {
+        let Some(mut g) = game45() else { return };
+        let a = spawn(&mut g, "Human", [0.0, 3.0, 0.0]);
+        frames(&mut g, 30);
+        let la = g.limbs.iter().position(|l| l.PhysicalBehaviour >= a && l.HasBrain).unwrap();
+        g.add_liquid(Owner::Circulation(la), liquid_of_class("Dulcamarus"), 0.5);
+        frames(&mut g, 2);
+        assert_eq!(g.v45.dulcamarus.len(), 1);
+        let mut states = g.object_states_of(&[a], [0.0; 3]);
+        let root = &mut states[0].RootComponentData;
+        let k = root.iter().position(|m| m.Type == "SerialisableIdentity").unwrap();
+        assert!(k < root.iter().position(|m| m.Type == "DulcamarusBehaviour").unwrap());
+        let identity = root.remove(k);
+        root.push(identity);
+        let first = g.unsynced.len();
+        g.paste_states(&states, [3.0, 3.0, 0.0], false, "Paste");
+        assert_eq!(g.v45.dulcamarus.len(), 2);
+        let r = g.v45.dulcamarus[1].id;
+        let tid = g.unsynced[first].objects[0].components[0];
+        // identity_added_at holds the next id after the identity's.
+        assert_eq!(g.identity_added_at[&(tid, false)] + 2, r - 8);
+    }
+
     #[test]
     fn dulcamarus_heals_by_siphoning_a_neighbour() {
         let Some(mut g) = game45() else { return };

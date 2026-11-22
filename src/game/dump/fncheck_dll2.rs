@@ -23,6 +23,49 @@ fn dll2_multi(c: &Case) -> Result<super::super::resize_handles::MultiTarget, Str
         position: dll_floats(c, "<Position>k__BackingField")?,
     })
 }
+/// Stabbed (or, `unstabbed`, Messages.IUnstabbed.Unstabbed) on the recorded PhysicalBehaviour: its Properties' StabSound (each clip named by its `@name#id`), the audioSource
+/// (an AudioSource on an active object, disabled before), isDisintegrated and the Random state. The effects as DllCheck lists
+/// them: `!enabled(@source)=1` for the enable, `!PlayOneShot(@source,@clip,volume)` for the one-shot.
+fn dll2_stab_sound(c: &Case, unstabbed: bool) -> Result<String, String> {
+    c.with(2)?;
+    use super::super::audio::{AudioSource, Clip};
+    let mut g = dll_game();
+    // DllCheck records no `@rng` for a row that draws nothing (an empty StabSound).
+    if let Ok(r) = dll_random(c) { g.random = r }
+    let mut p = super::super::Physical::default();
+    p.isDisintegrated = dll_i32(c, "isDisintegrated")? == 1;
+    let source = dll_self_field(c, "audioSource")?;
+    let sid = if source == "null" { None } else { Some(reference(&source).ok_or("audioSource")?) };
+    p.audioSource = sid.is_some();
+    p.ids.audioSource = sid.unwrap_or(0);
+    if let Some(id) = sid {
+        g.audio.add(id, AudioSource { active: true, enabled: false, ..Default::default() });
+    }
+    let props = dll2_link(c, "Properties")?;
+    let stab = dll_get(&dll_rec(&props)?, "StabSound")?.to_string();
+    let mut pp = super::super::physical::PhysicalProperties::default();
+    if stab != "null" {
+        let items = dll_items(&stab)?;
+        pp.StabSound = Some(items.len());
+        pp.clips.StabSound = items.iter().map(|t| (*t != "null").then(|| std::sync::Arc::new(Clip {
+            asset: Default::default(),
+            clip: crate::assets::classes::AudioClip { name: t.to_string(), load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
+            pcm: None,
+            stream: None,
+        }))).collect();
+    }
+    g.properties.push(pp);
+    p.Properties = 0;
+    g.physicals.push(p);
+    if unstabbed { g.physical_unstabbed(0) } else { g.physical_stabbed(0) }
+    let mut fx = Vec::new();
+    if let Some(s) = sid.and_then(|id| g.audio.sources.get(&id)) {
+        if s.enabled { fx.push(format!("!enabled({source})=1")) }
+        for v in &s.one_shots { fx.push(format!("!PlayOneShot({source},{},{})", v.clip.clip.name, hex(v.volume_scale))) }
+    }
+    Ok(format!("void set({})", fx.join(" ")))
+}
+
 /// A PowerGaugeBehaviour on its recorded PhysicalBehaviour (physicals[0]).
 fn dll2_power_gauge(c: &Case) -> Result<super::super::Game, String> {
     let mut g = dll_game();
@@ -138,48 +181,8 @@ const PURE_DLL2: &[(&str, PureCall)] = &[
         let after = [("alertBeepClock", show(&s.alertBeepClock)), ("updateDisplayClock", show(&s.updateDisplayClock))];
         Ok(format!("void {}", dll_changes(&before, &after)))
     }),
-    // Stabbed on the recorded PhysicalBehaviour: its Properties' StabSound (each clip named by its `@name#id`), the audioSource
-    // (an AudioSource on an active object, disabled before), isDisintegrated and the Random state. The effects as DllCheck lists
-    // them: `!enabled(@source)=1` for the enable, `!PlayOneShot(@source,@clip,volume)` for the one-shot.
-    ("PhysicalBehaviour.Stabbed", |c| {
-        c.with(2)?;
-        use super::super::audio::{AudioSource, Clip};
-        let mut g = dll_game();
-        // DllCheck records no `@rng` for a row that draws nothing (an empty StabSound).
-        if let Ok(r) = dll_random(c) { g.random = r }
-        let mut p = super::super::Physical::default();
-        p.isDisintegrated = dll_i32(c, "isDisintegrated")? == 1;
-        let source = dll_self_field(c, "audioSource")?;
-        let sid = if source == "null" { None } else { Some(reference(&source).ok_or("audioSource")?) };
-        p.audioSource = sid.is_some();
-        p.ids.audioSource = sid.unwrap_or(0);
-        if let Some(id) = sid {
-            g.audio.add(id, AudioSource { active: true, enabled: false, ..Default::default() });
-        }
-        let props = dll2_link(c, "Properties")?;
-        let stab = dll_get(&dll_rec(&props)?, "StabSound")?.to_string();
-        let mut pp = super::super::physical::PhysicalProperties::default();
-        if stab != "null" {
-            let items = dll_items(&stab)?;
-            pp.StabSound = Some(items.len());
-            pp.clips.StabSound = items.iter().map(|t| (*t != "null").then(|| std::sync::Arc::new(Clip {
-                asset: Default::default(),
-                clip: crate::assets::classes::AudioClip { name: t.to_string(), load_type: 0, channels: 1, frequency: 44100, length: 1.0, resource: Default::default(), compression_format: 0 },
-                pcm: None,
-                stream: None,
-            }))).collect();
-        }
-        g.properties.push(pp);
-        p.Properties = 0;
-        g.physicals.push(p);
-        g.physical_stabbed(0);
-        let mut fx = Vec::new();
-        if let Some(s) = sid.and_then(|id| g.audio.sources.get(&id)) {
-            if s.enabled { fx.push(format!("!enabled({source})=1")) }
-            for v in &s.one_shots { fx.push(format!("!PlayOneShot({source},{},{})", v.clip.clip.name, hex(v.volume_scale))) }
-        }
-        Ok(format!("void set({})", fx.join(" ")))
-    }),
+    ("PhysicalBehaviour.Stabbed", |c| dll2_stab_sound(c, false)),
+    ("PhysicalBehaviour.Messages.IUnstabbed.Unstabbed", |c| dll2_stab_sound(c, true)),
     ("PowerGaugeBehaviour.GetDisplayValueFor", |c| { let w = c.with(2)?; Ok(dll_ret(dll2_power_gauge(c)?.power_gauge_display_value_for(0, w.p_f32(1)?))) }),
     ("PinkSyringe.GetFingerprintValue", |c| {
         c.with(1)?;

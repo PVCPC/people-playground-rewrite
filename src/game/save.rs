@@ -243,6 +243,13 @@ pub(crate) fn is_tool_component(class: &str) -> bool {
     TOOL_COMPONENTS.contains(&class)
 }
 
+/// The instance ids `AddComponent(class)` takes at once, from the next one down: the component's own, then what its Awake
+/// (run inside AddComponent on the active clone) creates. DulcamarusBehaviour.Awake's new GameObject("siphoning tendrils",
+/// typeof(Optout)) takes its GameObject's, Transform's and Optout's (dulcamarus_add).
+fn add_component_ids(class: &str) -> usize {
+    if class == "DulcamarusBehaviour" { 4 } else { 1 }
+}
+
 fn allowed_component_type(class: &str) -> bool {
     const HOVER: &[&str] = &[
         "Hover", "AppliedBandageBehaviour", "BloodWireBehaviour", "CableBehaviour", "ChainBehaviour", "CopperWireBehaviour", "DistanceJointWireBehaviour",
@@ -1508,7 +1515,11 @@ impl Game {
                 // AudioSourceTimeScaleBehaviour and SerialiseInstructions).
                 None if allowed_component_type(class) => {
                     let id = TOOL_COMPONENTS.contains(&class).then(|| self.allocate_instance_id());
-                    let reserved = id.is_none().then(|| self.allocate_instance_id());
+                    let reserved = id.is_none().then(|| {
+                        let r = self.allocate_instance_id();
+                        self.allocate_instance_ids(add_component_ids(class) - 1);
+                        r
+                    });
                     deferred.push((tid, proto.clone(), id, reserved));
                     continue;
                 }
@@ -2319,14 +2330,12 @@ impl Game {
                             self.add_allowed_component(*tid, proto, *id);
                             continue;
                         };
-                        // The add allocates from its reserved id. ponytail: an add that allocates more than one id takes the
-                        // extra ones after `r` (the game's would come before CreateNew's later ids too); reserve them at the
-                        // deferral if a recording ever shows one.
+                        // The add takes the ids reserved for it at the deferral, from `r` down.
                         let next = self.next_instance_id;
                         self.next_instance_id = r;
                         self.add_allowed_component(*tid, proto, None);
-                        let extra = ((r - self.next_instance_id) / 2 - 1).max(0);
-                        self.next_instance_id = next - 2 * extra;
+                        debug_assert_eq!(self.next_instance_id, r - 2 * add_component_ids(&proto.Type) as i32, "{} took other ids than reserved", proto.Type);
+                        self.next_instance_id = next;
                     }
                     for (class, id, enabled) in std::mem::take(&mut self.pending_enabled) {
                         // InjectIntoMonoBehaviour: target.enabled = Enabled.

@@ -860,13 +860,7 @@ pub static TRUST_CACHE: LazyLock<Mutex<TrustCache>> = LazyLock::new(|| Mutex::ne
 impl TrustCache {
     /// TrustCache..cctor: the file name is Hash128.Compute(MachineName + UserName + UserDomainName + OSVersion + ProcessorCount).
     pub fn cctor() -> TrustCache {
-        let env = |k: &str| std::env::var(k).unwrap_or_default();
-        // Mono off Windows: MachineName is gethostname's (uname's node name), UserName USERNAME else USER.
-        let machine = if cfg!(windows) { env("COMPUTERNAME") } else { uname("-n") };
-        let user = std::env::var("USERNAME").or_else(|e| if cfg!(windows) { Err(e) } else { std::env::var("USER") }).unwrap_or_default();
-        let domain = std::env::var("USERDOMAIN").unwrap_or_else(|_| machine.clone());
-        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-        Self::with_key(&format!("{machine}{user}{domain}{}{cpus}", os_version()))
+        Self::with_key(&machine_key(&os_version()))
     }
     /// The cache for a machine key (the string the file name hashes).
     pub fn with_key(key: &str) -> TrustCache {
@@ -955,6 +949,18 @@ impl TrustCache {
 /// Elsewhere (the game ships for Windows only, so no game build is there to match; unchecked) Mono's Unix form:
 /// "Unix " + Environment.CreateVersionFromString(uname's release).
 // Checked: the Windows key hashes to the trust file the real game wrote on the developer's PC (the test below).
+/// TrustCache's static constructor's key: MachineName + UserName + UserDomainName + Environment.OSVersion + ProcessorCount,
+/// with `os` as the OSVersion string.
+fn machine_key(os: &str) -> String {
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    // Mono off Windows: MachineName is gethostname's (uname's node name), UserName USERNAME else USER.
+    let machine = if cfg!(windows) { env("COMPUTERNAME") } else { uname("-n") };
+    let user = std::env::var("USERNAME").or_else(|e| if cfg!(windows) { Err(e) } else { std::env::var("USER") }).unwrap_or_default();
+    let domain = std::env::var("USERDOMAIN").unwrap_or_else(|_| machine.clone());
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    format!("{machine}{user}{domain}{os}{cpus}")
+}
+
 fn os_version() -> String {
     #[cfg(windows)]
     unsafe {
@@ -1905,7 +1911,9 @@ mod tests {
         let game = std::path::Path::new(r"F:\SteamLibrary\steamapps\common\People Playground\4d3234dc29bbe861a0163a7ebb272261");
         if cfg!(windows) && game.exists() && std::env::var("COMPUTERNAME").is_ok_and(|n| crate::game::stats::hash128_to_string(crate::game::stats::spooky_hash128(n.as_bytes())) == crate::game::stats::DEV_PC) {
             assert_eq!(std::fs::read(game).unwrap(), vec![2, 0]);
-            assert_eq!(TrustCache::cctor().path(), "4d3234dc29bbe861a0163a7ebb272261");
+            // The game wrote it on 2026-10-23 under Windows build 26200; the name hashes Environment.OSVersion, so once Windows
+            // updates (26300 since) the game's own static constructor names another file. The name is that day's key.
+            assert_eq!(TrustCache::with_key(&machine_key("Microsoft Windows NT 10.0.26200.0")).path(), "4d3234dc29bbe861a0163a7ebb272261");
         }
     }
 }

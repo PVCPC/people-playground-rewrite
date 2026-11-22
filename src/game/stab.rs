@@ -576,10 +576,20 @@ impl Game {
 
     /// PhysicalBehaviour.Stabbed: PlayClipOnce(Properties.StabSound.PickRandom(), 1f) (nothing for a null or empty StabSound).
     pub(crate) fn physical_stabbed(&mut self, p: usize) {
+        self.play_stab_sound(p, 1.0);
+    }
+    // PhysicalBehaviour.Messages.IUnstabbed.Unstabbed: PlayClipOnce(Properties.StabSound.PickRandom(), 0.6f) (nothing for a null or
+    // empty StabSound). An explicit interface method: SendMessage("Unstabbed") never finds it (send_unstabbed), and nothing in
+    // the game calls it through the interface, so nothing here calls it either.
+    #[allow(dead_code)]
+    pub(crate) fn physical_unstabbed(&mut self, p: usize) {
+        self.play_stab_sound(p, 0.6);
+    }
+    fn play_stab_sound(&mut self, p: usize, volume: f32) {
         if let Some(n) = self.properties[self.physicals[p].Properties].StabSound.filter(|&n| n != 0) {
             let k = self.pick_random(n).unwrap();
             let clip = self.properties[self.physicals[p].Properties].clips.StabSound.get(k).cloned().flatten();
-            self.play_clip_once(p, clip, 1.0);
+            self.play_clip_once(p, clip, volume);
         }
     }
 
