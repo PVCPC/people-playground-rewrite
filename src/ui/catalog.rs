@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn item_button_start_and_info() {
-        // A save from the running version: "1.28" on 1.28.41, "1.28.52" on 1.28.52.
+        // A save from the running version: "1.28" on 1.28.41, "1.28.53" on 1.28.53.
         let v = crate::game::contraption::current_version();
         let s = ItemButton::of(&saved(v, 0)).start();
         assert_eq!(s, ItemButtonStart { tooltip: format!("<b>Car</b>\nSaved in version {v}"), incompatible: false, remove: true, publish: true, workshop: false, info: true });

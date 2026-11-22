@@ -1927,7 +1927,12 @@ impl Game {
         let mut roots: Vec<i32> = Vec::new();
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         for p in selected {
+            // 1.28.53 tests !selectedObject first and skips a destroyed one; 1.28.41 reads its transform.root first, a
+            // MissingReferenceException that ends the call before anything flips (the loop only collects).
             if self.physicals[p].destroyed {
+                if !crate::assets::il::is_1_28_45() {
+                    return;
+                }
                 continue;
             }
             let root = self.root_id(p);

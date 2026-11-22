@@ -123,13 +123,20 @@ pub(super) fn compare_camera(g: &Game, s: &Snapshot) -> Vec<String> {
     }).collect()
 }
 
-/// Each recorded SerialisedLayerBehaviour against the rewrite's for its object.
+/// Each recorded SerialisedLayerBehaviour against the rewrite's for its object. One on an object without a PhysicalBehaviour
+/// (`phys=0`, a save's child component: Awake threw before OriginalSorting) is the clone's component with the record's id.
 pub(super) fn compare_serialised_layers(g: &Game, s: &Snapshot) -> Vec<String> {
     let mut out = Vec::new();
     for r in s.of("SerialisedLayer") {
         let theirs = (|| recorded_layer(r.req("layer")?, r.req("order")?, r.req("orig")?))();
         let p = r.get("phys").and_then(|x| x.parse::<i32>().ok()).and_then(|id| g.physicals.iter().position(|x| x.id == id));
-        let ours = p.and_then(|p| g.layer_editor.serialised.get(&p).copied());
+        let ours = match r.get("phys") {
+            // On a clone (the component exists); its injected OptionalInts, if any, wait in script_loose.
+            Some("0") => g.unsynced.iter().chain(g.retained.iter()).any(|i| i.objects.iter().any(|x| x.components.contains(&r.id))).then(|| {
+                crate::game::save::stored_layer(g.script_loose.get(&r.id).map_or(&[][..], |f| &f[..]), (0, 0))
+            }),
+            _ => p.and_then(|p| g.layer_editor.serialised.get(&p).copied()),
+        };
         match (theirs, ours) {
             (Ok(t), Some(o)) if t == o => {}
             (t, o) => out.push(format!("SerialisedLayer {}: game {t:?} ours {o:?}", r.name)),

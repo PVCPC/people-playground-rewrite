@@ -1379,7 +1379,7 @@ impl Game {
     }
 
     /// ObjectState.Reconstruct on object `y` of the `j`-th runtime child under `owner`.
-    fn runtime_reconstruct(&mut self, owner: i32, j: usize, y: usize, data: &[MonoBehaviourPrototype], added: &mut usize, deferred: &mut Vec<(i32, MonoBehaviourPrototype, Option<i32>)>) {
+    fn runtime_reconstruct(&mut self, owner: i32, j: usize, y: usize, data: &[MonoBehaviourPrototype], added: &mut usize, deferred: &mut Vec<(i32, MonoBehaviourPrototype, Option<i32>, Option<i32>)>) {
         match self.runtime_children[&owner][j].kind {
             RuntimeKind::Clone(id) => self.with_component_instance(id, |g, c, _| g.reconstruct(c, y, data, added, deferred)),
             _ => {
@@ -1461,7 +1461,7 @@ impl Game {
 
     /// ObjectState.Reconstruct (with MonoBehaviourPrototype.InjectIntoMonoBehaviour; `Enabled` is applied to the Chainsaw and EnergySword, the other covered structs have none) on clone object `x`: each prototype goes to the first not yet used component of its type; a missing
     /// SerialisableIdentity is added (its instance id allocated), another allowed type cannot be added yet.
-    fn reconstruct(&mut self, inst: &mut Instance, x: usize, data: &[MonoBehaviourPrototype], added: &mut usize, deferred: &mut Vec<(i32, MonoBehaviourPrototype, Option<i32>)>) {
+    fn reconstruct(&mut self, inst: &mut Instance, x: usize, data: &[MonoBehaviourPrototype], added: &mut usize, deferred: &mut Vec<(i32, MonoBehaviourPrototype, Option<i32>, Option<i32>)>) {
         let comps = inst.objects[x].components.clone();
         let tid = comps[0];
         let mut used = vec![false; inst.prefab.objects[x].components.len()];
@@ -1474,8 +1474,9 @@ impl Game {
                 None if class == "SerialisableIdentity" => {
                     // Behind a deferred AddComponent on this object (a Nitroglycerine Flask's ExplosiveBehaviour) it is added after it;
                     // a tool component (a wire, its id taken already) or one GetComponents skips (a DecalControllerBehaviour) is not one.
-                    if deferred.iter().any(|(t, q, _)| *t == tid && !TOOL_COMPONENTS.contains(&q.Type.as_str()) && Self::is_component_to_serialise(&q.Type)) {
-                        deferred.push((tid, proto.clone(), None));
+                    if deferred.iter().any(|(t, q, ..)| *t == tid && !TOOL_COMPONENTS.contains(&q.Type.as_str()) && Self::is_component_to_serialise(&q.Type)) {
+                        let reserved = self.allocate_instance_id();
+                        deferred.push((tid, proto.clone(), None, Some(reserved)));
                     } else {
                         self.allocate_instance_id();
                         self.identity_added_at.insert((tid, false), self.next_instance_id);
@@ -1493,7 +1494,7 @@ impl Game {
                 None if class == "ActOnDestroy" => {
                     if deferred.iter().any(|(t, ..)| *t == tid) {
                         let id = self.allocate_instance_id();
-                        deferred.push((tid, proto.clone(), Some(id)));
+                        deferred.push((tid, proto.clone(), Some(id), None));
                     } else {
                         self.act_on_destroy_add(inst, x);
                     }
@@ -1503,10 +1504,12 @@ impl Game {
                 // AddComponent of an abstract Hover type returns null (an error is logged) and InjectIntoMonoBehaviour(null) throws, which is caught.
                 None if ABSTRACT_HOVERS.contains(&class) => continue,
                 // AddComponent<class>: the clone is not kept yet, so `add_allowed_component` runs once it is. A tool component (a wire, pin or
-                // link) takes its instance id here.
+                // link) takes its instance id here; any other has its id reserved here (the game's AddComponent comes before CreateNew's
+                // AudioSourceTimeScaleBehaviour and SerialiseInstructions).
                 None if allowed_component_type(class) => {
                     let id = TOOL_COMPONENTS.contains(&class).then(|| self.allocate_instance_id());
-                    deferred.push((tid, proto.clone(), id));
+                    let reserved = id.is_none().then(|| self.allocate_instance_id());
+                    deferred.push((tid, proto.clone(), id, reserved));
                     continue;
                 }
                 // Logger.LogWarning("Unexpected component type ...")
@@ -1663,7 +1666,7 @@ impl Game {
 
     /// ObjectState.CreateNew: the spawnable instantiated at `origin` + the root's position, its children placed from their relative
     /// poses, the component data injected, then the components a spawn adds. Returns the clone, its links and the added identities.
-    fn object_state_create_new(&mut self, db: &mut AssetDb, state: &ObjectState, origin: [f32; 3], flipped: bool) -> Result<(Instance, super::link::Linked, Vec<(i32, MonoBehaviourPrototype, Option<i32>)>), String> {
+    fn object_state_create_new(&mut self, db: &mut AssetDb, state: &ObjectState, origin: [f32; 3], flipped: bool) -> Result<(Instance, super::link::Linked, Vec<(i32, MonoBehaviourPrototype, Option<i32>, Option<i32>)>), String> {
         let prefab = Self::catalog_prefab(db, &state.SpawnableAssetName).map_err(|_| format!("SpawnableAsset {} not found", state.SpawnableAssetName))?;
         let mut relative = state.Root.RelativePosition;
         relative[0] *= if flipped { -1.0 } else { 1.0 };
@@ -1858,20 +1861,7 @@ impl Game {
                 self.attach_script(components[0], class, id, proto.Enabled);
                 self.layer_editor.serialised_ids.insert(id, p);
                 let original = self.serialised_layer_get_sorting_for(p);
-                let mut layer = super::layer_editor::SerialisedLayer { OriginalSorting: original, ..Default::default() };
-                for (name, value) in &proto.storedFields {
-                    // OptionalInt { bool Active; int Value; }: the struct's raw bytes (Active padded to 4).
-                    let SavedValue::Net(t, super::ceras::Payload::Raw(b)) = value else { continue };
-                    if t != "OptionalInt" || b.len() != 8 {
-                        continue;
-                    }
-                    let v = (b[0] != 0).then(|| i32::from_le_bytes([b[4], b[5], b[6], b[7]]));
-                    match name.as_str() {
-                        "SortingLayerID" => layer.SortingLayerID = v,
-                        "SortingOrder" => layer.SortingOrder = v,
-                        _ => {}
-                    }
-                }
+                let layer = stored_layer(&proto.storedFields, original);
                 self.layer_editor.serialised.insert(p, layer);
                 // InjectIntoMonoBehaviour's enabled = false holds Start back, and nothing in the game enables it again
                 // (SetOrder and the layer editor work on a disabled one all the same).
@@ -2324,8 +2314,19 @@ impl Game {
                         objects.push(o.components[0]);
                     }
                     self.unsynced.push(inst);
-                    for (tid, proto, id) in &deferred {
-                        self.add_allowed_component(*tid, proto, *id);
+                    for (tid, proto, id, reserved) in &deferred {
+                        let Some(r) = *reserved else {
+                            self.add_allowed_component(*tid, proto, *id);
+                            continue;
+                        };
+                        // The add allocates from its reserved id. ponytail: an add that allocates more than one id takes the
+                        // extra ones after `r` (the game's would come before CreateNew's later ids too); reserve them at the
+                        // deferral if a recording ever shows one.
+                        let next = self.next_instance_id;
+                        self.next_instance_id = r;
+                        self.add_allowed_component(*tid, proto, None);
+                        let extra = ((r - self.next_instance_id) / 2 - 1).max(0);
+                        self.next_instance_id = next - 2 * extra;
                     }
                     for (class, id, enabled) in std::mem::take(&mut self.pending_enabled) {
                         // InjectIntoMonoBehaviour: target.enabled = Enabled.
@@ -2583,6 +2584,25 @@ impl Game {
         self.paste_states(&states, at, false, "Paste");
         true
     }
+}
+
+/// A SerialisedLayerBehaviour's injected OptionalInts over `original` (OptionalInt { bool Active; int Value; }: the struct's raw
+/// bytes, Active padded to 4).
+pub(crate) fn stored_layer(fields: &[(String, SavedValue)], original: (i32, i32)) -> super::layer_editor::SerialisedLayer {
+    let mut layer = super::layer_editor::SerialisedLayer { OriginalSorting: original, ..Default::default() };
+    for (name, value) in fields {
+        let SavedValue::Net(t, super::ceras::Payload::Raw(b)) = value else { continue };
+        if t != "OptionalInt" || b.len() != 8 {
+            continue;
+        }
+        let v = (b[0] != 0).then(|| i32::from_le_bytes([b[4], b[5], b[6], b[7]]));
+        match name.as_str() {
+            "SortingLayerID" => layer.SortingLayerID = v,
+            "SortingOrder" => layer.SortingOrder = v,
+            _ => {}
+        }
+    }
+    layer
 }
 
 #[cfg(test)]

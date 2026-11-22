@@ -1175,7 +1175,7 @@ fn clean_string(x: &str) -> String {
     x.trim().chars().filter(|&c| letter_digit_or_space(c)).collect()
 }
 
-/// FilePicker.CleanExtensions
+/// FilePicker.CleanExtensions (1.28.53: includePeriod, true at the only caller, gives the same text)
 fn clean_extensions(x: &[&str]) -> Vec<String> {
     x.iter().map(|&e| if e == "*" { e.to_string() } else { format!("*.{}", clean_string(&e.to_lowercase())) }).collect()
 }

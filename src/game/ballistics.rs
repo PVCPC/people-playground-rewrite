@@ -333,6 +333,7 @@ impl Game {
     }
 
     /// CameraShakeBehaviour.Update: the root's position and the camera's eulerAngles z (the root's own rotation does not move it).
+    /// 1.28.53 writes shakeTarget, the transform.root Awake keeps; the camera is never re-parented, so it is the same root.
     pub fn camera_shake_update(&mut self) {
         let i = self.camera.shakeIntensity;
         let i = mathf::clamp(if i.is_nan() { 0.0 } else { i }, 0.0, 5.0);
