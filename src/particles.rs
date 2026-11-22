@@ -578,6 +578,8 @@ struct Ctx {
     drag: f32,
     /// NoiseModule's positionOffset * 100 and scrollOffset.
     noise: (crate::game::particle_modules::V3, f32),
+    /// The NoiseModule after a script's strengthMultiplier write (m_StrengthX's scalar, its mode kept).
+    noise_written: Option<crate::assets::particles::Noise>,
     /// ExternalForcesModule::Update's cached forces, CalculateWorldBounds of the state's bounds and worldToLocal.
     external: Option<(Vec<crate::game::particle_forces::Force>, [f32; 6], [f32; 16])>,
     /// The cached forces' fields as ApplyForceField<0> takes them (None: not a field or out of reach).
@@ -605,6 +607,11 @@ fn ctx(run: &Run, s: &Sys, drive: Option<&Drive>, g: &Game, state_t: f32) -> Ctx
         emitter_velocity: run.emitter_velocity.to_array(),
         drag: drag_scalar(&s.ps, drive),
         noise: (run.seeds.as_ref().map_or([0.0; 3], |sd| crate::game::particle_noise::offset(sd.random_seed)), run.noise_scroll),
+        noise_written: s.ps.noise.as_ref().zip(run.writes.noise).map(|(n, k)| {
+            let mut n = n.clone();
+            n.strength[0].scalar = k;
+            n
+        }),
         external,
         fields,
         pose: (pose.l2w, pose.w2l),
@@ -648,7 +655,7 @@ fn presim(s: &Sys, c: &Ctx, p: &mut Particle, dt: f32, live: u64) {
         }
         m::velocity(v, &mt, (c.world, &c.pose.0, &c.pose.1), p.seed, p.alive, p.position.to_array(), dt, &mut anim);
     }
-    if let Some(n) = &ps.noise {
+    if let Some(n) = c.noise_written.as_ref().or(ps.noise.as_ref()) {
         let (offset, scroll) = c.noise;
         crate::game::particle_noise::job(n, offset, scroll, p.seed, p.alive, dt, p.position.to_array(), uses_3d_rotation(ps), &mut anim, &mut p.rotation, &mut p.noise_impulse);
     }
@@ -1544,13 +1551,14 @@ fn step_inner(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, f
 
 /// A script's module writes on a system (None: not written): emission.rateOverTimeMultiplier and
 /// rateOverDistanceMultiplier, main.startSpeedMultiplier (the curves' scalars, their modes kept) and main.startColor
-/// (a constant colour).
+/// (a constant colour) and noise.strengthMultiplier (m_StrengthX's scalar).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PsWrites {
     pub rate: Option<f32>,
     pub distance: Option<f32>,
     pub speed: Option<f32>,
     pub color: Option<[f32; 4]>,
+    pub noise: Option<f32>,
 }
 
 /// The ParticleSystem.EmitParams fields the scripts set (FireParticleSystem, NukeShockwave, PyroPowerTool); None is
@@ -1563,6 +1571,7 @@ pub(crate) struct EmitParams {
     pub start_size: Option<f32>,
     /// EmitParams.startColor from a Color (the implicit Color32: Round(Clamp01(c) * 255) per channel).
     pub start_color: Option<[f32; 4]>,
+    pub velocity: Option<Vec3>,
 }
 
 /// Color to Color32 (UnityEngine.Color32's implicit operator): (byte)Mathf.Round(Mathf.Clamp01(c) * 255f).
@@ -1571,23 +1580,25 @@ fn script_color32(c: [f32; 4]) -> u32 {
     b(c[0]) | b(c[1]) << 8 | b(c[2]) << 16 | b(c[3]) << 24
 }
 
-/// ParticleSystem.Emit(EmitParams, 1): EmitParticlesExternal (1801b9870) with InitialModule::StartExternal
-/// (180201510). The unset fields draw from InitialModule's RandN (one batch: lane 0) in the order rotation, size,
-/// colour, randomSeed, lifetime, all at t = state.t / length; CopyFromArrayAOS (1801b7a40) gives aliveTimePercent 0
-/// and invStartLifetime = 1 / startLifetime; then StartVelocity, StartLifetimeByEmitterSpeed, UpdateSizeModules and
-/// CopyParticlesToUnalignedDst. No step, no sub-emitter (SubModule::Update meets the particle in the next update).
-fn emit_external(run: &mut Run, systems: &[Sys], g: &Game, e: &EmitParams, rng: &mut Rng) {
+/// ParticleSystem.Emit(EmitParams, n): EmitParticlesExternal (1801b9870) with InitialModule::StartExternal
+/// (180201510). Each unset field draws from InitialModule's RandN field by field (rotation, size, colour, randomSeed,
+/// lifetime), one draw per batch of four (particle 4b + k takes lane k), all at t = state.t / length; the draws are
+/// made for all `n` before the count is clamped to maxParticles. CopyFromArrayAOS (1801b7a40) gives aliveTimePercent 0
+/// and invStartLifetime = 1 / startLifetime at round4(count) and fills the last batch's other lanes with the first
+/// emitted particle (1801b9d67); then StartVelocity (start speed only without a velocity set; the inherited emitter
+/// velocity either way), StartLifetimeByEmitterSpeed, UpdateSizeModules and CopyParticlesToUnalignedDst. No step, no
+/// sub-emitter (SubModule::Update meets the particles in the next update).
+fn emit_external(run: &mut Run, systems: &[Sys], g: &Game, e: &EmitParams, n: usize, rng: &mut Rng) {
     check_seeded(run);
     use crate::game::particle_modules as m;
     use crate::game::particle_sim::{evaluate, gradient, maxps};
+    if n == 0 {
+        return;
+    }
     let s = &systems[run.sys];
     let ps = &s.ps;
     let (rot3d, size3d) = (uses_3d_rotation(ps), uses_3d_size(ps));
     let [size_y, size_z, rot_x, rot_y] = &ps.start_raw_3d;
-    // A full particle array without a ring buffer takes nothing.
-    if ps.ring_buffer_mode == 0 && run.particles.len() >= ps.max_particles.max(0) as usize {
-        return;
-    }
     let pose = pose(run, s);
     let world = ps.space != 0;
     let mx = if world { pose.l2w } else { [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0] };
@@ -1602,60 +1613,80 @@ fn emit_external(run: &mut Run, systems: &[Sys], g: &Game, e: &EmitParams, rng: 
     let size_curve = start_size(run, ps).unwrap_or_else(|| ps.start_size.clone());
     let script_color = run.color;
     let rand = &mut run.seeds.as_mut().expect("a played run has its seeds").initial;
+    let batches = n.div_ceil(4);
+    let lanes = |f: &mut dyn FnMut() -> [f32; 4]| -> Vec<f32> { (0..batches).flat_map(|_| f()).collect() };
     // With uses3DRotation (uses3DSize) the curves go z, y, x, one draw each; x and y of the rotation are not kept.
-    let rotation = match e.rotation {
-        Some(deg) => deg * crate::game::mathf::DEG2RAD,
-        None => {
-            let z = evaluate(&ps.start_rotation, t, rand.get01()[0]);
+    let rotation: Vec<f32> = match e.rotation {
+        Some(deg) => vec![deg * crate::game::mathf::DEG2RAD; 4 * batches],
+        None => lanes(&mut || {
+            let z = rand.get01().map(|r| evaluate(&ps.start_rotation, t, r));
             if rot3d {
-                evaluate(rot_y, t, rand.get01()[0]);
-                evaluate(rot_x, t, rand.get01()[0]);
+                rand.get01().map(|r| evaluate(rot_y, t, r));
+                rand.get01().map(|r| evaluate(rot_x, t, r));
             }
             z
-        }
+        }),
     };
-    let size = match e.start_size {
-        Some(v) => [v; 3],
-        None if size3d => {
-            let z = maxps(0.0, evaluate(size_z, t, rand.get01()[0]));
-            let y = maxps(0.0, evaluate(size_y, t, rand.get01()[0]));
-            [maxps(0.0, evaluate(&size_curve, t, rand.get01()[0])), y, z]
-        }
-        None => [maxps(0.0, evaluate(&size_curve, t, rand.get01()[0])); 3],
+    let size: Vec<[f32; 3]> = match e.start_size {
+        Some(v) => vec![[v; 3]; 4 * batches],
+        None if size3d => (0..batches).flat_map(|_| {
+            let z = rand.get01().map(|r| maxps(0.0, evaluate(size_z, t, r)));
+            let y = rand.get01().map(|r| maxps(0.0, evaluate(size_y, t, r)));
+            let x = rand.get01().map(|r| maxps(0.0, evaluate(&size_curve, t, r)));
+            [0, 1, 2, 3].map(|k| [x[k], y[k], z[k]])
+        }).collect(),
+        None => lanes(&mut || rand.get01().map(|r| maxps(0.0, evaluate(&size_curve, t, r)))).into_iter().map(|v| [v; 3]).collect(),
     };
-    let color = match e.start_color {
-        Some(c) => script_color32(c),
-        None => {
-            let r = rand.get01()[0];
-            script_color.map_or_else(|| gradient(&ps.start_color, t, r), crate::game::particle_sim::color32)
-        }
+    let color: Vec<u32> = match e.start_color {
+        Some(c) => vec![script_color32(c); 4 * batches],
+        None => (0..batches).flat_map(|_| rand.get01().map(|r| script_color.map_or_else(|| gradient(&ps.start_color, t, r), crate::game::particle_sim::color32))).collect(),
     };
-    let seed = rand.get()[0];
-    let start_lifetime = maxps(f32::from_bits(0x3727c5ac), evaluate(&ps.start_lifetime, t, rand.get01()[0]));
+    let seeds: Vec<u32> = (0..batches).flat_map(|_| rand.get()).collect();
+    let lifetimes = lanes(&mut || rand.get01().map(|r| maxps(f32::from_bits(0x3727c5ac), evaluate(&ps.start_lifetime, t, r))));
+    // A full particle array without a ring buffer takes none of them.
+    let n = if ps.ring_buffer_mode == 0 { n.min((ps.max_particles.max(0) as usize).saturating_sub(run.particles.len())) } else { n };
+    if n == 0 {
+        return;
+    }
     let ev = run.emitter_velocity.to_array();
     let masked = if world { ev } else { [0.0; 3] };
     let inherit = ps.inherit.as_ref().map(|(mode, c)| (*mode, c));
-    let velocity = m::start_velocity(&start_speed(run, ps, None), inherit, world, masked, seed, t, dir);
-    let started = crate::game::particle_sim::Started { seed, parent_seed: 0, inv_lifetime: 1.0 / start_lifetime, size, rotation: [0.0, 0.0, rotation], color };
-    let mut p = create(run, None, started, position, Vec3::from_array(velocity));
-    p.color32 = color;
-    p.from = position;
-    if let Some((curve, range)) = &ps.lifetime_by_speed {
-        p.inv_lifetime = m::lifetime_by_speed(curve, *range, ev, p.seed, p.inv_lifetime);
-    }
-    p.lifetime = 1.0 / p.inv_lifetime;
-    size_update(s, &mut p);
+    let speed = start_speed(run, ps, None);
+    let made: Vec<Particle> = (0..n).map(|k| {
+        let seed = seeds[k];
+        let velocity = match e.velocity {
+            None => m::start_velocity(&speed, inherit, world, masked, seed, t, dir),
+            // StartVelocity without the start speed: the set velocity plus the inherited emitter velocity.
+            Some(v) => {
+                let i = m::start_velocity(&speed, inherit, world, masked, seed, t, [0.0; 3]);
+                [v.x + i[0], v.y + i[1], v.z + i[2]]
+            }
+        };
+        let started = crate::game::particle_sim::Started { seed, parent_seed: 0, inv_lifetime: 1.0 / lifetimes[k], size: size[k], rotation: [0.0, 0.0, rotation[k]], color: color[k] };
+        let mut p = create(run, None, started, position, Vec3::from_array(velocity));
+        p.color32 = color[k];
+        p.from = position;
+        if let Some((curve, range)) = &ps.lifetime_by_speed {
+            p.inv_lifetime = m::lifetime_by_speed(curve, *range, ev, p.seed, p.inv_lifetime);
+        }
+        p.lifetime = 1.0 / p.inv_lifetime;
+        size_update(s, &mut p);
+        p
+    }).collect();
     // maxSize takes each axis of the start size.
-    for v in [p.size, p.size_y, p.size_z] {
-        if run.max_size < v {
-            run.max_size = v;
+    for p in &made {
+        for v in [p.size, p.size_y, p.size_z] {
+            if run.max_size < v {
+                run.max_size = v;
+            }
         }
     }
-    // At round4(count), then copied down. CopyFromArrayAOS fills the batch's other lanes with the same emitted particle
-    // (1801b9d67), and StartVelocity, StartLifetimeByEmitterSpeed and UpdateSizeModules then run on all four alike.
     let first = run.particles.len();
-    let gap = open(run, 4);
-    place(run, gap, vec![Some(p.clone()), Some(p.clone()), Some(p.clone()), Some(p)], 1);
+    let r4 = (n + 3) & !3;
+    let mut region: Vec<Option<Particle>> = made.iter().cloned().map(Some).collect();
+    region.resize(r4, Some(made[0].clone()));
+    let gap = open(run, r4);
+    place(run, gap, region, n);
     if ps.ring_buffer_mode != 0 {
         let acc = run.clock.accumulated();
         ring_copy(run, systems, g, first, acc, rng);
@@ -2200,12 +2231,12 @@ impl Game {
         }
     }
 
-    /// ParticleSystem.Emit(EmitParams, 1) on the embedded systems `which` picks, at their pose now.
-    pub(crate) fn ps_emit_params(&mut self, which: impl Fn(&crate::game::EmbeddedPs) -> bool, params: EmitParams) {
+    /// ParticleSystem.Emit(EmitParams, n) on the embedded systems `which` picks, at their pose now.
+    pub(crate) fn ps_emit_params(&mut self, which: impl Fn(&crate::game::EmbeddedPs) -> bool, params: EmitParams, n: u32) {
         for i in 0..self.embedded_ps.len() {
             if which(&self.embedded_ps[i]) {
                 let (p, q, _) = self.embedded_pose(i);
-                self.push_ps_call((i, crate::game::PsCall::EmitParams(params, p, q)));
+                self.push_ps_call((i, crate::game::PsCall::EmitParams(params, n, p, q)));
             }
         }
     }
@@ -2878,7 +2909,8 @@ fn play_effect(library: &mut Library, runs: &mut Vec<Run>, db: &mut AssetDb, e: 
     let playing: Vec<_> = parts.iter().filter(|part| !part.names.iter().any(|n| e.off.contains(&n.as_str()))).map(|p| p.sys).collect();
     // Instantiate awakes the clone's systems by original instance id; a pool's SetActive(true) of a made clone
     // activates them through the hierarchy (start's order).
-    // ponytail: a pool Clear (300 s idle) remakes clones under the same index; they would count as reactivated.
+    // A pool's Clear (ObjectPoolBehaviour.Update after 300 s idle) destroys its clones; the clones it makes after are new
+    // ones under new indices (items only grow: pool.rs, water.rs, misc.rs), so a known index is always a reactivation.
     let made = e.pooled.is_some_and(|p| !manager.pooled.insert(p));
     // A made clone's reactivation: each played root's Play (needRestart, no particles) runs ResetSeeds, its own draw then
     // one per sub-emitter (1801bf4fe); a sub's Play only joins the list, its isSubEmitter byte (+0x20) still set from
@@ -3042,7 +3074,7 @@ fn attached_systems(
                 if k == 0 && ps.shape_type == 20 {
                     for (_, at, size, color) in g.fire_emits.iter().filter(|e| e.0 == p) {
                         let e = EmitParams { position: Some(Vec3::from(*at)), start_size: Some(*size), start_color: Some(*color), ..Default::default() };
-                        emit_external(run, &library.systems, g, &e, rng);
+                        emit_external(run, &library.systems, g, &e, 1, rng);
                     }
                 }
                 if k == 3 && ps.shape_type == 20 {
@@ -3104,7 +3136,7 @@ fn embedded_call(
                 }
                 let run = &mut embedded.get_mut(&i).unwrap().0;
                 let o = &mut run.writes;
-                (o.rate, o.distance, o.speed) = (w.rate.or(o.rate), w.distance.or(o.distance), w.speed.or(o.speed));
+                (o.rate, o.distance, o.speed, o.noise) = (w.rate.or(o.rate), w.distance.or(o.distance), w.speed.or(o.speed), w.noise.or(o.noise));
                 if w.color.is_some() {
                     run.color = w.color;
                 }
@@ -3135,14 +3167,14 @@ fn embedded_call(
                     keep_updating(run, &library.systems, manager);
                 }
                 let (position, rotation) = match call {
-                    PsCall::Emit(_, p, q) | PsCall::EmitParams(_, p, q) => (Vec3::from(p), Quat::from_array(q)),
+                    PsCall::Emit(_, p, q) | PsCall::EmitParams(_, _, p, q) => (Vec3::from(p), Quat::from_array(q)),
                     _ => unreachable!(),
                 };
                 let kept = (run.position, run.rotation);
                 (run.position, run.rotation) = (position, rotation);
                 match call {
                     PsCall::Emit(n, ..) => emit_count(run, &library.systems, g, n, rng),
-                    PsCall::EmitParams(p, ..) => emit_external(run, &library.systems, g, &p, rng),
+                    PsCall::EmitParams(p, n, ..) => emit_external(run, &library.systems, g, &p, n as usize, rng),
                     _ => unreachable!(),
                 }
                 (run.position, run.rotation) = kept;
@@ -3392,8 +3424,12 @@ pub enum Listed {
     Puff(usize, usize),
     /// A DeleteAfterTime clone's system (SetupSpawnPrefab's SpawnParticles): it leaves at its Transform's Destroy.
     Destroyed(i32),
-    /// ponytail: any other listed system (a loaded bleed's Trail and water_puff, played long ago) is taken to leave at
-    /// the first EndUpdateAll, as the 1.28.52 recordings show; one that plays on needs its own run.
+    /// The Trail (sub-emitter) of the loaded bleed with this psm: its own run, which leaves when the walk finds it empty
+    /// and stopEmitting.
+    Trail(i32),
+    /// ponytail: any other listed system (a loaded bleed's water_puff, the only other kind in the recordings) is taken
+    /// to leave at the first EndUpdateAll, as the 1.28.52 recordings show. The recordings carry neither the puff's
+    /// seeds and particles nor whether its bleed's Start (the Destroy) has run, so a puff that plays on needs both.
     Ghost,
 }
 
@@ -3664,7 +3700,7 @@ pub fn begin_update_all(g: &mut Game) {
     for sw in shockwaves.iter_mut() {
         for at in std::mem::take(&mut sw.pending) {
             let Some(run) = runs.iter_mut().find(|r| r.group == sw.group && r.chain.first() == Some(&sw.t.ps)) else { continue };
-            emit_external(run, &library.systems, g, &EmitParams { position: Some(Vec3::new(at[0], at[1], 0.0)), ..Default::default() }, rng);
+            emit_external(run, &library.systems, g, &EmitParams { position: Some(Vec3::new(at[0], at[1], 0.0)), ..Default::default() }, 1, rng);
         }
     }
     shockwaves.retain(|s| s.alive());
@@ -3749,10 +3785,19 @@ pub fn begin_update_all(g: &mut Game) {
                 run.unseeded = pseed.is_none();
                 assert!(pseed.is_some() || unseeded_ok(&library.systems[sys].ps), "a loaded bleed without pseed= whose emission counts draw");
                 manager.rand = rand;
-                // Played long before the recording: the sub-emitters left the list (kStopped) at the first EndUpdateAll.
+                // Played long before the recording: the sub-emitters left the list (kStopped) at the first EndUpdateAll. One
+                // the recording lists is still there (KeepUpdating's kPlaying and stopEmitting) until that walk.
+                let listed = recorded_active.iter().any(|x| matches!(x.1, Listed::Trail(p) if Some(p) == b.psm));
                 for c in &mut run.children {
-                    manager.forget(c);
-                    c.halted = true;
+                    if listed {
+                        c.clock.stop_emitting = true;
+                        if let Some(k) = manager.active.iter().position(|&x| x == c.id) {
+                            manager.active.swap_remove(k);
+                        }
+                    } else {
+                        manager.forget(c);
+                        c.halted = true;
+                    }
                 }
                 restored.push((b.psm, run.id));
                 // The root's recorded culling state: renderer isVisible (the last render saw it), culled, cullTime, stopTime.
@@ -3795,6 +3840,7 @@ pub fn begin_update_all(g: &mut Game) {
     // placeholders for the others; any of ours it does not list keeps its order after them.
     if !recorded_active.is_empty() {
         let bleed_of = |psm: i32| restored.iter().find(|r| r.0 == Some(psm)).map(|r| r.1);
+        let trail_of = |psm: i32| bleed_of(psm).and_then(|id| bleeds.values().find(|r| r.id == id)).and_then(|r| r.children.first()).map(|c| c.id);
         let puff_of = |b: usize, j: usize| {
             let chain: Vec<usize> = if j == 0 { vec![0] } else { vec![j, 0] };
             let mut stack: Vec<&Run> = runs.iter().filter(|r| r.pooled == Some(crate::game::Pooled::BloodPuff(b))).collect();
@@ -3810,6 +3856,7 @@ pub fn begin_update_all(g: &mut Game) {
         for (i, l) in recorded_active {
             let id = match l {
                 Listed::Bleed => bleed_of(i),
+                Listed::Trail(psm) => Some(trail_of(psm).expect("a listed Trail's bleed has its sub-emitter run")),
                 Listed::Puff(b, j) => puff_of(b, j),
                 Listed::Destroyed(_) | Listed::Ghost => None,
             };
@@ -4674,7 +4721,7 @@ mod tests {
                         step(&mut run, &systems, None, &g, 1.0 / 60.0, &mut rng);
                         // ParticleSystem.Emit(EmitParams) with a position, as the scripts call it.
                         if k % 10 == 0 {
-                            emit_external(&mut run, &systems, &g, &EmitParams { position: Some(Vec3::new(1.0, 2.0, 0.0)), ..Default::default() }, &mut rng);
+                            emit_external(&mut run, &systems, &g, &EmitParams { position: Some(Vec3::new(1.0, 2.0, 0.0)), ..Default::default() }, 1, &mut rng);
                         }
                     }
                 }));

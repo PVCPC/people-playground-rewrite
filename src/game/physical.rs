@@ -537,14 +537,15 @@ impl Game {
         if self.physicals[p].Circumference < 0.0 {
             self.physical_calculate_circumference(p);
         }
-        // Instantiate(Global.main.MetalScrapePrefab, transform): a particle effect for OnCollisionStay to play.
-        // Only its instance ids and its ActivateIfFancyEffects Awakes reach the simulation (load_main checks):
+        // Instantiate(Global.main.MetalScrapePrefab, transform): the scrape sparks' particle effect (scrapeParticles: its
+        // root's ParticleSystem, drawn by the embedded systems). Its ActivateIfFancyEffects Awakes (load_main checks):
         // SetActive(Chance > Random.value && FancyEffects) on childless flash objects.
         if self.properties[self.physicals[p].Properties].SparksOnSlide {
-            let (n, draws, objects) = match &self.metal_scrape {
+            let (n, draws, objects, (go, trs, _)) = match &self.metal_scrape {
                 Some(m) => m.clone(),
                 None => self.load_metal_scrape(),
             };
+            self.embedded_ps.push(super::EmbeddedPs { go, anchor: super::BareAnchor::Physical(p), chain: vec![trs], owner: self.physicals[p].id, drive: super::EmbeddedDrive::MetalScrape(p), shape_texture: None, awake: true, emission: None });
             // Its Transforms (each object's id, then its components': the Transform first) under the physical's.
             let mut id = self.next_instance_id;
             let nodes: Vec<(i32, Option<usize>)> = objects.iter().map(|&(k, up)| { let t = id - 2; id -= 2 * k as i32; (t, up) }).collect();
@@ -1672,8 +1673,7 @@ impl Game {
             }
             let sq = mathf::sqr_magnitude([c.relative_velocity.x, c.relative_velocity.y]);
             if self.physicals[p].isVisible && sq > 9.0 {
-                // scrapeParticles.Emit(emitParams, count): the MetalScrape clone's particles are not presented.
-                self.random.inside_unit_circle();
+                self.physical_scrape_emit(p, &c, sq);
             }
         }
     }
@@ -1700,10 +1700,19 @@ impl Game {
             }
             let ph = &self.physicals[p];
             if self.prefs.FancyEffects && softness < 0.025 && !ph.IsUnderWater && self.properties[ph.Properties].SparksOnSlide && ph.sprite_id != 0 && ph.scrapeParticles && ph.isVisible && sq > 9.0 {
-                // scrapeParticles.Emit(emitParams, count): the MetalScrape clone's particles are not presented.
-                self.random.inside_unit_circle();
+                self.physical_scrape_emit(p, &c, sq);
             }
         }
+    }
+
+    /// scrapeParticles.Emit(new EmitParams { position = contact.point, velocity = Random.insideUnitCircle -
+    /// contact.relativeVelocity * 0.15f }, (int)Mathf.Clamp(sqr / 2f, 1f, 8f)).
+    fn physical_scrape_emit(&mut self, p: usize, c: &ContactPoint2D, sq: f32) {
+        let r = self.random.inside_unit_circle();
+        let v = [r[0] - c.relative_velocity.x * 0.15, r[1] - c.relative_velocity.y * 0.15];
+        let params = crate::particles::EmitParams { position: Some(bevy::math::Vec3::new(c.point.x, c.point.y, 0.0)), velocity: Some(bevy::math::Vec3::new(v[0], v[1], 0.0)), ..Default::default() };
+        let n = mathf::clamp(sq / 2.0, 1.0, 8.0) as u32;
+        self.ps_emit_params(|x| matches!(x.drive, super::EmbeddedDrive::MetalScrape(q) if q == p), params, n);
     }
 
     /// PhysicalBehaviour.ShowOutline's setter: false unless the ShowOutlines setting and HasOutline allow it; then the

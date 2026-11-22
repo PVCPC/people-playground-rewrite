@@ -2270,6 +2270,10 @@ pub struct EmbeddedPs {
     pub emission: Option<bool>,
 }
 
+/// Global.MetalScrapePrefab's root ParticleSystem: its GameObject, the root's local TRS and the ParticleSystem's
+/// component index on it.
+pub type MetalScrapeSystem = (crate::assets::db::ObjRef, crate::unity::transform::Trs, usize);
+
 /// A script's call on an embedded ParticleSystem.
 #[derive(Clone, Copy, Debug)]
 pub enum PsCall {
@@ -2278,8 +2282,8 @@ pub enum PsCall {
     Stop(f64),
     /// Emit(n), with the system's world position and rotation at the call.
     Emit(i32, [f32; 3], [f32; 4]),
-    /// Emit(EmitParams, 1), with the same pose.
-    EmitParams(crate::particles::EmitParams, [f32; 3], [f32; 4]),
+    /// Emit(EmitParams, n), with the same pose.
+    EmitParams(crate::particles::EmitParams, u32, [f32; 3], [f32; 4]),
     /// A script's module writes (rate and speed multipliers, startColor).
     Writes(crate::particles::PsWrites),
 }
@@ -2311,6 +2315,9 @@ pub enum EmbeddedDrive {
     Wh,
     /// 1.28.45's DrippingBloodParticleController `d`: Emit(EmitParams) on its ParticleSystem (v45_new.rs).
     Drip(usize),
+    /// PhysicalBehaviour `p`'s scrapeParticles (its Global.MetalScrapePrefab clone): Emit(EmitParams, n) of the scrape
+    /// sparks in ManagedFixedUpdate.
+    MetalScrape(usize),
     /// A system no script drives: it plays as its playOnAwake says (owner = its own component id).
     Free,
 }
@@ -3204,8 +3211,8 @@ pub struct Game {
     pub next_instance_id: i32,
     /// A clone of Global.MetalScrapePrefab: the instance ids it takes (objects and components) and the
     /// Random.value draws its ActivateIfFancyEffects Awakes make; None when the scene was not loaded from data.
-    /// Its objects in prefab order: (the ids each takes, its parent object).
-    pub metal_scrape: Option<(usize, usize, Vec<(usize, Option<usize>)>)>,
+    /// Its objects in prefab order: (the ids each takes, its parent object), and its root's ParticleSystem.
+    pub metal_scrape: Option<(usize, usize, Vec<(usize, Option<usize>)>, MetalScrapeSystem)>,
     /// Global.HolleManPrefab: the zombie easter egg instantiated when a zombie head dies (person.rs).
     pub holle_man_prefab: Option<crate::assets::db::ObjRef>,
     /// FireParticleSystem.Emit calls for the drawing: Physical, position, startSize, startColor.

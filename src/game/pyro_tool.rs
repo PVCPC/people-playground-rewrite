@@ -212,14 +212,14 @@ impl Game {
             let t = (mathf::sqr_magnitude(cone) as f64 / (num3 as f64 * num3 as f64)) as f32;
             let start_color = super::visual::color_lerp([0.5, 0.5, 0.5, 1.0], [0.0; 4], t);
             let position = Some(bevy::math::Vec3::new(vector.x + cone[0], vector.y + cone[1], 0.0));
-            self.ps_emit_params(|x| matches!(x.drive, super::EmbeddedDrive::Pyro { e: pe, k: 2 } if pe == e), crate::particles::EmitParams { position, rotation: Some(rotation), start_color: Some(start_color), ..Default::default() });
+            self.ps_emit_params(|x| matches!(x.drive, super::EmbeddedDrive::Pyro { e: pe, k: 2 } if pe == e), crate::particles::EmitParams { position, rotation: Some(rotation), start_color: Some(start_color), ..Default::default() }, 1);
         }
         for k in 0..rays {
             let dir = Self::pyro_ray_dir(normalized, ray_angle, rays, k);
             let Some(hit) = self.raycast(vector, dir, num3, layers, f32::NEG_INFINITY, f32::INFINITY) else { continue };
             let Some(p) = self.hit_world_physical(&hit) else { continue };
             let position = Some(bevy::math::Vec3::new(hit.point.x, hit.point.y, 0.0));
-            self.ps_emit_params(|x| matches!(x.drive, super::EmbeddedDrive::Pyro { e: pe, k: 1 } if pe == e), crate::particles::EmitParams { position, ..Default::default() });
+            self.ps_emit_params(|x| matches!(x.drive, super::EmbeddedDrive::Pyro { e: pe, k: 1 } if pe == e), crate::particles::EmitParams { position, ..Default::default() }, 1);
             let rb = &self.physicals[p].rigidbody;
             let k = ((force as f64) * mathf::sqrt(rb.mass(&self.world)) as f64 * num3 as f64) as f32;
             rb.add_force(&mut self.world, [k * dir[0], k * dir[1]]);

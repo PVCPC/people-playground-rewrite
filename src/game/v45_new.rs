@@ -1652,7 +1652,7 @@ impl Game {
                 self.v45.drips[d].emitted.push((at, colour));
                 // particleSystem.Emit(new EmitParams { startColor = Colour, position = val }, 1)
                 let position = Some(bevy::math::Vec3::new(at[0], at[1], 0.0));
-                self.ps_emit_params(|x| matches!(x.drive, super::EmbeddedDrive::Drip(e) if e == d), crate::particles::EmitParams { position, start_color: Some(colour), ..Default::default() });
+                self.ps_emit_params(|x| matches!(x.drive, super::EmbeddedDrive::Drip(e) if e == d), crate::particles::EmitParams { position, start_color: Some(colour), ..Default::default() }, 1);
             }
         }
     }

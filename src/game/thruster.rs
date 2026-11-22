@@ -1,5 +1,5 @@
-//! ThrusterbedBehaviour. The effect plays while on, with its start speed and colour; its noise strength and the context
-//! menu are presentation; the activation, thrust, burn rays, temperature and Random draws stay.
+//! ThrusterbedBehaviour. The effect plays while on, with its start speed, colour and noise strength; the context
+//! menu is presentation; the activation, thrust, burn rays, temperature and Random draws stay.
 #![allow(non_snake_case)]
 
 use super::{d, mathf, script, Game};
@@ -117,15 +117,15 @@ impl Game {
     }
 
     /// ThrusterbedBehaviour.UpdateParticleSystem: startSpeedMultiplier = progress * Random.Range(5f, 12f) + Charge * 0.5,
-    /// startColor 4 * (num, num - Charge * 0.2, num + Charge * 0.6) * Max(1, Charge * 5) with num = Max(0.1, Charge / 8).
-    /// (noise.strengthMultiplier = progress * 2 is not drawn.)
+    /// startColor 4 * (num, num - Charge * 0.2, num + Charge * 0.6) * Max(1, Charge * 5) with num = Max(0.1, Charge / 8),
+    /// noise.strengthMultiplier = progress * 2.
     pub(crate) fn thrusterbed_update_particle_system(&mut self, i: usize, progress: f32) {
         let r = self.random.range(5.0, 12.0);
         let (id, charge) = (self.thrusterbeds[i].id, self.thrusterbed_boost(i));
         let num = mathf::max(0.1, charge / 8.0);
         let k = mathf::max(1.0, charge * 5.0);
         let color = [4.0 * num * k, 4.0 * (num - charge * 0.2) * k, 4.0 * (num + charge * 0.6) * k, 4.0 * k];
-        let w = crate::particles::PsWrites { speed: Some(progress * r + charge * 0.5), color: Some(color), ..Default::default() };
+        let w = crate::particles::PsWrites { speed: Some(progress * r + charge * 0.5), color: Some(color), noise: Some(progress * 2.0), ..Default::default() };
         self.ps_field_writes(id, "effect", w);
     }
 

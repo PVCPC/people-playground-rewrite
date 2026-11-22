@@ -85,9 +85,9 @@ impl Game {
         use crate::particles::PsWrites;
         let on = |x: f32| if full { x } else { 0.0 };
         if submerged {
-            self.ps_field_writes(id, "WaterPuffParticles", PsWrites { color: Some(colour), rate: Some(on(1.0)), distance: Some(on(3.0)), speed: None });
+            self.ps_field_writes(id, "WaterPuffParticles", PsWrites { color: Some(colour), rate: Some(on(1.0)), distance: Some(on(3.0)), speed: None, noise: None });
         } else {
-            self.ps_field_writes(id, liquid, PsWrites { color: Some(colour), rate: Some(on(rate)), distance: None, speed: Some(speed) });
+            self.ps_field_writes(id, liquid, PsWrites { color: Some(colour), rate: Some(on(rate)), distance: None, speed: Some(speed), noise: None });
         }
         self.ps_field_playing(id, liquid, !submerged);
         self.ps_field_playing(id, "WaterPuffParticles", submerged);

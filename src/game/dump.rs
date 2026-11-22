@@ -1729,10 +1729,12 @@ impl Game {
             }
             g.recorded_pools.push((r.name.clone(), pool));
         }
-        // The active list (psm=, newer recordings): each listed system by its slot. A bleed's root by its own psm; a
-        // BloodPuff's systems by GetComponentsInChildren position; a DeleteAfterTime clone's (SpawnParticles) leaves at
-        // its Destroy; any other (a bleed's Trail and water_puff) is a placeholder that leaves at the first EndUpdateAll.
+        // The active list (psm=, newer recordings): each listed system by its slot. A bleed's root by its own psm, its Trail
+        // by the bleed's (the parent record, same root); a BloodPuff's systems by GetComponentsInChildren position; a
+        // DeleteAfterTime clone's (SpawnParticles) leaves at its Destroy; any other (a bleed's water_puff) is a placeholder
+        // that leaves at the first EndUpdateAll.
         let psm = |t: &str| t.parse::<i32>().map_err(|_| format!("bad psm {t}"));
+        let clones: Vec<&Record> = s.of("Clone").collect();
         for r in s.of("Clone").filter(|r| !pasted_twin(s, r)) {
             let Some(i) = r.get("psm").map(psm).transpose()?.filter(|&i| i >= 0) else { continue };
             let comps = r.req("comps")?;
@@ -1742,7 +1744,11 @@ impl Game {
                 let key = comps.trim_matches(['[', ']']).split(';').find_map(|t| t.strip_prefix("Transform:")).and_then(|t| t.parse().ok()).ok_or("psm clone without a Transform")?;
                 crate::particles::Listed::Destroyed(key)
             } else {
-                crate::particles::Listed::Ghost
+                let parent = clones.iter().find(|c| c.get("root") == r.get("root") && c.get("index").is_some() && c.get("index") == r.get("parent"));
+                match parent.filter(|c| r.name == "Trail" && c.get("comps").is_some_and(|x| x.contains("BleedingParticleBehaviour:"))) {
+                    Some(c) => crate::particles::Listed::Trail(c.req("psm").and_then(psm)?),
+                    None => crate::particles::Listed::Ghost,
+                }
             };
             g.recorded_active.push((i, listed));
         }
@@ -2252,10 +2258,11 @@ impl Game {
             if let Some(ps) = r.get("scrapeParticles").and_then(reference) {
                 let key = format!("ParticleSystem:{ps}");
                 let Some(go) = s.of("Clone").find(|c| c.get("comps").is_some_and(|x| x.trim_matches(['[', ']']).split(';').any(|e| e == key))).map(|c| c.id) else { continue };
-                let objects = match &g.metal_scrape { Some(m) => m.2.clone(), None => g.load_metal_scrape().2 };
+                let (_, _, objects, (system, trs, _)) = match &g.metal_scrape { Some(m) => m.clone(), None => g.load_metal_scrape() };
                 let mut id = go;
                 let nodes: Vec<(i32, Option<usize>)> = objects.iter().map(|&(k, up)| { let t = id - 2; id -= 2 * k as i32; (t, up) }).collect();
                 g.add_runtime_clone(t, &nodes);
+                g.embedded_ps.push(super::EmbeddedPs { go: system, anchor: super::BareAnchor::Physical(p), chain: vec![trs], owner: g.physicals[p].id, drive: super::EmbeddedDrive::MetalScrape(p), shape_texture: None, awake: true, emission: None });
             }
         }
         // Each adopted SliderJoint2D's b2PrismaticJoint as recorded, last: a script's Start (WinchBehaviour.Start's

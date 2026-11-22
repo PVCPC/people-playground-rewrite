@@ -449,7 +449,7 @@ impl Game {
     /// SceneManager.LoadScene("Main"): the scene objects' serialized state and the Awake/Start effects the
     /// simulation reads. `game` is the game folder (UserPreferenceManager's working directory).
     /// Global.MetalScrapePrefab: what its Instantiate reaches the simulation with, (instance ids, Random draws).
-    fn metal_scrape_prefab(db: &mut AssetDb, s: &SceneScript) -> Result<(usize, usize, Vec<(usize, Option<usize>)>), String> {
+    fn metal_scrape_prefab(db: &mut AssetDb, s: &SceneScript) -> Result<(usize, usize, Vec<(usize, Option<usize>)>, super::MetalScrapeSystem), String> {
         let scrape = s.fields.get("MetalScrapePrefab").and_then(Value::pptr).and_then(|p| db.resolve(s.game_object.file, p)).ok_or("Global.MetalScrapePrefab")?;
         let prefab = db.prefab(scrape)?;
         // Only ActivateIfFancyEffects has a message (Optout is a marker): its Awake draws Random.value
@@ -473,7 +473,13 @@ impl Game {
             }
         }
         let objects: Vec<(usize, Option<usize>)> = prefab.objects.iter().map(|o| (1 + o.components.len(), o.parent)).collect();
-        Ok((objects.iter().map(|o| o.0).sum(), draws, objects))
+        // scrapeParticles: the root's ParticleSystem (GetComponent), its object and the root's local TRS (Instantiate under
+        // the physical keeps them).
+        let root = &prefab.objects[0];
+        let k = root.components.iter().position(|(_, c)| matches!(c, crate::assets::db::Component::Other(198))).ok_or("Global.MetalScrapePrefab: no ParticleSystem on its root")?;
+        let crate::assets::db::Component::Transform(t) = &root.components[0].1 else { unreachable!("a GameObject's first component is its Transform") };
+        let trs = crate::unity::transform::Trs { t: [t.local_position[0], t.local_position[1], t.local_position[2], 0.0], q: t.local_rotation, s: [t.local_scale[0], t.local_scale[1], t.local_scale[2], 0.0] };
+        Ok((objects.iter().map(|o| o.0).sum(), draws, objects, (root.game_object, trs, k)))
     }
 
     /// fnweap: level1's SimpleLightningEmitterBehaviour.PoolableLightningPrefab.
@@ -557,7 +563,7 @@ impl Game {
     }
 
     /// Global.MetalScrapePrefab of level1's Global, for a game not loaded from the scene (a recording's replay).
-    pub(super) fn load_metal_scrape(&mut self) -> (usize, usize, Vec<(usize, Option<usize>)>) {
+    pub(super) fn load_metal_scrape(&mut self) -> (usize, usize, Vec<(usize, Option<usize>)>, super::MetalScrapeSystem) {
         let game = crate::game_assets::find_game(None).expect("the game's data");
         let db = self.assets.get_or_insert_with(|| Box::new(AssetDb::open(&game).expect("the game's data")));
         let global = scene_scripts(db, "level1").and_then(|v| v.into_iter().find(|s| s.class == "Global").ok_or("level1: no Global".into())).expect("level1's Global");
