@@ -298,7 +298,9 @@ impl AssetDb {
                 }
                 for o in f.objects.iter().filter(|o| o.class_id == 48) {
                     let n = shader_name(f.data(o)).unwrap_or_else(|e| panic!("{file} shader {}: {e}", o.path_id));
-                    let Some(t) = SHADER_IDS.iter().find(|t| t.0 == file && t.1 == n) else { unimplemented!("shader {n} in {file}: no shader_ids.rs row") };
+                    // Not a game path: every shader of every accepted build has a row (test shader_ids_for_every_shader), and a mod's
+                    // shaders are in other files, skipped above. Only a new game build with a new shader lands here: add its row.
+                    let t = SHADER_IDS.iter().find(|t| t.0 == file && t.1 == n).unwrap_or_else(|| panic!("shader_ids.rs has no row for shader {n} in {file}"));
                     m.insert(ObjRef { file: fi, path_id: o.path_id }, t.2);
                 }
             }
