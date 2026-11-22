@@ -1066,7 +1066,11 @@ fn compare_ignore_stack(g: &Game, s: &Snapshot) -> Vec<String> {
 fn compare_camera_shake(g: &Game, s: &Snapshot) -> Vec<String> {
     let Some(r) = s.of("CameraShake").next() else { return Vec::new() };
     let (a, b) = (r.get("shake").unwrap_or(""), hex(g.camera.shakeIntensity));
-    if a != b { vec![format!("CameraShakeBehaviour.shakeIntensity: game {a} ours {b}")] } else { Vec::new() }
+    let mut d = if a != b { vec![format!("CameraShakeBehaviour.shakeIntensity: game {a} ours {b}")] } else { Vec::new() };
+    // sc2: the root's position (CameraShakeBehaviour.Update writes it through shakeTarget, 1.28.53).
+    let (a, b) = (r.get("root").unwrap_or(""), g.camera.root.map(hex).join(","));
+    if a != b { d.push(format!("CameraShakeBehaviour root: game {a} ours {b}")) }
+    d
 }
 
 fn compare_grid_cells(g: &Game, s: &Snapshot) -> Vec<String> {

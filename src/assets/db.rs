@@ -285,20 +285,21 @@ impl AssetDb {
         self.named(&self.texture_names, 28, name)
     }
 
-    /// A Shader's path id as the code knows it (1.28.41's, `shader_ids.rs`), matched by file and name; a shader that
-    /// file did not have then reads as its negated path id (no 1.28.41 id), one in a file the table leaves out as its own.
+    /// A Shader's id as the code knows it (`shader_ids.rs`: 1.28.41's path id, or 10000 + the first build's for a later
+    /// shader), matched by file and name; a shader in a file the table leaves out (a builtin resource file) keeps its own.
     pub fn shader_id(&self, r: ObjRef) -> i64 {
+        use super::shader_ids::{shader_name, SHADER_IDS};
         let ids = self.shader_ids.get_or_init(|| {
             let mut m = HashMap::new();
             for (fi, f) in self.files.iter().enumerate() {
-                let name = f.path.file_name().unwrap().to_string_lossy();
-                if !super::shader_ids::SHADER_IDS_41.iter().any(|t| t.0 == name) {
+                let file = f.path.file_name().unwrap().to_string_lossy();
+                if !SHADER_IDS.iter().any(|t| t.0 == file) {
                     continue;
                 }
                 for o in f.objects.iter().filter(|o| o.class_id == 48) {
-                    let n = super::shader_ids::shader_name(f.data(o));
-                    let id = super::shader_ids::SHADER_IDS_41.iter().find(|t| t.0 == name && Some(t.1) == n).map_or(-o.path_id, |t| t.2);
-                    m.insert(ObjRef { file: fi, path_id: o.path_id }, id);
+                    let n = shader_name(f.data(o)).unwrap_or_else(|e| panic!("{file} shader {}: {e}", o.path_id));
+                    let Some(t) = SHADER_IDS.iter().find(|t| t.0 == file && t.1 == n) else { unimplemented!("shader {n} in {file}: no shader_ids.rs row") };
+                    m.insert(ObjRef { file: fi, path_id: o.path_id }, t.2);
                 }
             }
             m
@@ -525,6 +526,20 @@ mod tests {
 
     fn depth(p: &Prefab, o: &PrefabObject) -> usize {
         o.parent.map_or(0, |i| 1 + depth(p, &p.objects[i]))
+    }
+
+    /// Every Shader in the build's files reads its name (shader_ids.rs) and has a row, and the ids the code tests come back
+    /// as 1.28.41's whatever this build numbers them.
+    #[test]
+    fn shader_ids_for_every_shader() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let db = AssetDb::open(&game).unwrap();
+        let ids: Vec<i64> = db.files.iter().enumerate().flat_map(|(file, f)| f.objects.iter().filter(|o| o.class_id == 48).map(move |o| ObjRef { file, path_id: o.path_id })).map(|r| db.shader_id(r)).collect();
+        assert!(ids.len() >= 115, "{} shaders", ids.len());
+        println!("{} shaders, {} with ids", ids.len(), ids.iter().filter(|&&i| i > 0).count());
+        for id in [34, 37, 130, 888, 891, 898] {
+            assert!(ids.contains(&id), "no shader takes id {id}");
+        }
     }
 
     /// Prints every CatalogData item's asset name, one per line after "ITEM " (for the catalog sweep runner).

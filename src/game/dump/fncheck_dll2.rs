@@ -55,6 +55,17 @@ fn dll2_cell_fields(s: &super::super::temperature::Cell) -> Vec<(&'static str, S
 }
 
 const PURE_DLL2: &[(&str, PureCall)] = &[
+    // sc2: FilePicker.Windows.WindowsFileSelector's filter lambda (1.28.53: CleanExtensions(in, includePeriod)) on `DllCheck run`
+    // rows, args[0] `Filter(Name="<s>" Extensions=["<s>";...])` (DllCheck's strings hold no quote, bracket, ';' or space).
+    ("<>c.<SelectFile>b__0_0", |c| {
+        c.with(1)?;
+        let a = c.args[0];
+        let (name, ext) = a.strip_prefix("Filter(Name=\"").and_then(|a| a.strip_suffix("])")).and_then(|a| a.split_once("\" Extensions=[")).ok_or_else(|| format!("not a Filter: {a}"))?;
+        let ext: Vec<&str> = if ext.is_empty() { Vec::new() } else { ext.split(';').map(|e| e.trim_matches('"')).collect() };
+        let s = super::super::naudio::file_picker_filter_string(&[(name, &ext)]);
+        // The lambda's own text: the one filter, without the "\0" join and the closing "\0\0".
+        Ok(s[..s.len() - 2].enc())
+    }),
     // gapA r17: plain classes on DllCheck's seeded rows (`DllCheck seeded`, DLLCHECK_DEFAULTS=1): AmbientTemperatureGridBehaviour
     // .Cell and BloodContainer.RefFloat, held by no Component the probe can make a case on.
     ("Cell.ForceSet", |c| { let w = c.with(2)?; let mut s = dll2_cell(c.args[0])?; let t = w.p_f32(1)?; let b = dll2_cell_fields(&s); s.ForceSet(t); Ok(dll_seeded_row("void".into(), &b, &dll2_cell_fields(&s), &[hex(t)])) }),
