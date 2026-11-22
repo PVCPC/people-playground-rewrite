@@ -1,5 +1,6 @@
 //! The game's cameras: Main Camera draws the scene, LightsCamera draws the LightSprite layer (half size, additive) into a
-//! texture, and LightsEffect multiplies the two (Main.unity's cameras, Hidden/Custom/LightPost).
+//! texture, and LightsEffect multiplies the two (Main.unity's cameras, Hidden/Custom/LightPost). 1.28.54's FireCamera draws
+//! the Fire layer (a third of the size) into another, which FireEffect warps and adds after (Hidden/Custom/FirePost).
 
 use bevy::{
     asset::embedded_asset,
@@ -31,6 +32,15 @@ const GRAIN_LAYER: usize = 29;
 const PRESENT_LAYER: usize = 32;
 /// Main Camera's cullingMask.
 const MAIN_MASK: u32 = 12087;
+/// GameObject layer 21 (1.28.54's FireCamera's cullingMask, which Main Camera's leaves out): fire particles.
+const FIRE: i32 = 21;
+/// FireCamera's render layer.
+const FIRE_LAYER: usize = 28;
+/// The FireEffect pass (BeforeStack, after LightsEffect's on 4); the bloom passes take 6 and up.
+const FIRE_PASS_LAYER: usize = 5;
+/// DEFAULT POST PROCESSING PROFILE's FireEffect (1.28.54): Intensity 5, LookupOffset -0.05, LookupMultiplier 3; its
+/// ColorRamp and WarpSequence are the Texture2Ds fire_colorramp and warp_noise_24. No other profile has one.
+const FIRE_PROFILE: [f32; 3] = [5.0, -0.05, 3.0];
 /// LightsEffect's Intensity, MinBrightness and MaxBrightness.
 #[derive(Debug, Default)]
 pub(crate) struct LightsEffect {
@@ -62,6 +72,10 @@ pub struct MainCamera;
 #[derive(Component)]
 struct LightsCamera;
 
+/// 1.28.54's FireCamera: Main Camera's view of the Fire layer, cleared to (0, 0, 0, 0).
+#[derive(Component)]
+struct FireCamera;
+
 /// On screen UI camera: the ScreenUI layer in world space over the post stack (Main Camera's view).
 #[derive(Component)]
 struct ScreenUiCamera;
@@ -79,6 +93,10 @@ struct Targets {
     composite: Handle<Composite>,
     /// The stack's result before the AfterStack HeatEffect.
     graded: Handle<Image>,
+    /// FireCamera's texture and FireEffect's result (the stack's source).
+    fire: Handle<Image>,
+    fired: Handle<Image>,
+    fire_material: Handle<Fire>,
     heat: Handle<Heat>,
     baker: Handle<GrainBaker>,
     /// The whole screen (post stack's end and UI) while it renders below the window's size.
@@ -317,6 +335,38 @@ struct Bloom {
 impl Material2d for Bloom {
     fn fragment_shader() -> ShaderRef {
         "embedded://people_playground_bevy/bloom.wesl".into()
+    }
+}
+
+/// Hidden/Custom/FirePost: FireEffectRenderer.Render's properties.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct Fire {
+    /// Intensity, LookupOffset, LookupMultiplier, and 1 when the effect runs.
+    #[uniform(0)]
+    settings: Vec4,
+    /// _Time.y, unity_OrthoParams.x, _ScreenParams.x / _ScreenParams.y, orthographicSize.
+    #[uniform(1)]
+    view: Vec4,
+    /// The camera's x and y (_ClipToWorld of an unrotated orthographic camera), _Gravity.
+    #[uniform(2)]
+    camera: Vec4,
+    #[texture(3)]
+    #[sampler(4)]
+    source: Handle<Image>,
+    #[texture(5)]
+    #[sampler(6)]
+    fire: Handle<Image>,
+    #[texture(7)]
+    #[sampler(8)]
+    ramp: Handle<Image>,
+    #[texture(9)]
+    #[sampler(10)]
+    warp: Handle<Image>,
+}
+
+impl Material2d for Fire {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://people_playground_bevy/fire.wesl".into()
     }
 }
 
@@ -716,10 +766,22 @@ impl Material2d for Composite {
 pub fn camera_layers(game_object_layer: i32) -> RenderLayers {
     RenderLayers::layer(match game_object_layer {
         LIGHT_SPRITE => 1,
+        FIRE => FIRE_LAYER,
         SCREEN_UI => SCREEN_UI_LAYER,
         l if MAIN_MASK >> l & 1 == 1 => 0,
         _ => 3,
     })
+}
+
+/// The culling pass that sees a GameObject layer, in render order: the cameras into textures first (FireCamera, then
+/// LightsCamera: both depth 1; ponytail: the order of the two is a guess from their order in Main.unity, unrecorded), then
+/// Main Camera.
+pub(crate) fn culling_pass(game_object_layer: i32) -> u8 {
+    match game_object_layer {
+        FIRE => 0,
+        LIGHT_SPRITE => 1,
+        _ => 2,
+    }
 }
 
 pub fn add(app: &mut App) {
@@ -727,14 +789,15 @@ pub fn add(app: &mut App) {
     embedded_asset!(app, "glow.wesl");
     embedded_asset!(app, "composite.wesl");
     embedded_asset!(app, "heat.wesl");
+    embedded_asset!(app, "fire.wesl");
     embedded_asset!(app, "grain_baker.wesl");
     embedded_asset!(app, "lit.wesl");
     embedded_asset!(app, "bloom.wesl");
     embedded_asset!(app, "panels.wesl");
     embedded_asset!(app, "thermal.wesl");
-    app.add_plugins((Material2dPlugin::<Glow>::default(), Material2dPlugin::<Lit>::default(), Material2dPlugin::<Bloom>::default(), Material2dPlugin::<Composite>::default(), Material2dPlugin::<Heat>::default(), Material2dPlugin::<GrainBaker>::default(), Material2dPlugin::<Panels>::default(), Material2dPlugin::<Thermal>::default()))
+    app.add_plugins((Material2dPlugin::<Glow>::default(), Material2dPlugin::<Lit>::default(), Material2dPlugin::<Bloom>::default(), Material2dPlugin::<Composite>::default(), Material2dPlugin::<Heat>::default(), Material2dPlugin::<Fire>::default(), Material2dPlugin::<GrainBaker>::default(), Material2dPlugin::<Panels>::default(), Material2dPlugin::<Thermal>::default()))
         .add_systems(Startup, setup)
-        .add_systems(PostUpdate, (follow, thermal_vision, smaa, present).before(TransformSystems::Propagate))
+        .add_systems(PostUpdate, (follow, fire, thermal_vision, smaa, present).before(TransformSystems::Propagate))
         .add_systems(PreUpdate, scaled_pointer.after(bevy::picking::PickingSystems::ProcessInput).before(bevy::picking::PickingSystems::Backend))
         .add_systems(PreUpdate, scaled_cursor.after(bevy::ui::UiSystems::Focus));
 }
@@ -801,7 +864,7 @@ fn bloom_pyramid(commands: &mut Commands, images: &mut Assets<Image>, passes: &m
         pass_index: 0,
     };
     let black = images.add(level_image(1, 1));
-    let mut order = 1;
+    let mut order = 2;
     let mut pass = |commands: &mut Commands, into: &Handle<Image>, material: Bloom| {
         let layer = 4 + order as usize;
         commands.spawn((BloomPass, pass_camera(order, layer, into)));
@@ -857,6 +920,7 @@ fn setup(
     mut heats: ResMut<Assets<Heat>>,
     mut bakers: ResMut<Assets<GrainBaker>>,
     mut colours: ResMut<Assets<ColorMaterial>>,
+    mut fires: ResMut<Assets<Fire>>,
 ) {
     let (w, h, factor) = render_size(&window, settings.as_deref());
     let image = |w, h| Image::new_target_texture(w, h, TextureFormat::Rgba16Float, None);
@@ -887,8 +951,26 @@ fn setup(
         DebandDither::Disabled,
         RenderLayers::layer(1),
     ));
-    // LightsEffect runs BeforeStack: bloom reads its result.
-    commands.spawn((pass_camera(0, 4, &lit), crate::exposure::ExposureView(exposure.clone())));
+    // FireCameraBehaviour.CreateNewRendertexture: MainCamera.pixelWidth / 3 by pixelHeight / 3, R32G32B32_SFloat (here
+    // Rgba16Float: wgpu filters 32-bit floats only with a feature), bilinear.
+    let fire = images.add(level_image((w / 3).max(1), (h / 3).max(1)));
+    commands.spawn((
+        FireCamera,
+        Camera2d,
+        Camera { order: -1, clear_color: black.clone(), ..default() },
+        target(&fire, factor / 3.0),
+        Hdr,
+        Tonemapping::None,
+        DebandDither::Disabled,
+        RenderLayers::layer(FIRE_LAYER),
+    ));
+    // LightsEffect, then FireEffect, run BeforeStack (Main Camera's PostProcessLayer lists them so): the stack (auto
+    // exposure, bloom) reads their result.
+    commands.spawn(pass_camera(0, 4, &lit));
+    let fired = images.add(level_image(w, h));
+    commands.spawn((pass_camera(1, FIRE_PASS_LAYER, &fired), crate::exposure::ExposureView(exposure.clone())));
+    let fire_material = fires.add(Fire { settings: Vec4::ZERO, view: Vec4::ZERO, camera: Vec4::ZERO, source: lit.clone(), fire: fire.clone(), ramp: white.clone(), warp: white.clone() });
+    commands.spawn((Mesh2d(quad.clone()), MeshMaterial2d(fire_material.clone()), RenderLayers::layer(FIRE_PASS_LAYER)));
     let fx = LightsEffect::profile();
     let lit_material = lits.add(Lit { settings: Vec4::new(fx.intensity, fx.min_brightness, fx.max_brightness, 1.0), scene: scene.clone(), lights: lights.clone() });
     commands.spawn((
@@ -921,7 +1003,7 @@ fn setup(
     ));
     let blended = blend_volumes("DEFAULT POST PROCESSING PROFILE", 0.0, 0.0, post_exposure(100.0), 2.0, &[]);
     let shape = bloom_shape((w, h), &blended);
-    let (bloom, texel) = bloom_pyramid(&mut commands, &mut images, &mut blooms, &quad, &lit, &exposure, (w, h), shape, false, bloom_threshold(&blended));
+    let (bloom, texel) = bloom_pyramid(&mut commands, &mut images, &mut blooms, &quad, &fired, &exposure, (w, h), shape, false, bloom_threshold(&blended));
     let grade = grade_uniform(&blended);
     // GrainRenderer's lookup: 128x128, bilinear, repeat.
     let mut grain = level_image(128, 128);
@@ -932,7 +1014,7 @@ fn setup(
     commands.spawn((Mesh2d(quad.clone()), MeshMaterial2d(baker.clone()), RenderLayers::layer(GRAIN_LAYER)));
     let composite = composites.add(Composite {
         settings: bloom_settings(texel, shape.2, &blended),
-        lit: lit.clone(),
+        lit: fired.clone(),
         bloom,
         exposure: exposure.clone(),
         video: Vec4::new(post_exposure(100.0), 0.0, 0.0, 1.0),
@@ -958,7 +1040,52 @@ fn setup(
     ));
     let present = colours.add(ColorMaterial { texture: Some(screen.clone()), alpha_mode: AlphaMode2d::Opaque, ..default() });
     commands.spawn((Mesh2d(quad.clone()), MeshMaterial2d(present), RenderLayers::layer(PRESENT_LAYER)));
-    commands.insert_resource(Targets { lit_material, scene, lights, lit, exposure, white, quad, composite, graded, heat, baker, screen });
+    commands.insert_resource(Targets { lit_material, scene, lights, lit, exposure, white, quad, composite, graded, heat, baker, screen, fire, fired, fire_material });
+}
+
+/// FireCameraBehaviour.OnPreRender (SyncTransform, SyncOrthographicSize) and FireEffectRenderer.Render's properties. The
+/// effect runs in the Main scene of 1.28.54 (the DEFAULT profile's FireEffect); elsewhere the pass hands LightsEffect's
+/// result on.
+fn fire(
+    play: Option<Res<crate::play::Play>>,
+    (window, settings): (Single<&Window, With<PrimaryWindow>>, Option<Res<crate::ui::Settings>>),
+    targets: Res<Targets>,
+    main: Single<(&Transform, &Projection), (With<MainCamera>, Without<FireCamera>)>,
+    mut camera: Single<(&mut Transform, &mut Projection), With<FireCamera>>,
+    mut fires: ResMut<Assets<Fire>>,
+    mut images: ResMut<Assets<Image>>,
+    mut textures: Local<crate::play::Textures>,
+    mut loaded: Local<Option<(Handle<Image>, Handle<Image>)>>,
+) {
+    *camera.0 = *main.0;
+    *camera.1 = main.1.clone();
+    let game = play.as_ref().filter(|_| crate::assets::il::is_1_28_45()).map(|p| &p.game);
+    if loaded.is_none() {
+        let db = game.and_then(|g| g.assets.as_deref());
+        let load = |name: &str, images: &mut Assets<Image>, textures: &mut crate::play::Textures| db.and_then(|db| crate::play::load_texture(db, images, textures, db.texture_by_name(name)?)).map(|t| t.0);
+        if let (Some(ramp), Some(warp)) = (load("fire_colorramp", &mut images, &mut textures), load("warp_noise_24", &mut images, &mut textures)) {
+            *loaded = Some((ramp, warp));
+        }
+    }
+    let (w, h, _) = render_size(&window, settings.as_deref());
+    let ortho = if let Projection::Orthographic(o) = main.1 { o.scale } else { 1.0 };
+    let aspect = w as f32 / h as f32;
+    let on = game.is_some() && loaded.is_some();
+    let [intensity, offset, multiplier] = FIRE_PROFILE;
+    let new_settings = Vec4::new(intensity, offset, multiplier, on as u32 as f32);
+    // Physics2D.gravity * 0.11f; Time.timeSinceLevelLoad as _Time.y.
+    let (time, gravity) = game.map_or((0.0, Vec2::ZERO), |g| (g.time.time, Vec2::new(g.world.gravity.x * 0.11, g.world.gravity.y * 0.11)));
+    let view = Vec4::new(time, ortho * aspect, aspect, ortho);
+    let at = Vec4::new(main.0.translation.x, main.0.translation.y, gravity.x, gravity.y);
+    if fires.get(&targets.fire_material).is_some_and(|m| m.settings != new_settings || m.view != view || m.camera != at) {
+        let mut m = fires.get_mut(&targets.fire_material).unwrap();
+        (m.settings, m.view, m.camera) = (new_settings, view, at);
+        if let Some((ramp, warp)) = loaded.as_ref() {
+            if m.ramp != *ramp {
+                (m.ramp, m.warp) = (ramp.clone(), warp.clone());
+            }
+        }
+    }
 }
 
 /// VideoSettingsInitBehaviour.Sync's Screen.SetResolution below the display's size: the whole screen, the post stack's
@@ -1042,12 +1169,12 @@ fn follow(
     targets: Res<Targets>,
     mut images: ResMut<Assets<Image>>,
     mut blooms: ResMut<Assets<Bloom>>,
-    (mut composites, mut heats, mut bakers): (ResMut<Assets<Composite>>, ResMut<Assets<Heat>>, ResMut<Assets<GrainBaker>>),
+    (mut composites, mut heats, mut bakers, mut fires): (ResMut<Assets<Composite>>, ResMut<Assets<Heat>>, ResMut<Assets<GrainBaker>>, ResMut<Assets<Fire>>),
     (old_passes, mut grain_pass): (Query<Entity, With<BloomPass>>, Single<&mut Camera, With<GrainPass>>),
     main: Single<(&Transform, &Projection), (With<MainCamera>, Without<LightsCamera>, Without<ScreenUiCamera>)>,
     mut lights: Single<(&mut Transform, &mut Projection), (With<LightsCamera>, Without<ScreenUiCamera>)>,
     mut screen_ui: Single<(&mut Transform, &mut Projection), (With<ScreenUiCamera>, Without<MainCamera>, Without<LightsCamera>)>,
-    mut scales: Query<(&mut RenderTarget, Has<LightsCamera>), Or<(With<MainCamera>, With<LightsCamera>)>>,
+    mut scales: Query<(&mut RenderTarget, Has<LightsCamera>, Has<FireCamera>), Or<(With<MainCamera>, With<LightsCamera>, With<FireCamera>)>>,
     settings: Option<Res<crate::ui::Settings>>,
     mut lits: ResMut<Assets<Lit>>,
     mut built: Local<Built>,
@@ -1106,8 +1233,16 @@ fn follow(
             if let Some(mut i) = images.get_mut(&targets.lights) {
                 i.resize(size((w / 2).max(1), (h / 2).max(1)));
             }
-            for (mut render_target, light) in &mut scales {
-                *render_target = target(if light { &targets.lights } else { &targets.scene }, if light { factor / 2.0 } else { factor });
+            // FireCameraBehaviour.Update: ResetRT on a resolution change.
+            if let Some(mut i) = images.get_mut(&targets.fire) {
+                i.resize(size((w / 3).max(1), (h / 3).max(1)));
+            }
+            for (mut render_target, light, fire) in &mut scales {
+                *render_target = match (light, fire) {
+                    (true, _) => target(&targets.lights, factor / 2.0),
+                    (_, true) => target(&targets.fire, factor / 3.0),
+                    _ => target(&targets.scene, factor),
+                };
             }
             if let Some(mut i) = images.get_mut(&targets.lit) {
                 i.resize(size(w, h));
@@ -1115,13 +1250,18 @@ fn follow(
             if let Some(mut i) = images.get_mut(&targets.graded) {
                 i.resize(size(w, h));
             }
+            if let Some(mut i) = images.get_mut(&targets.fired) {
+                i.resize(size(w, h));
+            }
+            // As the lights: the bind group holds the old textures until the material changes.
+            fires.get_mut(&targets.fire_material).unwrap().settings.w = -1.0;
             // Its bind group holds the old textures until the material changes.
             lits.get_mut(&targets.lit_material).unwrap().settings.w = lighting;
         }
         for e in &old_passes {
             commands.entity(e).despawn();
         }
-        let (bloom, texel) = bloom_pyramid(&mut commands, &mut images, &mut blooms, &targets.quad, &targets.lit, exposure, (w, h), shape, fast, threshold);
+        let (bloom, texel) = bloom_pyramid(&mut commands, &mut images, &mut blooms, &targets.quad, &targets.fired, exposure, (w, h), shape, fast, threshold);
         built.texel = texel;
         let mut composite = composites.get_mut(&targets.composite).unwrap();
         composite.bloom = bloom;

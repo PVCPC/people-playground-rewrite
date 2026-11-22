@@ -1339,13 +1339,10 @@ Parameter name: index"));
         self.detail_views.push(id);
     }
 
-    /// ExistInBeta.Start: SetActive(false) (1.28.41) or SetActive(true) (1.28.45) of the "Pre-release build text" label under
-    /// Canvas in Main.unity and Map Editor.unity, its only holders; the HUD draws it on 1.28.45 (view.rs pre_release_label).
+    /// ExistInBeta.Start: SetActive(false) of the "Pre-release build text" label under Canvas in Main.unity and Map Editor.unity,
+    /// its only holders (1.28.41 and 1.28.54; the 1.28.51-1.28.53 betas set it true and showed it).
     pub fn exist_in_beta_start(&mut self, id: i32) {
-        let active = crate::assets::il::is_1_28_45();
-        if !active {
-            self.with_component_instance(id, |g, inst, o| g.set_active_scripts(inst, o, false));
-        }
+        self.with_component_instance(id, |g, inst, o| g.set_active_scripts(inst, o, false));
     }
 
     /// ExistInThermalVision.Start, ExistInThermalVision.ThermalVisionToggled (`thermal_vision_toggle`) and ExistInThermalVision.OnDestroy (the destroyed_components check there):

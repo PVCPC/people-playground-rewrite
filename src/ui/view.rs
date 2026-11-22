@@ -216,25 +216,6 @@ pub fn note(p: &mut Kids, text: &str, born: f64) {
     });
 }
 
-/// Main.unity's "Pre-release build text" (Canvas, top centre): ExistInBeta.Start hides it in 1.28.41 and SetActive(true)
-/// keeps it in 1.28.45. Its TextMeshProUGUI text, size, m_fontColor and rect come from the scene; centre and middle
-/// aligned, wrapped in its box.
-fn pre_release_label(root: &mut Kids) {
-    const BETA: &str = "Canvas/Pre-release build text";
-    if !crate::assets::il::is_1_28_45() || !scene::has("Main", BETA) {
-        return;
-    }
-    let r = scene::rect("Main", BETA);
-    let color = scene::color_field("Main", BETA, "TextMeshProUGUI", "m_fontColor");
-    let [w, h] = r.size_delta;
-    // Anchored at the top centre with a top centre pivot: its box hangs from the top edge, centred on anchoredPosition.
-    root.spawn((
-        Node { position_type: PositionType::Absolute, left: percent(50), top: px(-r.anchored_position[1]), margin: UiRect { left: px(r.anchored_position[0] - w * r.pivot[0]), ..default() }, width: px(w), height: px(h), justify_content: JustifyContent::Center, ..column(0.0) },
-        Pickable::IGNORE,
-    ))
-    .with_children(|t| rich_in(t, &scene::text("Main", BETA), scene::font_size("Main", BETA), Justify::Center, color));
-}
-
 /// A Status bar item StatusController.Update turns on and off: TimeScaleView, FramerateView.
 #[derive(Component, Clone, Copy, PartialEq)]
 pub enum StatusItem {
@@ -1330,7 +1311,6 @@ fn controls_page(p: &mut Kids, ui: &Ui, controls: &Controls, art: &UiArt) {
 // ---------------------------------------------------------------- the game's HUD
 
 fn hud(root: &mut Kids, ui: &Ui, settings: &Settings, controls: &Controls, art: &UiArt, stopped: Option<&str>) {
-    pre_release_label(root);
     status_bar(root, ui, art);
     if !ui.hide_panels {
         catalog(root, ui, art, catalog_width(ui, settings));

@@ -888,7 +888,7 @@ pub fn run(start: &Start, rig: HumanRig, cache: PathBuf) -> Result<(), String> {
     if let (Ok(scene), Some(_)) = (std::env::var("PP_MISHAP"), &shot) {
         crate::mishap_view::add_test(&mut app, scene);
     }
-    // PP_FX3=belt|hidden|preview|lightning (with PPG_SHOT; ISSUES.md #21/#24): tools/recorder/Fx3VisProbe.cs's scene.
+    // PP_FX3=belt|hidden|preview|lightning|fire (with PPG_SHOT; ISSUES.md #21/#24): tools/recorder/Fx3VisProbe.cs's scene.
     if let (Ok(scene), Some(path)) = (std::env::var("PP_FX3"), &shot) {
         fx3_scene(&mut app, scene, path.clone());
     }
@@ -916,7 +916,8 @@ pub fn run(start: &Start, rig: HumanRig, cache: PathBuf) -> Result<(), String> {
 /// and lays its wire from the first wheel to the second; "glow" moves the lightning's LightSprite to (-4, 4) and shows it
 /// (no bolt, explosion or shake); "lightning" moves the map's
 /// WeatherLightningBehaviour to (-4, 4) with Width 0 at 5 s and starts FireBolt, and shoots the first frame its
-/// LightSprite shows (PPG_SHOT with -flash before .png). The shot is PPG_SHOT at PPG_AT.
+/// LightSprite shows (PPG_SHOT with -flash before .png); "fire" spawns a Wooden Pole at (0, -1) at 4 s and ignites it at 5 s
+/// (the probe shoots 1 s and 2.5 s later: PPG_AT 6 and 7.5). The shot is PPG_SHOT at PPG_AT.
 fn fx3_scene(app: &mut App, scene: String, path: String) {
     app.add_systems(Update, move |mut commands: Commands, time: Res<Time>, play: Option<ResMut<Play>>, mut step: Local<u32>, mut wheels: Local<Vec<usize>>| {
         let Some(mut play) = play else { return };
@@ -925,12 +926,21 @@ fn fx3_scene(app: &mut App, scene: String, path: String) {
         let mut spawn = |g: &mut crate::game::Game, at: [f32; 2]| {
             let mut db = g.assets.take().expect("the game's data");
             let first = g.physicals.len();
-            let (inst, _) = g.catalog_spawn(&mut db, "Wheel", [at[0], at[1], 0.0], false).expect("PP_FX3: the spawn");
+            let (inst, _) = g.catalog_spawn(&mut db, if scene == "fire" { "Wooden Pole" } else { "Wheel" }, [at[0], at[1], 0.0], false).expect("PP_FX3: the spawn");
             g.assets = Some(db);
             g.unsynced.push(inst);
             first
         };
         match *step {
+            // "fire" (1.28.54, FireVisProbe.cs): a Wooden Pole at (0, -1), ignited at 5 s.
+            0 if t >= 4.0 && scene == "fire" => {
+                *step = 10;
+                wheels.push(spawn(g, [0.0, -1.0]));
+            }
+            10 if t >= 5.0 => {
+                *step = 11;
+                g.ignite(wheels[0], true);
+            }
             0 if t >= 4.0 => {
                 *step = 1;
                 wheels.push(spawn(g, [1.0, -1.0]));

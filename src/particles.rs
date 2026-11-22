@@ -2503,8 +2503,10 @@ fn quads(b: &mut Buffers, s: &Sys, run: &Run, width: f32, cam: &crate::particle_
 fn stretched(b: &mut Buffers, s: &Sys, run: &Run, width: f32, cam: &crate::particle_render::CameraMatrices, stretch: ([f32; 3], bool, bool), with_pivot: bool) {
     use crate::particle_render as pr;
     let ([camera_velocity_scale, velocity_scale, length_scale], freeform, rotate) = stretch;
-    if with_pivot {
-        unimplemented!("mod-only: stretched billboard with a pivot, 3D size or sprite sheet: GenerateParticleGeometry<1,1,0,0> (0x180d87010)");
+    // GenerateParticleGeometry<1,1,0,0> (0x180d87010): with freeformStretching (1.28.54's fire) the pivot times the unclamped
+    // sizes goes to the freeform kernel as its offset.
+    if with_pivot && (!freeform || s.ps.sheet.as_ref().is_some_and(|sh| sh.mode == 1)) {
+        unimplemented!("mod-only: stretched billboard with a pivot and no freeformStretching (ParticleGeomStretch3D<1>, 0x180da5c80; the pivot doubled), or with a sprite sheet: GenerateParticleGeometry<1,1,0,0> (0x180d87010)");
     }
     if s.ps.space != 1 {
         unimplemented!("mod-only: stretched billboard outside World simulation space: View * World is not rewritten");
@@ -2533,7 +2535,8 @@ fn stretched(b: &mut Buffers, s: &Sys, run: &Run, width: f32, cam: &crate::parti
         let (sx, sy) = (size.x, if uses_3d_size { size.y } else { size.x });
         let q = pr::Stretched { p: p.position.to_array(), vel: (p.animated + p.velocity).to_array(), size_y: sy, half: pr::clamped_half(sx, sy, p.alive, limits), rot: p.rotation };
         let corners = if freeform {
-            pr::stretch_freeform(cam, identity, [k; 3], &q, cam_vel, velocity_scale, length_scale * k, rotate)
+            let pv = if with_pivot { [sx * s.pivot.x, sy * s.pivot.y, sx * s.pivot.z] } else { [0.0; 3] };
+            pr::stretch_freeform(cam, identity, [k; 3], &q, cam_vel, velocity_scale, length_scale * k, rotate, pv)
         } else {
             pr::stretch_3d(cam, axes, &q, cam_vel, velocity_scale, length_scale * k)
         };
@@ -3041,8 +3044,11 @@ fn attached_systems(
         let charge_on = !ph.ForceNoCharge && !ph.ForceNoChargeParticles;
         let rate = |v: f32| Emission { enabled: true, rate: charge_on.then_some(v), distance: None, size: None };
         let wet = ph.Wetness > 0.1;
+        // SetParticleEmission's else branch. 1.28.54: startSize Min(num4 * 2, 3.5) + Clamp01(num5 * 0.25), rateOverTime 15 * num5;
+        // 1.28.41: Min(num4 * 2, 2.5) and 12 * num5. startColor Lerp(black, white, num4) clamps either way.
+        let (fire_size, fire_rate) = if crate::assets::il::is_1_28_45() { ((burn * 2.0).min(3.5) + (area * 0.25).clamp(0.0, 1.0), 15.0 * area) } else { ((burn * 2.0).min(2.5), 12.0 * area) };
         let writes = [
-            Emission { enabled: !ph.has_fire_map && ph.burnIntensity >= 0.05, rate: Some(12.0 * area), distance: Some(area), size: Some((burn * 2.0).min(2.5)) },
+            Emission { enabled: !ph.has_fire_map && ph.burnIntensity >= 0.05, rate: Some(fire_rate), distance: Some(area), size: Some(fire_size) },
             Emission { enabled: true, rate: None, distance: Some(ph.Wetness * 2.0), size: None },
             rate((charge * 2.0).min(30.0)),
             rate((charge * flammability).min(10.0)),
@@ -4236,7 +4242,8 @@ fn render(g: &Game, w: &mut World, all: &HashMap<u32, Emitter>) -> Vec<u32> {
         last: bool,
         sub: bool,
         push: bool,
-        light: bool,
+        /// lights::culling_pass of its layer.
+        pass: u8,
     }
     let now = g.time.timeAsDouble;
     let mut info = HashMap::new();
@@ -4246,7 +4253,7 @@ fn render(g: &Game, w: &mut World, all: &HashMap<u32, Emitter>) -> Vec<u32> {
             let s = &w.library.systems[r.sys];
             // RendererBecameInvisible's push to inactiveEmittersWithStopActions, culled at `now`.
             let push = all[&r.id].stop_action != 0 && ((!r.halted && still_playing(r, &s.ps, now, now)) || !all_children_stopped(all, r.id));
-            info.insert(r.id, Seen { invalid: r.invalid, culled: r.culled, cull: s.first_cull, now: seen(g, r, s), last: r.seen, sub, push, light: s.game_layer == crate::lights::LIGHT_SPRITE });
+            info.insert(r.id, Seen { invalid: r.invalid, culled: r.culled, cull: s.first_cull, now: seen(g, r, s), last: r.seen, sub, push, pass: crate::lights::culling_pass(s.game_layer) });
             stack.extend(r.children.iter().map(|c| (c, true)));
         }
     }
@@ -4270,12 +4277,12 @@ fn render(g: &Game, w: &mut World, all: &HashMap<u32, Emitter>) -> Vec<u32> {
         r.cull_time = now;
     }
     let mut acts = Vec::new();
-    // UpdateVisibility (1805ef290) runs per camera's culling, each in node order: LightsCamera (the LightSprite layer)
-    // renders before Main Camera.
-    for light in [true, false] {
+    // UpdateVisibility (1805ef290) runs per camera's culling, each in node order: the cameras into textures (FireCamera's
+    // Fire layer, LightsCamera's LightSprite layer) render before Main Camera.
+    for pass in 0..3 {
         for id in manager.nodes.clone() {
             let Some(i) = info.get(&id) else { continue };
-            if i.now && !i.last && i.light == light {
+            if i.now && !i.last && i.pass == pass {
                 let r = run_by_id(runs, bleeds, attached, embedded, id).unwrap();
                 if became_visible(r, &library.systems, i.sub, g, manager, rng) && all[&id].stop_action != 0 {
                     acts.push(id);

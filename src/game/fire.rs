@@ -314,13 +314,17 @@ impl Game {
             let index = self.fire_map_random_firey_index(f, 0.05);
             if index != -1 {
                 let fi = self.fire_maps[f].Points[index as usize].FireIntensity;
-                let num3 = (d(fi) * fi * fi * fi * fi * fi * num2).f();
+                // 1.28.54: Mathf.Clamp01(fireIntensity * fireIntensity * num2); 1.28.41: fireIntensity^6 * num2.
+                let new = crate::assets::il::is_1_28_45();
+                let num3 = if new { mathf::clamp01((d(fi) * fi * num2).f()) } else { (d(fi) * fi * fi * fi * fi * fi * num2).f() };
                 if self.random.value() < num3 && !self.effects_off {
                     // FireParticleSystem.Emit(position = TransformPoint(LocalPoint), startSize, startColor).
                     let local = self.fire_maps[f].Points[index as usize].LocalPoint;
                     let position = self.transform_point3(p, [local[0], local[1], 0.0]);
                     let grey = mathf::clamp01(num3);
-                    self.fire_emits.push((p, position, mathf::min(num3 * 2.0, 2.5), [grey, grey, grey, 1.0]));
+                    // 1.28.54's startSize adds Mathf.Clamp01(num * 0.25f).
+                    let size = mathf::min(num3 * 2.0, 2.5) + if new { mathf::clamp01(num * 0.25) } else { 0.0 };
+                    self.fire_emits.push((p, position, size, [grey, grey, grey, 1.0]));
                 }
             }
         }

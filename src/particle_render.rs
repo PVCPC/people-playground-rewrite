@@ -830,12 +830,13 @@ pub(crate) fn stretch_3d(cam: &CameraMatrices, axes: [[f32; 3]; 3], q: &Stretche
     [std::array::from_fn(|i| side[i] + p[i]), std::array::from_fn(|i| side[i] + t[i]), std::array::from_fn(|i| t[i] - side[i]), std::array::from_fn(|i| p[i] - side[i])]
 }
 
-/// ParticleGeomStretchFreeform<1> (0x180da6a60), lane 0, with no pivot offset (0x3b8 zero): the quad faces the camera
+/// ParticleGeomStretchFreeform<1> (0x180da6a60), lane 0, `offset` the pivot offset (zero from GenerateParticleGeometry<1,0,0,0>;
+/// <1,1,0,0> (0x180d87010) passes (sx * pivot.x, sy * pivot.y, sx * pivot.z) on the unclamped sizes): the quad faces the camera
 /// position (InvView.t) with InvView.m1 as up, rotateWithStretchDirection turns it to the velocity, and the corners
 /// stretch along the velocity by |velocityScale |v| / size.y + lengthScale|. `world_rs` m_WorldMatrix's rotation
 /// columns, `scale` m_RenderScale, `cam_vel` the scaled world-space camera velocity.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn stretch_freeform(cam: &CameraMatrices, world_rs: [[f32; 3]; 3], scale: [f32; 3], q: &Stretched, cam_vel: [f32; 3], velocity_scale: f32, length_scale: f32, rotate: bool) -> [[f32; 3]; 4] {
+pub(crate) fn stretch_freeform(cam: &CameraMatrices, world_rs: [[f32; 3]; 3], scale: [f32; 3], q: &Stretched, cam_vel: [f32; 3], velocity_scale: f32, length_scale: f32, rotate: bool, offset: [f32; 3]) -> [[f32; 3]; 4] {
     let eps = f32::from_bits(0x0da24260);
     let k2 = |b: u32| f32::from_bits(b);
     let (cam_pos, up) = ([cam.c2w[3][0], cam.c2w[3][1], cam.c2w[3][2]], [cam.c2w[1][0], cam.c2w[1][1], cam.c2w[1][2]]);
@@ -898,7 +899,7 @@ pub(crate) fn stretch_freeform(cam: &CameraMatrices, world_rs: [[f32; 3]; 3], sc
     let mb: [f32; 3] = std::array::from_fn(|i| (u[i] * pc + fw[i] * 0.0) + sr[i] * ps);
     let mc = [(ez * fw[0] + ey * u[0]) + ex * sr[0], (ey * u[1] + ez * fw[1]) + sr[1] * ex, (u[2] * ey + ez * fw[2]) + sr[2] * ex];
     let (hx, hy) = q.half;
-    let (o0, o1, o2) = (0.0f32, 0.0f32, 0.0f32);
+    let [o0, o1, o2] = offset;
     let (x0, y0) = (o0 + -hx, hy + o1);
     let c0: [f32; 3] = std::array::from_fn(|i| (mb[i] * y0 + mc[i] * o2) + ma[i] * x0);
     let (y1, x1) = (o1 + hy, hx + o0);
@@ -966,15 +967,15 @@ mod tests {
         assert!(near(c[0][0], 0.0) && near(c[3][0], 0.0) && near(c[1][0], -0.16) && near(c[2][0], -0.16), "{c:?}");
         assert!(near(c[0][1].abs(), 0.03) && near(c[0][1], -c[3][1]) && near(c[1][1], c[0][1]), "{c:?}");
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, false);
+        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, false, [0.0; 3]);
         let span = |c: &[[f32; 3]; 4], i: usize| c.iter().map(|v| v[i]).fold(f32::MIN, f32::max) - c.iter().map(|v| v[i]).fold(f32::MAX, f32::min);
         assert!(c.iter().flatten().all(|x| x.is_finite()) && span(&c, 0) > span(&c, 1) * 2.0, "{c:?}");
         // rotateWithStretchDirection: a velocity square to the camera's up gives cos 0, and the kernel's divps then
         // rcpps(inf) * inf makes NaN corners (as in UnityPlayer); a slanted velocity is finite.
-        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, true);
+        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, true, [0.0; 3]);
         assert!(c.iter().flatten().all(|x| x.is_nan()), "{c:?}");
         let q = super::Stretched { vel: [1.0, 0.5, 0.0], ..q };
-        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, true);
+        let c = super::stretch_freeform(&cam, identity, [1.0; 3], &q, [0.0; 3], 0.1, 1.0, true, [0.0; 3]);
         assert!(c.iter().flatten().all(|x| x.is_finite()), "{c:?}");
     }
 

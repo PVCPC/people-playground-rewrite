@@ -5405,6 +5405,16 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                                             && let Some(p) = g.powers.iter().find(|p| p.kind == k) => {
                                             if (theirs == '1') != p.playing { d.push(format!("ParticleSystem effect of #{sid} isEmitting: game {theirs} ours {}", p.playing as u8)) }
                                         }
+                                        // v54: PhysicalBehaviour's Setup*Prefab systems as ours' flags (physical.rs set_particle_emission):
+                                        // the call made the system. Checker limit: isEmitting not compared (ours draws them in particles.rs), and one
+                                        // the PI already had (an earlier case's, its dirty flag rewound) is left out.
+                                        None if matches!(f.as_str(), "FireParticleSystem" | "ChargedParticleSystem" | "SmokeParticleSystem" | "BubbleParticleSystem")
+                                            && let Some(p) = g.physicals.iter().position(|p| p.id == sid) => {
+                                            if pre.get(&f).is_some_and(|v| v != "-") { continue }
+                                            let p = &g.physicals[p];
+                                            let has = match f.as_str() { "FireParticleSystem" => p.has_fire_system, "ChargedParticleSystem" => p.dirtyCharged, "SmokeParticleSystem" => p.dirtySmoke, _ => p.dirtyBubble };
+                                            if !has { d.push(format!("ParticleSystem {f} of #{sid} isEmitting: game {theirs}, ours has no system")) }
+                                        }
                                         None if pre.get(&f).and_then(|p| p.chars().next()) != Some(theirs) => d.push(format!("ParticleSystem {f} of #{sid} isEmitting: game {theirs}, ours has no system")),
                                         None => {}
                                     }

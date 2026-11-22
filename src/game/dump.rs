@@ -126,12 +126,12 @@ pub fn open_recording(path: &Path) -> Result<Box<dyn std::io::Read>, String> {
     }
 }
 
-/// A loop recording for the running game: on 1.28.53 its re-recording `<name>-v53.txt` (or `.txt.gz`) beside it when
+/// A loop recording for the running game: on 1.28.54 its re-recording `<name>-v54.txt` (or `.txt.gz`) beside it when
 /// there is one, else its 1.28.52 one (`-v52c`, `-v52b`, `-v52`: the data both builds share); on 1.28.41 its re-recording `<name>-v41b.txt` (the loaded bleeds' randoms, pseed=) when there is one;
 /// else the path itself.
 pub fn recording_for_version(path: &Path) -> std::path::PathBuf {
-    // A later re-recording over an earlier one: -v53 over -v52c over -v52b (every particle system's active-list slot) over -v52.
-    let versions: &[&str] = if crate::assets::il::is_1_28_45() { &["v53", "v52c", "v52b", "v52"] } else { &["v41b"] };
+    // A later re-recording over an earlier one: -v54 over -v53 over -v52c over -v52b (every particle system's active-list slot) over -v52.
+    let versions: &[&str] = if crate::assets::il::is_1_28_45() { &["v54", "v53", "v52c", "v52b", "v52"] } else { &["v41b"] };
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         for v in versions {
             let re = path.with_file_name(format!("{stem}-{v}.txt"));

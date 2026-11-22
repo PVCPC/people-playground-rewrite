@@ -35,6 +35,7 @@ pub struct AssetDb {
     sprite_names: std::sync::OnceLock<HashMap<String, ObjRef>>,
     material_names: std::sync::OnceLock<HashMap<String, ObjRef>>,
     clip_names: std::sync::OnceLock<HashMap<String, ObjRef>>,
+    texture_names: std::sync::OnceLock<HashMap<String, ObjRef>>,
     /// `shader_id`'s map, built on its first call.
     shader_ids: std::sync::OnceLock<HashMap<ObjRef, i64>>,
     /// Unity's builtin resource files (Resources/unity_builtin_extra, ...), opened on the first `resolve_builtin` into one
@@ -100,7 +101,7 @@ impl AssetDb {
             index.insert(n.clone(), files.len());
             files.push(SerializedFile::open(&data_dir.join(&n))?);
         }
-        Ok(Self { data_dir, files, names: index, managed: Managed::new(game), scripts: HashMap::new(), monos: HashMap::new(), catalog_lookup: None, prefabs: Default::default(), decoded: Default::default(), load_order: Default::default(), sprite_names: Default::default(), material_names: Default::default(), clip_names: Default::default(), shader_ids: Default::default(), builtin: HashMap::new() })
+        Ok(Self { data_dir, files, names: index, managed: Managed::new(game), scripts: HashMap::new(), monos: HashMap::new(), catalog_lookup: None, prefabs: Default::default(), decoded: Default::default(), load_order: Default::default(), sprite_names: Default::default(), material_names: Default::default(), clip_names: Default::default(), texture_names: Default::default(), shader_ids: Default::default(), builtin: HashMap::new() })
     }
 
     pub fn file_index(&self, name: &str) -> Option<usize> {
@@ -277,6 +278,11 @@ impl AssetDb {
     /// Rewrite extra (extras_glue's sounds): an AudioClip asset by name, as sprite_by_name.
     pub fn clip_by_name(&self, name: &str) -> Option<ObjRef> {
         self.named(&self.clip_names, 83, name)
+    }
+
+    /// A Texture2D asset by name, as sprite_by_name (lights.rs: the FireEffect profile's textures).
+    pub fn texture_by_name(&self, name: &str) -> Option<ObjRef> {
+        self.named(&self.texture_names, 28, name)
     }
 
     /// A Shader's path id as the code knows it (1.28.41's, `shader_ids.rs`), matched by file and name; a shader that

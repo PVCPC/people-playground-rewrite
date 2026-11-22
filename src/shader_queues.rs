@@ -3,7 +3,7 @@
 // HeatEffectRenderer.Init: Shader.Find("Hidden/Custom/HeatEffect"), the Composite's heat step (composite.wesl).
 // HeatEffectRenderer.Render: _Intensity, _Frequency and _Speed from the blended settings (lights.rs blend_volumes), the frame blitted through the heat step (composite.wesl).
 // ShaderProperties.Get: presentation (a cache of Shader.PropertyToID; the ids are renderer handles)
-pub(crate) const SHADER_QUEUES: [(i64, i16); 157] = [
+pub(crate) const SHADER_QUEUES: [(i64, i16); 158] = [
     (17, 2000), // Hidden/InternalErrorShader
     (19, 2000), // Hidden/Internal-StencilWrite
     (33, 2000), // Legacy Shaders/VertexLit
@@ -11,6 +11,8 @@ pub(crate) const SHADER_QUEUES: [(i64, i16); 157] = [
     (35, 2000), // Unlit/LightsTextureShader
     (36, 2000), // Hidden/Custom/LightPost
     (37, 2000), // Hidden/Custom/HeatEffect
+    // 1.28.54 adds Hidden/Custom/FirePost at 35 and moves the three after it up one (all Queue 2000, so 35-37 still hold).
+    (38, 2000), // Hidden/Custom/HeatEffect (1.28.54)
     (62, 2000), // Hidden/Internal-DepthNormalsTexture
     (63, 2000), // Hidden/Internal-PrePassLighting
     (64, 2000), // Hidden/Internal-ScreenSpaceShadows
