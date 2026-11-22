@@ -283,6 +283,8 @@ pub struct Run {
     halted: bool,
     /// keep_updating_subs made it kPlaying this BeginUpdate: its job's deltaTime is 0.
     revived: bool,
+    /// A loaded bleed recorded without pseed=: its randoms are unknown, so it may never emit (`check_seeded`).
+    unseeded: bool,
     /// The clone it was played in (0: none) and its prefab object with that object's ancestors (empty: none).
     group: u32,
     chain: Vec<usize>,
@@ -455,6 +457,17 @@ fn start_with(sys: usize, position: Vec3, rotation: Quat, scale: f32, systems: &
         run.children.push(child);
     }
     run
+}
+
+/// A run's randoms reach compared state only through its particles: an unseeded one (a loaded bleed recorded without
+/// pseed=) must never make one.
+fn check_seeded(run: &Run) {
+    assert!(!run.unseeded, "a loaded bleed recorded without pseed= emits: the recording needs a pseed= re-recording");
+}
+
+/// An unseeded run's emission draws decide no count: every rate is a constant and it has no bursts.
+fn unseeded_ok(ps: &ParticleSystem) -> bool {
+    ps.rate_over_time.state == 0 && ps.rate_over_distance.state == 0 && ps.bursts.is_empty()
 }
 
 /// The distinct systems of a system's sub entries, in entry order: its children runs.
@@ -1257,6 +1270,9 @@ fn own_batch(run: &Run, s: &Sys, t: f32, dt: f32) -> Batch {
 /// accumulatedDt sub-emitter commands carry. Returns the index of the first new particle.
 #[allow(clippy::too_many_arguments)]
 fn start_particles(run: &mut Run, systems: &[Sys], drive: Option<&Drive>, g: &Game, state_t: f32, b: &Batch, dt: f32, rate: u64, total: u64, left: f32, before: f32, acc: f32, rng: &mut Rng) -> usize {
+    if total > 0 {
+        check_seeded(run);
+    }
     use crate::game::particle_modules as m;
     use crate::game::particle_shape as shape;
     use crate::game::particle_sim::{maxps, minps, start_alive};
@@ -1561,6 +1577,7 @@ fn script_color32(c: [f32; 4]) -> u32 {
 /// and invStartLifetime = 1 / startLifetime; then StartVelocity, StartLifetimeByEmitterSpeed, UpdateSizeModules and
 /// CopyParticlesToUnalignedDst. No step, no sub-emitter (SubModule::Update meets the particle in the next update).
 fn emit_external(run: &mut Run, systems: &[Sys], g: &Game, e: &EmitParams, rng: &mut Rng) {
+    check_seeded(run);
     use crate::game::particle_modules as m;
     use crate::game::particle_sim::{evaluate, gradient, maxps};
     let s = &systems[run.sys];
@@ -2763,12 +2780,16 @@ fn adjusted(db: &mut AssetDb, source: ObjRef) -> Vec<ObjRef> {
     for ob in &prefab.objects {
         for (_, c) in &ob.components {
             if let Component::Script { class, fields, .. } = c {
-                if class == "BloodImpactBehaviour" {
-                    for v in fields.get("ParticleSystemsToAdjust").and_then(|v| v.array()).into_iter().flatten() {
-                        let Some(r) = v.pptr().and_then(|p| db.resolve(source.file, p)) else { continue };
-                        if let Ok(go) = crate::assets::components::game_object_of(db.data(r)) {
-                            out.extend(db.resolve(r.file, go));
-                        }
+                // BloodExplosionBehaviour.SetColor: Debris1, Debris2 and ExtraChunks' startColor (no alpha change).
+                let systems: Vec<_> = match class.as_str() {
+                    "BloodImpactBehaviour" => fields.get("ParticleSystemsToAdjust").and_then(|v| v.array()).into_iter().flatten().collect(),
+                    "BloodExplosionBehaviour" => ["Debris1", "Debris2", "ExtraChunks"].iter().filter_map(|k| fields.get(k)).collect(),
+                    _ => Vec::new(),
+                };
+                for v in systems {
+                    let Some(r) = v.pptr().and_then(|p| db.resolve(source.file, p)) else { continue };
+                    if let Ok(go) = crate::assets::components::game_object_of(db.data(r)) {
+                        out.extend(db.resolve(r.file, go));
                     }
                 }
             }
@@ -3541,7 +3562,7 @@ pub fn begin_update_all(g: &mut Game) {
     let offs = std::mem::take(&mut g.pooled_child_off);
     let mut fresh: Vec<(usize, usize, Option<usize>)> = Vec::new();
     for (i, b) in g.bleeding.iter().enumerate() {
-        if b.loaded || bleeds.contains_key(&i) || g.physicals[b.Parent].destroyed || g.physicals[b.Parent].rigidbody.detached.is_some() {
+        if b.loaded || bleeds.contains_key(&i) || g.physicals[b.Parent].destroyed || !g.physicals[b.Parent].active || g.physicals[b.Parent].rigidbody.detached.is_some() {
             continue;
         }
         let Some(prefab) = b.prefab else { continue };
@@ -3554,6 +3575,8 @@ pub fn begin_update_all(g: &mut Game) {
     // BleedingParticleBehaviour.Start's Object.Destroy(WaterPuffSystem) where its delayed destroy ran: RemoveFromManager.
     let puffs_off = std::mem::take(&mut g.bleed_puff_off);
     let puff_updates = std::mem::take(&mut g.bleed_puff_updates);
+    let bleed_offs = std::mem::take(&mut g.bleed_off);
+    let mut b_off = 0;
     // A new bleed's puff calls before its run exists: applied once it is made below.
     let mut early: HashMap<usize, Vec<(Option<f32>, Option<[f32; 4]>, f64)>> = HashMap::new();
     let mut puff_gone = std::collections::HashSet::new();
@@ -3566,11 +3589,18 @@ pub fn begin_update_all(g: &mut Game) {
             let next_off = offs.get(o).filter(|x| x.2 .0 <= j).map(|x| x.2);
             let next_bleed = fresh.get(f).map(|x| g.bleeding[x.0].log_at).filter(|at| at.0 <= j);
             let next_puff = puffs_off.get(q).map(|x| x.1).filter(|at| at.0 <= j);
-            let first = [next_off, next_bleed, next_puff, next_call, next_update].into_iter().enumerate().filter_map(|(k, s)| s.map(|s| (s, k))).min().map(|x| x.1);
+            let next_bleed_off = bleed_offs.get(b_off).map(|x| x.1).filter(|at| at.0 <= j);
+            let first = [next_off, next_bleed, next_puff, next_call, next_update, next_bleed_off].into_iter().enumerate().filter_map(|(k, s)| s.map(|s| (s, k))).min().map(|x| x.1);
             match first {
                 Some(0) => {
                     child_off(runs, manager, offs[o].0, offs[o].1);
                     o += 1;
+                }
+                Some(5) => {
+                    if let Some(run) = bleeds.remove(&bleed_offs[b_off].0) {
+                        manager.forget(&run);
+                    }
+                    b_off += 1;
                 }
                 Some(1) => {
                     let (i, sys, puff) = fresh[f];
@@ -3619,6 +3649,11 @@ pub fn begin_update_all(g: &mut Game) {
     for &(p, name, _) in &offs[o..] {
         child_off(runs, manager, p, name);
     }
+    for &(i, _) in &bleed_offs[b_off..] {
+        if let Some(run) = bleeds.remove(&i) {
+            manager.forget(&run);
+        }
+    }
     for ((i, call), _) in calls[k..].iter().cloned() {
         embedded_call(g, &db, library, embedded, i, call, rng, manager);
     }
@@ -3660,10 +3695,9 @@ pub fn begin_update_all(g: &mut Game) {
     let mut restored = Vec::new();
     // BeginUpdate's roots' KeepUpdating subs (see keep_updating_subs), joined after the frame's Plays.
     let mut kept: Vec<(u32, Vec<u32>)> = Vec::new();
-    let mut loaded_rand: Option<crate::unity::Random> = None;
     for (i, b) in g.bleeding.iter().enumerate() {
-        // A child of the limb: destroyed with it, its particles too.
-        if g.physicals[b.Parent].destroyed || g.physicals[b.Parent].rigidbody.detached.is_some() {
+        // A child of the limb: destroyed or deactivated with it, its particles too.
+        if g.physicals[b.Parent].destroyed || !g.physicals[b.Parent].active || g.physicals[b.Parent].rigidbody.detached.is_some() {
             if let Some(run) = bleeds.remove(&i) {
                 manager.forget(&run);
             }
@@ -3700,26 +3734,20 @@ pub fn begin_update_all(g: &mut Game) {
             // continues from the recorded randoms (pseed=); the children (halted below) never draw.
             let rand = manager.rand;
             let lanes = |w: &[u32], o: usize| crate::game::particle_rand::RandN([0, 1, 2, 3].map(|i| crate::unity::Random { state: [w[o + i], w[o + 4 + i], w[o + 8 + i], w[o + 12 + i]] }));
-            if b.loaded {
-                if let Some(w) = &b.pseed {
-                    let seeds = crate::game::particle_rand::Seeds { random_seed: w[0], emission: crate::unity::Random { state: [w[1], w[2], w[3], w[4]] }, initial: lanes(w, 5) };
-                    pre.insert(sys, (seeds, manager.add()));
-                } else {
-                    // ponytail: recordings before pseed= (the 1.28.41 ones; on 1.28.52 the four loops whose pseed= re-recording
-                    // fails elsewhere keep theirs): the seeds are unknown; the loaded ones take successive draws of a copy of
-                    // the manager's Rand. No loop's compared state shows them (a fixed unrelated Rand passes all 54 on both
-                    // versions); a pseed= re-recording gives the real ones.
-                    manager.rand = loaded_rand.unwrap_or(rand);
-                }
+            let pseed = b.pseed.as_deref().filter(|_| b.loaded);
+            if let Some(w) = pseed {
+                let seeds = crate::game::particle_rand::Seeds { random_seed: w[0], emission: crate::unity::Random { state: [w[1], w[2], w[3], w[4]] }, initial: lanes(w, 5) };
+                pre.insert(sys, (seeds, manager.add()));
             }
             let mut run = start_with(sys, Vec3::ZERO, Quat::IDENTITY, 1.0, &library.systems, manager, &mut pre);
+            if let Some(w) = pseed {
+                run.shape.as_mut().unwrap().rand = lanes(w, 21);
+                run.collision.as_mut().unwrap().rand = lanes(w, 37);
+            }
             if b.loaded {
-                if let Some(w) = &b.pseed {
-                    run.shape.as_mut().unwrap().rand = lanes(w, 21);
-                    run.collision.as_mut().unwrap().rand = lanes(w, 37);
-                } else {
-                    loaded_rand = Some(manager.rand);
-                }
+                // Without pseed= start_with drew stand-in seeds from the manager's Rand: put it back; they are never used.
+                run.unseeded = pseed.is_none();
+                assert!(pseed.is_some() || unseeded_ok(&library.systems[sys].ps), "a loaded bleed without pseed= whose emission counts draw");
                 manager.rand = rand;
                 // Played long before the recording: the sub-emitters left the list (kStopped) at the first EndUpdateAll.
                 for c in &mut run.children {
@@ -3970,10 +3998,18 @@ pub fn end_update_all(g: &mut Game) -> Vec<crate::game::Pooled> {
     deactivate(&mut w.runs, &mut w.manager, &std::mem::take(&mut g.pooled_deactivated));
     // The Starts after BeginUpdate (LateUpdate's, of the clones the Update made) and their delayed destroys: in order,
     // before the walk (the stamps order the two kinds).
-    let mut late: Vec<((usize, u64), Option<(crate::game::Pooled, &'static str)>, usize)> = std::mem::take(&mut g.pooled_child_off).into_iter().map(|(p, n, at)| (at, Some((p, n)), 0)).collect();
-    late.extend(std::mem::take(&mut g.bleed_puff_off).into_iter().map(|(i, at)| (at, None, i)));
+    // (stamp, the pooled child, bleeding index, its limb went inactive)
+    let mut late: Vec<((usize, u64), Option<(crate::game::Pooled, &'static str)>, usize, bool)> = std::mem::take(&mut g.pooled_child_off).into_iter().map(|(p, n, at)| (at, Some((p, n)), 0, false)).collect();
+    late.extend(std::mem::take(&mut g.bleed_puff_off).into_iter().map(|(i, at)| (at, None, i, false)));
+    late.extend(std::mem::take(&mut g.bleed_off).into_iter().map(|(i, at)| (at, None, i, true)));
     late.sort_by_key(|x| x.0);
-    for (_, off, i) in late {
+    for (_, off, i, limb_off) in late {
+        if limb_off {
+            if let Some(run) = w.bleeds.remove(&i) {
+                w.manager.forget(&run);
+            }
+            continue;
+        }
         match off {
             Some((p, name)) => child_off(&mut w.runs, &mut w.manager, p, name),
             None => {

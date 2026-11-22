@@ -5690,6 +5690,9 @@ impl Game {
             if let Some(effect) = field(v, "PoolableImpactEffect")?.pptr().filter(|p| !p.is_null()) {
                 p.PoolableImpactEffect = Some(Some(db.resolve(file, effect).ok_or("PoolableImpactEffect outside the data")?));
             }
+            if let Some(bp) = field(v, "BloodExplosionPrefab")?.pptr().filter(|p| !p.is_null()) {
+                p.BloodExplosionPrefab = Some(db.resolve(file, bp).ok_or("BloodExplosionPrefab outside the data")?);
+            }
             // CirculationBehaviour copies the BleedingParticle prefab's DripSounds (a serialized array, never null).
             if let Some(bp) = field(v, "BleedingParticlePrefab")?.pptr().filter(|p| !p.is_null()) {
                 let go = db.resolve(file, bp).ok_or("BleedingParticlePrefab outside the data")?;

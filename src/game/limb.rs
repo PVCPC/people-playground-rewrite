@@ -1440,6 +1440,11 @@ impl Game {
             let extra_decals = 1.0 > self.random.value() && self.prefs.FancyEffects;
             let _chunks = 1.0 > self.random.value() && self.prefs.FancyEffects;
             self.pending_starts.push(super::misc::PendingStart::BloodExplosionSound);
+            // Its Debris, Debris 2 and chunks systems (and their sub-emitters) play from the clone's Awake.
+            let effect = self.people[self.limbs[l].Person].BloodExplosionPrefab.map(|prefab| {
+                self.log_effect(prefab, position, [0.0, 0.0, 0.0, 1.0], 1.0, None, None);
+                self.effect_log.len().wrapping_sub(1)
+            });
             // extraDecals: a circle of 25..32 drops from the explosion (its parent at Start).
             let splat = extra_decals.then(|| {
                 self.splats.push(super::misc::FancyBloodSplat {
@@ -1483,6 +1488,9 @@ impl Game {
                 let color = self.get_computed_color(super::container::Owner::Circulation(l), fallback);
                 if let Some(s) = splat {
                     self.splats[s].DecalColourMultiplier = color;
+                }
+                if let Some(e) = effect.filter(|_| !self.effects_off) {
+                    self.effect_log[e].color = Some(color);
                 }
             }
             self.limb_shatter_procedurally(l, 255);

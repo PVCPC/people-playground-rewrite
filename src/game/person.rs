@@ -181,6 +181,8 @@ script! {
         BleedingWaterPuff: bool = false,
         /// Person.BleedingParticlePrefab's GameObject, for its ParticleSystem.
         BleedingParticlePrefab: Option<crate::assets::db::ObjRef> = None,
+        /// Person.BloodExplosionPrefab's GameObject (LimbBehaviour.Crush instantiates it).
+        BloodExplosionPrefab: Option<crate::assets::db::ObjRef> = None,
         /// HingeJointLimitAutofixBehaviour.IsFlipped
         IsFlipped: bool = false,
         /// A pending Object.Destroy(root gameObject): the DelayedCallManager time it runs at.

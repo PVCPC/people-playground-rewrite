@@ -3087,6 +3087,9 @@ pub struct Game {
     pub pooled_child_off: Vec<(Pooled, &'static str, (usize, u64))>,
     /// BleedingParticleBehaviour.Start's Object.Destroy(WaterPuffSystem) as it ran, by bleeding index, with its `effect_stamp`.
     pub bleed_puff_off: Vec<(usize, (usize, u64))>,
+    /// SetActive(false) of a bleeding particle's limb as it ran (ParticleSystem OnDisable: RemoveFromManager of its
+    /// systems at once), by bleeding index, with its `effect_stamp`.
+    pub bleed_off: Vec<(usize, (usize, u64))>,
     /// BleedingParticleBehaviour.Update's WaterPuffSystem calls since the last BeginUpdate: (bleeding, under-water rate,
     /// startColor, time, `effect_stamp`).
     pub bleed_puff_updates: Vec<(usize, Option<f32>, Option<[f32; 4]>, f64, (usize, u64))>,

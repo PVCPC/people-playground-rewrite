@@ -1870,6 +1870,13 @@ impl Game {
                 b.prefab = Some(go);
             }
         }
+        // The Resources prefab the record names (@BloodExplosion#id): a crushed limb's explosion systems.
+        if let Some(name) = r.get("BloodExplosionPrefab").filter(|t| *t != "null") {
+            let name = name.trim_start_matches('@').split('#').next().unwrap();
+            let game = crate::game_assets::find_game(None)?;
+            let db = g.assets.get_or_insert_with(|| Box::new(crate::assets::db::AssetDb::open(&game).expect("the game's data")));
+            p.BloodExplosionPrefab = Some(db.resource(&format!("Prefabs/{name}"), 1)?.ok_or(format!("Resources Prefabs/{name}"))?);
+        }
         load_person_poses(&g, &mut p, rig_poses(rig, &g.limbs)?, r)?;
         p.localScale = match s.snap.iter().find(|(k, _)| k == "rootScale") {
             Some((_, v)) => floats(v),

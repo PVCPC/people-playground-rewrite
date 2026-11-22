@@ -2495,6 +2495,13 @@ impl Game {
         }
         self.rigidbody_cleanup(p);
         self.physicals[p].active = false;
+        // The bleeding particles under it go inactive with it: their systems leave the manager here.
+        for i in 0..self.bleeding.len() {
+            if self.bleeding[i].Parent == p {
+                let at = self.effect_stamp();
+                self.bleed_off.push((i, at));
+            }
+        }
         // The Joint2Ds a script or tool added to the object (or adopted from its prefab) go inactive with it.
         for f in self.fixed_joints.iter_mut().filter(|f| matches!(f.attached, super::BodyOwner::Physical(x) if x == p)) {
             f.active = false;
