@@ -7158,6 +7158,7 @@ impl Game {
         let Some(cartridge) = db.resolve(file, cartridge) else { unimplemented!("mod-only: FirearmBehaviour.Awake with a null Cartridge (NullReferenceException)") };
         let (_, _, cv) = db.mono(cartridge)?.ok_or("Cartridge is not a MonoBehaviour")?;
         fa.Cartridge = super::ballistics::Cartridge::read(&cv)?;
+        fa.cartridge_casing = cv.get("Casing").and_then(Value::pptr).filter(|p| !p.is_null()).and_then(|p| db.resolve(cartridge.file, p));
         fa.ShotSounds = array(v, "ShotSounds")?.len();
         fa.InaccuracyMultipliers = array(v, "InaccuracyMultipliers")?.iter().map(|x| x.f32().ok_or("InaccuracyMultipliers")).collect::<Result<_, _>>()?;
         fa.LayersToHit = field(field(v, "LayersToHit")?, "m_Bits")?.i64().ok_or("LayersToHit.m_Bits")? as u32;
@@ -9211,6 +9212,28 @@ impl Game {
 mod tests {
     use super::*;
     use crate::game_assets::HumanRig;
+
+    /// FirearmBehaviour.Awake: main.startSize = 0.18 * CasingSizeMultiplier, and with UseCustomCasingTexture and a
+    /// Cartridge.Casing the casing renderer's sharedMaterial is that Casing. Every firearm in the data, read and awoken.
+    #[test]
+    fn firearm_casing_size_and_material() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let mut db = AssetDb::open(&game).unwrap();
+        let (mut sized, mut textured) = (0, 0);
+        for r in db.find_scripts("FirearmBehaviour").unwrap() {
+            let (_, _, v) = db.mono(r).unwrap().unwrap();
+            let Ok(mut fa) = Game::firearm_from_fields(&mut db, r.file, &v) else { continue };
+            fa.awake_casing();
+            let mult = v.get("CasingSizeMultiplier").and_then(Value::f32).unwrap();
+            assert_eq!(fa.casing_size, 0.18 * mult);
+            let custom = v.get("UseCustomCasingTexture").and_then(Value::bool).unwrap();
+            assert_eq!(fa.casing_material.is_some(), custom && fa.cartridge_casing.is_some());
+            sized += (mult != 1.0) as usize;
+            textured += fa.casing_material.is_some() as usize;
+        }
+        println!("firearms with CasingSizeMultiplier != 1: {sized}, with a custom casing material: {textured}");
+        assert!(sized > 0 && textured > 0, "the data has firearms with both");
+    }
 
     /// Every dumped field that differs, as "<label> <field>: game <x> ours <y>".
     fn diff(label: &str, mut game: Vec<(&'static str, &mut dyn Field)>, mut ours: Vec<(&'static str, &mut dyn Field)>, out: &mut Vec<String>) {

@@ -22,6 +22,8 @@ script! {
         ShotHeatMultiplier: f32 = 1.0,
         MuzzleShockwave: bool = true,
         EjectShells: bool = true,
+        UseCustomCasingTexture: bool = true,
+        CasingSizeMultiplier: f32 = 1.0,
         DistantSound: i32 = 0,
     }
     links {
@@ -46,6 +48,11 @@ script! {
         casing_clone: Option<std::sync::Arc<crate::assets::db::Prefab>> = None,
         smoke_clone: Option<std::sync::Arc<crate::assets::db::Prefab>> = None,
         casing: Option<i32> = None,
+        /// Cartridge.Casing (null: None), and what Awake writes to the casing system: main.startSize = 0.18 *
+        /// CasingSizeMultiplier, and its renderer's sharedMaterial = Cartridge.Casing when UseCustomCasingTexture.
+        cartridge_casing: Option<ObjRef> = None,
+        casing_size: f32 = 0.18,
+        casing_material: Option<ObjRef> = None,
         smoke_ids: usize = 0,
         /// The Prefabs/MuzzleSmoke clone's root Transform (`muzzleTransform`), local to the gun: Awake instantiates it
         /// under the gun with the prefab's local pose; Shoot sets its scale, right and position. Its ParticleSystems
@@ -69,12 +76,21 @@ script! {
     }
 }
 
+impl Firearm {
+    /// main.startSize = 0.18f * CasingSizeMultiplier; if (UseCustomCasingTexture && Cartridge.Casing) sharedMaterial = Cartridge.Casing.
+    pub fn awake_casing(&mut self) {
+        self.casing_size = 0.18 * self.CasingSizeMultiplier;
+        self.casing_material = self.cartridge_casing.filter(|_| self.UseCustomCasingTexture);
+    }
+}
+
 impl Game {
     /// FirearmBehaviour.Awake: Instantiate(Prefabs/BulletCasing, transform) (particles only), AddComponent<AudioSource>,
     /// clock.RateHz, and Instantiate(Prefabs/MuzzleSmoke, transform) without an override; the rest sets up audio and
     /// particles.
     pub fn firearm_awake(&mut self, f: usize) {
         let casing: Vec<i32> = (0..self.firearms[f].casing_ids).map(|_| self.allocate_instance_id()).collect();
+        self.firearms[f].awake_casing();
         // AddComponent<AudioSource>: spread 35, volume ShotVolume, minDistance 15, spatialBlend 1, dopplerLevel 0. 1.28.45 sets the
         // volume in Start instead (the AudioSource's own 1 until then).
         let id = self.allocate_instance_id();
@@ -524,7 +540,7 @@ impl Game {
                 let at = self.casing_position(f);
                 let dir = self.casing_direction(f);
                 let a = dir[1].atan2(dir[0]) * 0.5;
-                self.effect_log.push(super::EffectSpawn { prefab, position: [at[0], at[1], 0.0], rotation: [0.0, 0.0, a.sin(), a.cos()], scale: 1.0, color: None, root: None, subtree: None, water: None, pooled: None, parent: None, off: Vec::new(), tint_all: false });
+                self.effect_log.push(super::EffectSpawn { prefab, position: [at[0], at[1], 0.0], rotation: [0.0, 0.0, a.sin(), a.cos()], scale: 1.0, color: None, root: None, subtree: None, water: None, pooled: None, parent: None, off: Vec::new(), tint_all: false, start_size: Some(self.firearms[f].casing_size), material: self.firearms[f].casing_material });
             }
         }
         for _ in 0..n {

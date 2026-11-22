@@ -1182,9 +1182,11 @@ impl World {
         self.fixtures.iter().enumerate().filter(|(_, f)| f.as_ref().is_some_and(|f| f.collider.id == collider)).map(|(i, _)| i).collect()
     }
 
-    /// Rigidbody2D.Distance(Collider2D).isOverlapped: b2Distance (with radii) between a fixture of the body and one of the
-    /// collider reaches zero. ponytail: Unity's own ColliderDistance2D is not ported; shapes that only touch within the polygon
-    /// skin count as overlapped here.
+    /// Rigidbody2D.Distance(Collider2D).isOverlapped (ColliderDistance2D.isOverlapped: distance < 0). Rigidbody2D::Distance
+    /// (180c1ee50) keeps the least distance of PhysicsQuery2D::Distance (180bec370) over the attached colliders, which
+    /// runs b2Distance without radii on every child pair: within the summed radii it makes a b2Contact and takes the
+    /// mean separation of its world manifold (no contact, or no manifold point: the b2Distance distance less the radii);
+    /// farther apart the distance less the radii is positive. So overlapped is a pair whose distance comes out below zero.
     pub fn body_collider_overlapped(&self, body: BodyId, collider: i32) -> bool {
         let others: Vec<&Fixture> = self.fixtures.iter().flatten().filter(|f| f.collider.id == collider).collect();
         let xa = self.body(body).xf;
@@ -1194,8 +1196,29 @@ impl World {
                 let xb = self.body(b.body).xf;
                 for ca in 0..a.shape.child_count() {
                     for cb in 0..b.shape.child_count() {
+                        let (pa, pb) = (a.shape.proxy(ca), b.shape.proxy(cb));
+                        let radii = pa.radius + pb.radius;
                         let mut cache = SimplexCache::default();
-                        if !(distance(&mut cache, &a.shape.proxy(ca), &xa, &b.shape.proxy(cb), &xb, true).distance > 0.0) {
+                        let out = distance(&mut cache, &pa, &xa, &pb, &xb, false);
+                        if !(out.distance <= radii || out.distance <= f32::EPSILON) {
+                            continue;
+                        }
+                        // b2Contact::Create: the pair in contact_order; none for two chains.
+                        let separation = if matches!((&a.shape, &b.shape), (Shape::Chain(_), Shape::Chain(_))) {
+                            None
+                        } else {
+                            let swap = a.shape.contact_order() < b.shape.contact_order();
+                            let ((sa, ia, xfa), (sb, xfb)) = if swap { ((&b.shape, cb, xb), (&a.shape, xa)) } else { ((&a.shape, ca, xa), (&b.shape, xb)) };
+                            let mut m = Manifold::default();
+                            evaluate(&mut m, sa, ia, &xfa, sb, &xfb);
+                            let w = WorldManifold::new(&m, &xfa, sa.radius(), &xfb, sb.radius());
+                            match m.point_count {
+                                0 => None,
+                                1 => Some(w.separations[0]),
+                                _ => Some((w.separations[1] + w.separations[0]) * 0.5),
+                            }
+                        };
+                        if separation.unwrap_or(out.distance - radii) < 0.0 {
                             return true;
                         }
                     }
@@ -2376,6 +2399,26 @@ mod tests {
         assert!((b.xf.p.y - 1.0).abs() < 0.05, "rest height {}", b.xf.p.y);
         assert!(b.xf.p.x.abs() < 1e-3 && b.sweep.a.abs() < 1e-3);
         assert_eq!(b.flags & BODY_AWAKE, 0, "should sleep");
+    }
+
+    /// ColliderDistance2D.isOverlapped is distance < 0: circles that just touch are not overlapped, a hair closer they
+    /// are, and boxes whose skins overlap are.
+    #[test]
+    fn body_collider_overlapped_needs_a_negative_distance() {
+        let overlapped = |shape: Shape, x: f32| {
+            let mut world = World::default();
+            let a = world.create_body(&BodyDef::default());
+            world.create_fixture(a, &FixtureDef { shape: shape.clone(), collider: ColliderRef { id: 1, game_object: 1 }, ..box_fixture(Vec2::new(1.0, 1.0)) }, true);
+            let b = world.create_body(&BodyDef { position: Vec2::new(x, 0.0), ..BodyDef::default() });
+            world.create_fixture(b, &FixtureDef { shape, collider: ColliderRef { id: 2, game_object: 2 }, ..box_fixture(Vec2::new(1.0, 1.0)) }, true);
+            world.body_collider_overlapped(a, 2)
+        };
+        let circle = || Shape::Circle(Circle { p: Vec2::ZERO, radius: 0.5 });
+        assert!(!overlapped(circle(), 1.0), "touching");
+        assert!(overlapped(circle(), 0.99));
+        assert!(!overlapped(circle(), 1.01));
+        assert!(overlapped(box_fixture(Vec2::new(1.0, 1.0)).shape, 1.015), "skins overlap");
+        assert!(!overlapped(box_fixture(Vec2::new(1.0, 1.0)).shape, 1.03));
     }
 
     /// Disintegrate's removal: the collider's shape and records go, then the body leaves the world.

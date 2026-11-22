@@ -199,47 +199,101 @@ mod tests {
         assert_eq!(states.len(), 2, "{:?}", states.iter().map(|s| &s.SpawnableAssetName).collect::<Vec<_>>());
     }
 
-    /// LukeFisher's crash (Discord 11-20): ten humans crushed under an I-beam driven down from above. Runs the real
-    /// stop path with a panic hook like main's and prints the report (cargo test crush -- --ignored --nocapture).
+    /// LukeFisher's crash (Discord 11-20): humans crushed under an I-beam smashed down from above. Each seed (CRUSH=<from>,<to>)
+    /// stands 6 to 11 humans apart on the floor (checked: no two overlap), puts an I-beam or Small I-Beam well above them
+    /// (checked clear), then drops it again and again, drives it down, or smashes it with the drag tool while grinding
+    /// sideways. Runs the real stop path with a panic hook like main's and prints the report
+    /// (cargo test crush -- --ignored --nocapture).
     #[test]
     #[ignore]
     fn crush_humans_under_a_beam() {
         let Ok(game) = crate::game_assets::find_game(None) else { return };
-        let mut g = crate::play::new_game(&game, "Default", None, None, 0).unwrap();
-        let mut db = g.assets.take().unwrap();
-        let names: Vec<String> = crate::ui::data::catalog(&mut db).unwrap().items.into_iter().map(|i| i.name).collect();
-        println!("BEAMS {:?}", names.iter().filter(|n| { let l = n.to_lowercase(); l.contains("beam") || l.contains("girder") || l.starts_with("i ") || l.contains("i-") }).collect::<Vec<_>>());
-        let beam = std::env::var("BEAM").unwrap_or_else(|_| "I-Beam".into());
-        for k in 0..10 {
-            let (inst, _) = g.catalog_spawn(&mut db, "Human", if std::env::var_os("PILE").is_some() { [(k % 2) as f32 * 0.3, 1.0 + k as f32 * 0.4, 0.0] } else { [-2.0 + k as f32 * 0.45, 1.0, 0.0] }, false).unwrap();
-            g.unsynced.push(inst);
-        }
-        let first = g.physicals.len();
-        let (inst, _) = g.catalog_spawn(&mut db, &beam, [0.0, 6.0, 0.0], false).unwrap();
-        g.unsynced.push(inst);
-        let parts: Vec<usize> = (first..g.physicals.len()).collect();
-        g.assets = Some(db);
+        let seeds = std::env::var("CRUSH").unwrap_or_else(|_| "0,20".into());
+        let (from, to) = seeds.split_once(',').unwrap();
         std::panic::set_hook(Box::new(|info| super::set_panic(format!("{info}
 {}", std::backtrace::Backtrace::force_capture()))));
-        for frame in 0..3600 {
-            // Smash down hard, then lift, over and over.
-            let down: f32 = std::env::var("DOWN").ok().and_then(|v| v.parse().ok()).unwrap_or(40.0);
-            let v = if frame % 120 < 90 { -down } else { 15.0 };
-            for &q in &parts {
-                let rb = g.physicals[q].rigidbody.clone();
-                rb.set_velocity(&mut g.world, [0.0, v]);
+        let bounds = |g: &crate::game::Game, r: std::ops::Range<usize>| {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for q in r {
+                let body = g.physicals[q].rigidbody.body;
+                for f in g.world.fixtures.iter().flatten().filter(|f| f.body == body) {
+                    for c in 0..f.shape.child_count() {
+                        let bb = f.shape.compute_aabb(&g.world.body(body).xf, c);
+                        lo = [lo[0].min(bb.lower.x), lo[1].min(bb.lower.y)];
+                        hi = [hi[0].max(bb.upper.x), hi[1].max(bb.upper.y)];
+                    }
+                }
             }
-            if let Err(m) = crate::play::step(&mut g, 1.0 / 60.0) {
+            (lo, hi)
+        };
+        let mut g = crate::play::new_game(&game, "Default", None, None, 0).unwrap();
+        for seed in from.parse::<u64>().unwrap()..to.parse::<u64>().unwrap() {
+            let mut r = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let mut rnd = move || { r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); ((r >> 33) as f32) / (1u64 << 31) as f32 };
+            g = crate::play::new_game(&game, "Default", None, None, 0).unwrap();
+            for _ in 0..30 { crate::play::step(&mut g, 1.0 / 60.0).unwrap(); }
+            let c = g.BoundingBox.center;
+            let mut db = g.assets.take().unwrap();
+            let gap = 1.2 + rnd() * 0.8;
+            let n = 6 + (rnd() * 6.0) as usize;
+            let mut people = Vec::new();
+            for k in 0..n {
+                let first = g.physicals.len();
+                let (inst, _) = g.catalog_spawn(&mut db, "Human", [c[0] - gap * (n as f32 - 1.0) * 0.5 + k as f32 * gap, 0.0, 0.0], false).unwrap();
+                g.unsynced.push(inst);
+                people.push(first..g.physicals.len());
+            }
+            g.assets = Some(db);
+            for _ in 0..2 { crate::play::step(&mut g, 1.0 / 60.0).unwrap(); }
+            let boxes: Vec<_> = people.iter().map(|p| bounds(&g, p.clone())).collect();
+            for (i, x) in boxes.iter().enumerate() {
+                assert!(boxes[i + 1..].iter().all(|y| !(x.0[0] < y.1[0] && y.0[0] < x.1[0])), "seed {seed}: humans overlap at spawn");
+            }
+            let top = boxes.iter().map(|x| x.1[1]).fold(f32::MIN, f32::max);
+            let beam = ["I-Beam", "Small I-Beam", "I-Beam", "I-Beam"][(rnd() * 4.0) as usize];
+            let mode = (rnd() * 3.0) as usize;
+            let (h, down, grind) = (6.0 + rnd() * 10.0, 20.0 + rnd() * 180.0, rnd() * 2.0);
+            let mut db = g.assets.take().unwrap();
+            let first = g.physicals.len();
+            let (inst, _) = g.catalog_spawn(&mut db, beam, [c[0], h, 0.0], false).unwrap();
+            g.unsynced.push(inst);
+            g.assets = Some(db);
+            let parts: Vec<usize> = (first..g.physicals.len()).collect();
+            crate::play::step(&mut g, 1.0 / 60.0).unwrap();
+            assert!(bounds(&g, first..g.physicals.len()).0[1] > top + 2.0, "seed {seed}: the beam is not well above the humans");
+            let mut stop = None;
+            for frame in 0..1800u32 {
+                match mode {
+                    // Lifted back up and dropped again.
+                    0 => if frame % 300 == 0 && frame > 0 {
+                        for &q in &parts { if !g.physicals[q].destroyed { let at = g.physicals[q].transform.position; g.move_physical_for_test(q, [0.0, h - at[1], 0.0]); } }
+                    },
+                    1 => { let v = if frame % 120 < 90 { -down } else { 15.0 }; for &q in &parts { if !g.physicals[q].destroyed { let rb = g.physicals[q].rigidbody.clone(); rb.set_velocity(&mut g.world, [0.0, v]); } } }
+                    // The drag tool picks it up and smashes it to the floor, grinding sideways, and lifts it again.
+                    _ => {
+                        let t = frame % 120;
+                        let y = if frame < 8 { h } else if t < 20 { h - (h - 0.1) * t as f32 / 20.0 } else if t < 80 { 0.1 } else { 0.1 + (h - 0.1) * (t - 80) as f32 / 40.0 };
+                        let x = c[0] + grind * ((frame as f32) * 0.05).sin();
+                        let origin = [c[0] - 19.2, -2.0];
+                        g.input.mouse = [x, y, 0.0];
+                        g.input.screen = Some(crate::game::tool::Screen { mouse: [(x - origin[0]) / 0.02, (y - origin[1]) / 0.02], origin, scale: 0.02, view: None });
+                        g.input.controls.insert("drag".into(), crate::game::tool::Control { down: frame == 1, held: frame >= 1, up: false });
+                    }
+                }
+                if let Err(m) = crate::play::step(&mut g, 1.0 / 60.0) { stop = Some((frame, m)); break; }
+            }
+            let crushed = g.physicals.iter().filter(|p| p.isDisintegrated).count();
+            let case = format!("seed {seed}: {beam}, mode {mode}, height {h:.1}, speed {down:.0}, {n} humans {gap:.2} m apart");
+            if let Some((frame, m)) = stop {
                 let _ = std::panic::take_hook();
                 let path = super::write(&mut g, Some("Default"), &m).expect("written");
                 let text = std::fs::read_to_string(&path).unwrap();
-                println!("STOPPED at frame {frame}: {m}
-REPORT {}
-{}", path.display(), text.split("Scene (").next().unwrap());
-                return;
+                let _ = std::fs::remove_file(&path);
+                panic!("{case}: STOPPED at frame {frame}: {m}
+{}", text.split("Scene (").next().unwrap());
             }
+            println!("{case}: no stop, {crushed} limbs crushed");
         }
-        println!("NO STOP in 3600 frames ({beam})");
         if std::env::var_os("FORCE").is_some() {
             // The same unwrap-on-None panic, raised inside the guarded step path, to see the report it makes.
             let m = crate::play::guarded(|| -> Result<(), String> { let none: Option<u8> = None; none.unwrap(); Ok(()) }).unwrap_err();

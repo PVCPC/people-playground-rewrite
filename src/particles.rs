@@ -363,6 +363,8 @@ pub struct Sys {
     order: i32,
     /// Whether the first render culls it (RendererBecameInvisible) and makes it visible again.
     first_cull: Cull,
+    /// A script's ParticleSystemRenderer.sharedMaterial write (the renderer's own first material when None).
+    material: Option<ObjRef>,
 }
 
 /// A renderer's mesh in world space.
@@ -2628,6 +2630,7 @@ pub struct Library {
     index: HashMap<ObjRef, usize>,
     /// A system with a script's shape.texture, by the system and the texture.
     textured: HashMap<(usize, ObjRef), usize>,
+    materialed: HashMap<(usize, ObjRef), usize>,
     /// By prefab root: empty for a prefab that moves, whose systems are not followed yet.
     prefabs: HashMap<ObjRef, Vec<Part>>,
     /// By prefab root: its NukeShockwaveBehaviours.
@@ -2668,8 +2671,8 @@ pub(crate) fn particle_material(m: &Material, st: [f32; 4], texture: Handle<Imag
 }
 
 #[allow(clippy::too_many_arguments)]
-fn output(db: &AssetDb, file: usize, list: &[crate::assets::classes::PPtr], at: usize, key: (i32, i16, f32, usize), gpu: &mut Gpu, blend_streams: bool, sheet_texture: Option<ObjRef>) -> Option<Output> {
-    let r = db.resolve(file, *list.get(at)?)?;
+fn output(db: &AssetDb, r: Option<ObjRef>, key: (i32, i16, f32, usize), gpu: &mut Gpu, blend_streams: bool, sheet_texture: Option<ObjRef>) -> Option<Output> {
+    let r = r?;
     let key = (key.0, key.1, render_queue(db, Some(r)), key.2, key.3);
     let m = Material::read(db.data(r)).unwrap();
     let (_, t, st) = m.textures.iter().find(|(n, ..)| n == "_MainTex")?;
@@ -2687,8 +2690,8 @@ fn renderer_outputs(db: &AssetDb, go: ObjRef, s: &Sys, gpu: &mut Gpu) -> [Option
     let Some(r) = of(199).map(|c| ParticleRenderer::read(db.data(c)).unwrap()) else { return [None, None] };
     // ParticleSystemVertexStream.AnimBlend: the second frame's UV2 comes with it.
     let streams = r.custom_streams && r.vertex_streams.contains(&8);
-    let quads = if !r.enabled || r.render_mode == 5 || r.mask_interaction == 1 { None } else { output(db, go.file, &r.materials, 0, (r.layer, r.order, r.sorting_fudge, 0), gpu, streams, s.sheet_texture) };
-    let trails = s.ps.trail.as_ref().filter(|_| r.enabled).and_then(|_| output(db, go.file, &r.materials, r.materials.len() - 1, (r.layer, r.order, r.sorting_fudge, 1), gpu, false, None));
+    let quads = if !r.enabled || r.render_mode == 5 || r.mask_interaction == 1 { None } else { output(db, s.material.or_else(|| db.resolve(go.file, *r.materials.first()?)), (r.layer, r.order, r.sorting_fudge, 0), gpu, streams, s.sheet_texture) };
+    let trails = s.ps.trail.as_ref().filter(|_| r.enabled).and_then(|_| output(db, r.materials.last().and_then(|m| db.resolve(go.file, *m)), (r.layer, r.order, r.sorting_fudge, 1), gpu, false, None));
     [quads, trails]
 }
 
@@ -2723,6 +2726,18 @@ impl Library {
         self.systems.len() - 1
     }
 
+    /// System `sys` drawn with `material` (a script's ParticleSystemRenderer.sharedMaterial write).
+    fn materialed(&mut self, sys: usize, material: ObjRef) -> usize {
+        if let Some(&i) = self.materialed.get(&(sys, material)) {
+            return i;
+        }
+        let mut s = self.systems[sys].clone();
+        s.material = Some(material);
+        self.systems.push(s);
+        self.materialed.insert((sys, material), self.systems.len() - 1);
+        self.systems.len() - 1
+    }
+
     /// The system on `go`; its sub-emitters with it.
     fn system(&mut self, db: &AssetDb, go: ObjRef, rotation: Quat) -> Option<usize> {
         if let Some(&i) = self.index.get(&go) {
@@ -2750,7 +2765,7 @@ impl Library {
         let subs = ps.subs.clone();
         let (pivot, flip) = (Vec3::from(r.pivot), Vec2::new(r.flip[0], r.flip[1]));
         let game_layer = db.game_object(go).ok()?.layer as i32;
-        self.systems.push(Sys { ps, subs: Vec::new(), rotation, prefab: None, local_rotation: Quat::IDENTITY, game_layer, fancy_only: false, awake: true, hierarchy: 1.0, local: 1.0, size_range: r.size_range, alignment: r.alignment, allow_roll: r.allow_roll, stretch: (r.render_mode == 1).then_some((r.stretch, r.freeform, r.rotate_with_stretch)), pivot, flip, linear: r.apply_active_color_space, frames, go: Some(go), sheet_texture, max_step: crate::game::particle_clock::maximum_particle_delta_time(db).unwrap(), order, first_cull });
+        self.systems.push(Sys { ps, subs: Vec::new(), rotation, prefab: None, local_rotation: Quat::IDENTITY, game_layer, fancy_only: false, awake: true, hierarchy: 1.0, local: 1.0, size_range: r.size_range, alignment: r.alignment, allow_roll: r.allow_roll, stretch: (r.render_mode == 1).then_some((r.stretch, r.freeform, r.rotate_with_stretch)), pivot, flip, linear: r.apply_active_color_space, frames, go: Some(go), sheet_texture, max_step: crate::game::particle_clock::maximum_particle_delta_time(db).unwrap(), order, first_cull, material: None });
         let subs: Vec<_> = subs.iter().filter_map(|sub| {
             let c = db.resolve(go.file, sub.emitter)?;
             let child = db.resolve(c.file, crate::assets::components::game_object_of(db.data(c)).ok()?)?;
@@ -2932,13 +2947,17 @@ fn play_effect(library: &mut Library, runs: &mut Vec<Run>, db: &mut AssetDb, e: 
             1 => if part.hierarchy == part.local { part.local * e.scale } else { part.local },
             _ => 1.0,
         };
-        let mut run = start_with(part.sys, root + turn * (part.position * e.scale), turn * part.rotation, scale, &library.systems, manager, &mut pre);
+        let sys = e.material.map_or(part.sys, |m| library.materialed(part.sys, m));
+        let mut run = start_with(sys, root + turn * (part.position * e.scale), turn * part.rotation, scale, &library.systems, manager, &mut pre);
         run.root = e.root;
         run.parent = e.parent.map(|p| (p, part.position, part.rotation, e.scale));
         (run.group, run.chain, run.pooled) = (group, part.chain.clone(), e.pooled);
         run.names = part.names.clone();
         run.clone_scale = e.scale;
         run.water = water.clone();
+        if let Some(size) = e.start_size {
+            run.emission = Some(Emission { enabled: true, rate: None, distance: None, size: Some(size) });
+        }
         if water.is_some() {
             written(&mut run);
         }
@@ -4698,7 +4717,7 @@ mod tests {
         fn add(db: &crate::assets::db::AssetDb, file: usize, ps: ParticleSystem, systems: &mut Vec<Sys>) -> usize {
             let i = systems.len();
             let entries = ps.subs.clone();
-            systems.push(Sys { game_layer: 0, fancy_only: false, awake: true, hierarchy: 1.0, local: 1.0, size_range: [0.0, 1.0], alignment: 0, allow_roll: false, stretch: None, ps, subs: Vec::new(), rotation: Quat::IDENTITY, prefab: None, local_rotation: Quat::IDENTITY, pivot: Vec3::ZERO, flip: Vec2::ZERO, linear: false, frames: Vec::new(), go: None, sheet_texture: None, max_step: 0.1, order: 0, first_cull: Cull::Never });
+            systems.push(Sys { game_layer: 0, fancy_only: false, awake: true, hierarchy: 1.0, local: 1.0, size_range: [0.0, 1.0], alignment: 0, allow_roll: false, stretch: None, ps, subs: Vec::new(), rotation: Quat::IDENTITY, prefab: None, local_rotation: Quat::IDENTITY, pivot: Vec3::ZERO, flip: Vec2::ZERO, linear: false, frames: Vec::new(), go: None, sheet_texture: None, max_step: 0.1, order: 0, first_cull: Cull::Never, material: None });
             let mut subs = Vec::new();
             for e in entries {
                 let Some(c) = db.resolve(file, e.emitter) else { continue };

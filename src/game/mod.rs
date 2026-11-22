@@ -2345,6 +2345,10 @@ pub struct EffectSpawn {
     pub off: Vec<&'static str>,
     /// Rewrite extra (extras_glue): `color` tints every system of the prefab, not only a BloodImpactBehaviour's.
     pub tint_all: bool,
+    /// main.startSize = this constant on the clone's systems (FirearmBehaviour.Awake's 0.18 * CasingSizeMultiplier).
+    pub start_size: Option<f32>,
+    /// ParticleSystemRenderer.sharedMaterial = this on the clone's systems (FirearmBehaviour.Awake's Cartridge.Casing).
+    pub material: Option<crate::assets::db::ObjRef>,
 }
 
 /// The clone root's local pose under a physical's Transform.
