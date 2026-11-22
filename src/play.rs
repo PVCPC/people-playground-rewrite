@@ -888,6 +888,10 @@ pub fn run(start: &Start, rig: HumanRig, cache: PathBuf) -> Result<(), String> {
     if let (Ok(scene), Some(_)) = (std::env::var("PP_MISHAP"), &shot) {
         crate::mishap_view::add_test(&mut app, scene);
     }
+    // PP_FX3=belt|hidden|preview|lightning (with PPG_SHOT; ISSUES.md #21/#24): tools/recorder/Fx3VisProbe.cs's scene.
+    if let (Ok(scene), Some(path)) = (std::env::var("PP_FX3"), &shot) {
+        fx3_scene(&mut app, scene, path.clone());
+    }
     if let Some(path) = shot {
         // The map's lights come on over the first seconds (MapLightBehaviour.DelayedActivation).
         app.add_systems(Update, move |time: Res<Time>, mut taken: Local<bool>, mut commands: Commands, mut exit: MessageWriter<AppExit>| {
@@ -904,6 +908,91 @@ pub fn run(start: &Start, rig: HumanRig, cache: PathBuf) -> Result<(), String> {
     }
     app.run();
     Ok(())
+}
+
+/// PP_FX3: Fx3VisProbe.cs's scenes (after the map lights). At 4 s two Wheels at (1, -1) and (5, -1) with a belt from the first; "hidden" adds two
+/// at (1, 3) and (5, 3) with an Invisible belt at 4.5 s and makes the tools invisible at 5 s; "preview" chooses the
+/// SerpentineBeltTool at 5 s and gives its line (-6, -2) to (-1, 1), enabled; "energy" chooses the EnergyWireTool at 5 s
+/// and lays its wire from the first wheel to the second; "glow" moves the lightning's LightSprite to (-4, 4) and shows it
+/// (no bolt, explosion or shake); "lightning" moves the map's
+/// WeatherLightningBehaviour to (-4, 4) with Width 0 at 5 s and starts FireBolt, and shoots the first frame its
+/// LightSprite shows (PPG_SHOT with -flash before .png). The shot is PPG_SHOT at PPG_AT.
+fn fx3_scene(app: &mut App, scene: String, path: String) {
+    app.add_systems(Update, move |mut commands: Commands, time: Res<Time>, play: Option<ResMut<Play>>, mut step: Local<u32>, mut wheels: Local<Vec<usize>>| {
+        let Some(mut play) = play else { return };
+        let g = &mut play.game;
+        let t = time.elapsed_secs();
+        let mut spawn = |g: &mut crate::game::Game, at: [f32; 2]| {
+            let mut db = g.assets.take().expect("the game's data");
+            let first = g.physicals.len();
+            let (inst, _) = g.catalog_spawn(&mut db, "Wheel", [at[0], at[1], 0.0], false).expect("PP_FX3: the spawn");
+            g.assets = Some(db);
+            g.unsynced.push(inst);
+            first
+        };
+        match *step {
+            0 if t >= 4.0 => {
+                *step = 1;
+                wheels.push(spawn(g, [1.0, -1.0]));
+                wheels.push(spawn(g, [5.0, -1.0]));
+                if scene == "hidden" {
+                    wheels.push(spawn(g, [1.0, 3.0]));
+                    wheels.push(spawn(g, [5.0, 3.0]));
+                }
+            }
+            1 if t >= 4.1 => {
+                *step = 2;
+                g.belt_add(wheels[0], wheels[1], false);
+            }
+            2 if t >= 4.5 => {
+                *step = 3;
+                if scene == "hidden" {
+                    g.belt_add(wheels[2], wheels[3], true);
+                }
+            }
+            3 if t >= 5.0 => {
+                *step = 4;
+                match scene.as_str() {
+                    "hidden" => g.tool_wheel_set_tool_visibility(true),
+                    "preview" => {
+                        g.set_tool_by_type_name("SerpentineBeltTool");
+                        let l = g.belt_tool.line.expect("the belt tool's line");
+                        g.lines[l].positions = vec![[-6.0, -2.0, 0.0], [-1.0, 1.0, 0.0]];
+                        g.lines[l].enabled = true;
+                    }
+                    "energy" => {
+                        g.set_tool_by_type_name("EnergyWireTool");
+                        g.wire_lay_between(wheels[0], wheels[1]);
+                    }
+                    "glow" => {
+                        let l = g.map_lightning.expect("the map's lightning");
+                        g.weather_lightning_light_to(l, [-4.0, 4.0, 0.0]);
+                        let r = g.lightnings[l].light.expect("the lightning's LightSprite");
+                        g.set_sprite_enabled(crate::game::visual::SpriteAt::Renderer(r), true);
+                    }
+                    "lightning" => {
+                        let l = g.map_lightning.expect("the map's lightning");
+                        g.lightnings[l].position = [-4.0, 4.0, 0.0];
+                        g.lightnings[l].Width = 0.0;
+                        g.weather_lightning_fire(l);
+                    }
+                    _ => {}
+                }
+            }
+            4 if scene == "lightning" => {
+                let l = g.map_lightning.unwrap();
+                if let Some(r) = g.lightnings[l].light.filter(|&r| g.renderers[r].enabled) {
+                    *step = 5;
+                    // The frame the flash shows (the probe's shot); the clock runs on, the flash lasts 0.032 s.
+                    use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+                    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.replace(".png", "-flash.png")));
+                    let x = &g.renderers[r];
+                    eprintln!("FX3 light at {t} chain {:?} line {:?}", x.chain.iter().map(|n| n.t).collect::<Vec<_>>(), g.lightnings[l].line.map(|i| g.lines[i].enabled));
+                }
+            }
+            _ => {}
+        }
+    });
 }
 
 /// A frame panic (an unrewritten feature) comes back as its message.
@@ -1049,7 +1138,8 @@ pub(crate) fn render_queue(db: &AssetDb, material: Option<crate::assets::db::Obj
         return m.render_queue as i16;
     }
     // By path id alone: the shader may sit in a built-in file we don't load.
-    crate::shader_queues::SHADER_QUEUES.iter().find(|q| q.0 == m.shader.path_id).unwrap_or_else(|| unimplemented!("mod-only: material {r:?}: shader has no queue")).1
+    let shader = db.material_shader_id(r.file, m.shader);
+    crate::shader_queues::SHADER_QUEUES.iter().find(|q| q.0 == shader).unwrap_or_else(|| unimplemented!("mod-only: material {r:?}: shader has no queue")).1
 }
 
 /// A sprite's draw key, in ForwardShaderRenderLoop::RenderObjectSorter<0>'s order (18061e340): its sorting layer's index
@@ -1276,7 +1366,7 @@ pub(crate) fn spawnable_outline_sprites(
     // Children past the pool's count do not exist; the pool keeps its entities (SetOutline deactivates the surplus).
 }
 
-/// sharedassets0's Unlit/AdditiveGlowSprite.
+/// sharedassets0's Unlit/AdditiveGlowSprite (1.28.41's path ids, `AssetDb::shader_id`).
 const ADDITIVE_GLOW_SHADER: i64 = 891;
 /// sharedassets0's Unlit/Jaap/PanelsShader.
 const PANELS_SHADER: i64 = 888;
@@ -1688,7 +1778,7 @@ fn upload_texture(images: &mut Assets<Image>, textures: &mut Textures, t: crate:
 pub(crate) fn panels_material(db: &crate::assets::db::AssetDb, images: &mut Assets<Image>, textures: &mut Textures, material: crate::assets::db::ObjRef, main: Handle<Image>, alpha: f32) -> Option<Option<crate::lights::Panels>> {
     let file = material.file;
     let m = crate::assets::components::Material::read(db.data(material)).ok()?;
-    if !db.resolve(file, m.shader).is_some_and(|s| s.path_id == PANELS_SHADER) {
+    if db.material_shader_id(file, m.shader) != PANELS_SHADER {
         return Some(None);
     }
     let (atlas, size) = load_texture(db, images, textures, db.resolve(file, m.textures.iter().find(|(n, ..)| n == "_Panels")?.1)?)?;
@@ -1742,7 +1832,7 @@ fn make_sprite(cache: &crate::game::limb_sprites::LimbSpriteCache, db: &crate::a
         let glow = material.and_then(|m| {
             let file = m.file;
             let m = crate::assets::components::Material::read(db.data(m)).ok()?;
-            let is_glow = db.resolve(file, m.shader).is_some_and(|s| s.path_id == ADDITIVE_GLOW_SHADER);
+            let is_glow = db.material_shader_id(file, m.shader) == ADDITIVE_GLOW_SHADER;
             is_glow.then(|| (m.color("_GlowColour").unwrap_or([1.0; 4]), m.float("_GlowIntensity").unwrap_or(1.0)))
         });
         // Unlit/Jaap/PanelsShader, on a Simple sprite of the map.
@@ -1758,7 +1848,7 @@ fn make_sprite(cache: &crate::game::limb_sprites::LimbSpriteCache, db: &crate::a
         if let Some(m) = material {
             let file = m.file;
             let m = crate::assets::components::Material::read(db.data(m)).ok()?;
-            if let Some(def) = db.resolve(file, m.shader).and_then(|s| crate::custom_material::def_for(s.path_id)) {
+            if let Some(def) = crate::custom_material::def_for(db.material_shader_id(file, m.shader)) {
                 let [u, v] = [(x - s.texture_rect_offset[0]) / texture[0], (y - s.texture_rect_offset[1]) / texture[1]];
                 let uv = [u, v, u + s.rect[2] / texture[0], v + s.rect[3] / texture[1]];
                 let draw_mode_given = draw_mode;
@@ -1777,7 +1867,7 @@ fn make_sprite(cache: &crate::game::limb_sprites::LimbSpriteCache, db: &crate::a
         // vertex colour, in the material's blend mode (VeryBright's Additive adds a black texel as nothing).
         if let Some(mr) = material {
             let m = crate::assets::components::Material::read(db.data(mr)).ok()?;
-            if m.shader.path_id == PARTICLES_SHADER {
+            if db.material_shader_id(mr.file, m.shader) == PARTICLES_SHADER {
                 let tiling = if draw_mode == 0 {
                     // A Simple sprite: the packed region's quad, about the sprite's pivot.
                     let pivot = [(s.pivot[0] * s.rect[2] - s.texture_rect_offset[0]) / w, (s.pivot[1] * s.rect[3] - s.texture_rect_offset[1]) / h];
@@ -1941,7 +2031,7 @@ pub(crate) fn limb_sprites(
         let key = sprite_key(ph.sprite_layer, order, render_queue(db, chosen), bounds_z(&g.local_to_world(limb.PhysicalBehaviour), ph.sprite_bounds.map_or([0.0; 3], |b| b.0)), 0, limb.PhysicalBehaviour);
         let body = chosen.and_then(|r| {
             let m = Material::read(db.data(r)).ok()?;
-            let shader = db.resolve(r.file, m.shader)?.path_id;
+            let shader = db.material_shader_id(r.file, m.shader);
             (shader == lm::BODY_SHADER || shader == lm::LEGACY_BODY_SHADER).then_some((r, m, shader == lm::LEGACY_BODY_SHADER))
         });
         let mut entity = commands.spawn((LimbSprite(l), Swapped(0), Mesh2d(mesh), Transform::default(), key));

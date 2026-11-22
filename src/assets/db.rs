@@ -35,6 +35,8 @@ pub struct AssetDb {
     sprite_names: std::sync::OnceLock<HashMap<String, ObjRef>>,
     material_names: std::sync::OnceLock<HashMap<String, ObjRef>>,
     clip_names: std::sync::OnceLock<HashMap<String, ObjRef>>,
+    /// `shader_id`'s map, built on its first call.
+    shader_ids: std::sync::OnceLock<HashMap<ObjRef, i64>>,
     /// Unity's builtin resource files (Resources/unity_builtin_extra, ...), opened on the first `resolve_builtin` into one
     /// and appended to `files`; `resolve` never reaches them.
     builtin: HashMap<String, usize>,
@@ -98,7 +100,7 @@ impl AssetDb {
             index.insert(n.clone(), files.len());
             files.push(SerializedFile::open(&data_dir.join(&n))?);
         }
-        Ok(Self { data_dir, files, names: index, managed: Managed::new(game), scripts: HashMap::new(), monos: HashMap::new(), catalog_lookup: None, prefabs: Default::default(), decoded: Default::default(), load_order: Default::default(), sprite_names: Default::default(), material_names: Default::default(), clip_names: Default::default(), builtin: HashMap::new() })
+        Ok(Self { data_dir, files, names: index, managed: Managed::new(game), scripts: HashMap::new(), monos: HashMap::new(), catalog_lookup: None, prefabs: Default::default(), decoded: Default::default(), load_order: Default::default(), sprite_names: Default::default(), material_names: Default::default(), clip_names: Default::default(), shader_ids: Default::default(), builtin: HashMap::new() })
     }
 
     pub fn file_index(&self, name: &str) -> Option<usize> {
@@ -275,6 +277,33 @@ impl AssetDb {
     /// Rewrite extra (extras_glue's sounds): an AudioClip asset by name, as sprite_by_name.
     pub fn clip_by_name(&self, name: &str) -> Option<ObjRef> {
         self.named(&self.clip_names, 83, name)
+    }
+
+    /// A Shader's path id as the code knows it (1.28.41's, `shader_ids.rs`), matched by file and name; a shader that
+    /// file did not have then reads as its negated path id (no 1.28.41 id), one in a file the table leaves out as its own.
+    pub fn shader_id(&self, r: ObjRef) -> i64 {
+        let ids = self.shader_ids.get_or_init(|| {
+            let mut m = HashMap::new();
+            for (fi, f) in self.files.iter().enumerate() {
+                let name = f.path.file_name().unwrap().to_string_lossy();
+                if !super::shader_ids::SHADER_IDS_41.iter().any(|t| t.0 == name) {
+                    continue;
+                }
+                for o in f.objects.iter().filter(|o| o.class_id == 48) {
+                    let n = super::shader_ids::shader_name(f.data(o));
+                    let id = super::shader_ids::SHADER_IDS_41.iter().find(|t| t.0 == name && Some(t.1) == n).map_or(-o.path_id, |t| t.2);
+                    m.insert(ObjRef { file: fi, path_id: o.path_id }, id);
+                }
+            }
+            m
+        });
+        ids.get(&r).copied().unwrap_or(r.path_id)
+    }
+
+    /// A Material's shader (`p`, written in `file`) as `shader_id` gives it; one outside the loaded files (Unity's builtin
+    /// resources, globalgamemanagers' Particles/Standard Unlit 34 and the rest) by its PPtr path id.
+    pub fn material_shader_id(&self, file: usize, p: PPtr) -> i64 {
+        self.resolve(file, p).map_or(p.path_id, |s| self.shader_id(s))
     }
 
     fn named(&self, cell: &std::sync::OnceLock<HashMap<String, ObjRef>>, class_id: i32, name: &str) -> Option<ObjRef> {

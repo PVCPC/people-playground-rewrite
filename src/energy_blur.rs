@@ -46,7 +46,7 @@ pub fn energy_blurs(
         let b = &g.energy_blurs[i];
         let Some(r) = b.material else { unimplemented!("mod-only: EnergySwordMotionBlur's MeshRenderer without a material") };
         let m = Material::read(db.data(r)).unwrap();
-        let Some(def) = db.resolve(r.file, m.shader).and_then(|s| crate::custom_material::def_for(s.path_id)).filter(|d| d.path_id == 905) else {
+        let Some(def) = crate::custom_material::def_for(db.material_shader_id(r.file, m.shader)).filter(|d| d.path_id == 905) else {
             // Excalibur's ExcaliburBlurMaterial is the builtin Sprites-Default: not drawn.
             drawn.push(Drawn { entity: None, version: 0 });
             continue;

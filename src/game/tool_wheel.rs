@@ -73,6 +73,7 @@ impl Game {
             }
         }
         self.trackers_on_tool_visibility_changed();
+        self.belt_lines_visibility();
         // The per-function check: ToolVisibility and EyeAnimation.enabled after.
         crate::ui::uifn("ToolWheelBehaviour.SetToolVisibility", || format!("{} {}", visibility(invisible), if self.eye.enabled { "True" } else { "False" }));
     }

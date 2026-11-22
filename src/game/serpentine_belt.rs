@@ -1,7 +1,7 @@
 //! SerpentineBeltTool and the SerpentineBeltBehaviour it adds: a belt from the selected object to the one under the mouse
-//! that couples their spins by the ratio of their scaled circumferences. The tool's line, the belt's convex-hull line
-//! (UpdateBelt only feeds the LineRenderer and the hover test), the ToolInvisibilityTracker's outline material and the
-//! statistic are presentation.
+//! that couples their spins by the ratio of their scaled circumferences. The tool's line and the belt's convex-hull line
+//! are `Game::lines` entries (drawn by src/lines.rs); the ToolInvisibilityTracker's outline material and the statistic
+//! are presentation.
 #![allow(non_snake_case)]
 
 use super::undo::ObjectCreationAction;
@@ -9,6 +9,8 @@ use super::{mathf, Behaviour, Game};
 
 /// SerpentineBeltTool.WireWidth (static).
 pub(crate) const WIRE_WIDTH: f32 = 0.03;
+/// SerpentineBeltTool.WireColor (static).
+const WIRE_COLOR: [f32; 4] = [0.009, 0.007, 0.007, 1.0];
 
 /// One SerpentineBeltBehaviour on `Self_`'s GameObject.
 #[derive(Clone, Debug)]
@@ -28,6 +30,8 @@ pub struct Belt {
     pub hull: Option<Vec<[f32; 2]>>,
     /// LineRenderer (lineRendererGm's) is alive: Awake makes it, OnDestroy destroys it.
     pub line_renderer: bool,
+    /// Rendering: that LineRenderer's index in `Game::lines` (None without the game's data).
+    pub line: Option<usize>,
 }
 
 impl Default for Belt {
@@ -43,6 +47,7 @@ impl Default for Belt {
             line_renderer: true,
             worldPointArray: Default::default(),
             hull: Default::default(),
+            line: None,
         }
     }
 }
@@ -85,6 +90,8 @@ pub struct BeltTool {
     pub startPos: [f32; 2],
     pub startOffset: [f32; 2],
     pub hasDragged: bool,
+    /// Rendering: the ToolController's LineRenderer as OnToolChosen sets it, in `Game::lines`.
+    pub line: Option<usize>,
 }
 
 impl Game {
@@ -102,6 +109,56 @@ impl Game {
             self.wire_tool.has_line = true;
         }
         self.belt_tool.chosen = true;
+        self.belt_tool_line_chosen();
+    }
+
+    /// SerpentineBeltTool.OnToolChosen's LineRenderer: disabled, startColor/endColor WireColor, sortingLayerName "Top",
+    /// widthMultiplier WireWidth, alignment TransformZ, numCapVertices 6, sortingOrder 2, Materials/Wire, Tile; a new
+    /// LineRenderer's own defaults otherwise (two positions, a one-key width curve of 1, a white gradient, world space).
+    fn belt_tool_line_chosen(&mut self) {
+        if let Some(l) = self.belt_tool.line {
+            self.lines[l].enabled = false;
+            return;
+        }
+        let Some(material) = self.assets.as_ref().and_then(|db| db.resource("Materials/Wire", 21).ok().flatten()) else { return };
+        let mut gradient = super::visual::Gradient::from_raw([[1.0; 4]; 8], [0, 0xffff, 0, 0, 0, 0, 0, 0], [0, 0xffff, 0, 0, 0, 0, 0, 0], 0, 2, 2);
+        gradient.set_start_color(WIRE_COLOR);
+        gradient.set_end_color(WIRE_COLOR);
+        let one = crate::unity::transform::Trs { t: [0.0; 4], q: [0.0, 0.0, 0.0, 1.0], s: [1.0, 1.0, 1.0, 0.0] };
+        self.lines.push(super::line::LineVisual {
+            id: 0,
+            anchor: super::BareAnchor::Root,
+            chain: vec![one],
+            positions: vec![[0.0; 3], [0.0, 0.0, 1.0]],
+            width: WIRE_WIDTH,
+            curve: crate::wires::WidthCurve(vec![[0.0, 1.0, 0.0, 0.0]]),
+            gradient,
+            material: Some(material),
+            // "Top": TagManager's seventh sorting layer.
+            layer: crate::play::SORTING_LAYERS[6] as i32,
+            order: 2,
+            game_layer: 0,
+            cap_vertices: 6,
+            corner_vertices: 0,
+            alignment: 1,
+            looped: false,
+            texture_mode: 1,
+            use_world_space: true,
+            enabled: false,
+            visible: true,
+        });
+        self.belt_tool.line = Some(self.lines.len() - 1);
+    }
+
+    /// The tool line's SetPositions in OnSelect/OnHold: startPos and WireSnapController.GetTransformedWorldEndPoint.
+    fn belt_tool_line_set(&mut self, enable: bool) {
+        let Some(l) = self.belt_tool.line else { return };
+        let (s, m) = (self.belt_tool.startPos, self.MousePosition);
+        let e = self.wire_end_point([m[0], m[1]], s);
+        self.lines[l].positions = vec![[s[0], s[1], 0.0], [e[0], e[1], 0.0]];
+        if enable {
+            self.lines[l].enabled = true;
+        }
     }
 
     /// SerpentineBeltTool.OnSelect
@@ -113,6 +170,7 @@ impl Game {
             self.belt_tool.startOffset = [o[0], o[1]];
         }
         self.belt_line_renderer();
+        self.belt_tool_line_set(true);
         self.belt_tool.hasDragged = true;
     }
 
@@ -124,6 +182,7 @@ impl Game {
             self.belt_tool.startPos = [p[0], p[1]];
         }
         self.belt_line_renderer();
+        self.belt_tool_line_set(false);
     }
 
     /// lineRenderer.SetPositions in OnSelect/OnHold: the field is null until the first OnToolChosen (`created`), as on a
@@ -142,23 +201,93 @@ impl Game {
         // SerpentineBeltTool.GetEndObject (link_end_body).
         let end_body = self.link_end_body();
         if let (Some(a), Some(b)) = (self.wire_selected(), end_body) {
-            // SerpentineBeltBehaviour.Awake: AddComponent; it instantiates Prefabs/SerpentineBelt under it (GameObject, Transform,
-            // LineRenderer, Optout; its colour and width are presentation). Invisible = ToolVisibility == Invisible.
-            let id = self.allocate_instance_id();
-            for _ in 0..4 {
-                self.allocate_instance_id();
-            }
-            self.belts.push(Belt { id, Self_: a, Other: b, gearRatio: 1.0, lastScale: -1.0, started: false, Invisible: self.tool.as_ref().unwrap().invisible, worldPointArray: Vec::new(), hull: None, line_renderer: true });
-            let l = self.belts.len() - 1;
-            let behaviour = Behaviour::Belt(l);
-            // SerpentineBeltBehaviour's MonoScript execution order is 0.
-            self.behaviour_of.insert(id, (0, behaviour));
-            self.behaviours.add(0, behaviour);
-            self.pending_starts.push(super::misc::PendingStart::Belt(l));
+            // Invisible = ToolVisibility == Invisible.
+            let id = self.belt_add(a, b, self.tool.as_ref().unwrap().invisible);
             super::stats::with_stats(|s| s.increment("WIRES_LAID", 1.0));
             self.undo_register_action(ObjectCreationAction { displayName: crate::il!(str "SerpentineBeltTool::OnDeselect" 1).into(), RelevantObjects: vec![id] });
         }
+        if let Some(l) = self.belt_tool.line {
+            self.lines[l].enabled = false;
+        }
         self.belt_tool.hasDragged = false;
+    }
+
+    /// AddComponent<SerpentineBeltBehaviour> on `a`'s object with Self = a, Other = b: Awake instantiates
+    /// Prefabs/SerpentineBelt under it (GameObject, Transform, LineRenderer, Optout). Returns the component's id.
+    pub(crate) fn belt_add(&mut self, a: usize, b: usize, invisible: bool) -> i32 {
+        let id = self.allocate_instance_id();
+        let line = self.belt_line_new(a);
+        self.belts.push(Belt { id, Self_: a, Other: b, gearRatio: 1.0, lastScale: -1.0, started: false, Invisible: invisible, worldPointArray: Vec::new(), hull: None, line_renderer: true, line });
+        let l = self.belts.len() - 1;
+        let behaviour = Behaviour::Belt(l);
+        // SerpentineBeltBehaviour's MonoScript execution order is 0.
+        self.behaviour_of.insert(id, (0, behaviour));
+        self.behaviours.add(0, behaviour);
+        self.pending_starts.push(super::misc::PendingStart::Belt(l));
+        id
+    }
+
+    /// SerpentineBeltBehaviour.Awake's line: Prefabs/SerpentineBelt instantiated under Self in its own local pose, its
+    /// LineRenderer's startColor/endColor = WireColor and startWidth/endWidth = WireWidth (the width curve's first and last
+    /// keys become WireWidth / widthMultiplier; a one-key curve gets a second key at 1). The clone takes an id for each
+    /// prefab object and component in pre-order, each GameObject first (as `instantiate_native`); the line's is its
+    /// LineRenderer's.
+    fn belt_line_new(&mut self, a: usize) -> Option<usize> {
+        use crate::assets::db::Component;
+        let mut db = self.assets.take()?;
+        let made = (|| {
+            let r = db.resource("Prefabs/SerpentineBelt", 1).ok()??;
+            let w = db.prefab(r).ok()?;
+            let o = w.objects.iter().position(|o| o.components.iter().any(|(_, c)| matches!(c, Component::Other(120))))?;
+            let c = w.objects[o].components.iter().position(|(_, c)| matches!(c, Component::Other(120)))?;
+            let lr = w.objects[o].components[c].0;
+            let at = w.objects[..o].iter().map(|x| 1 + x.components.len()).sum::<usize>() + 1 + c;
+            let total: usize = w.objects.iter().map(|x| 1 + x.components.len()).sum();
+            let data = crate::assets::components::LineRendererData::read(db.data(lr)).ok()?;
+            let v3 = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
+            // The line object's local pose, then its parents' up to the prefab root.
+            let mut chain = Vec::new();
+            let mut i = Some(o);
+            while let Some(k) = i {
+                let Some((_, Component::Transform(t))) = w.objects[k].components.first() else { return None };
+                chain.push(crate::unity::transform::Trs { t: v3(t.local_position), q: t.local_rotation, s: v3(t.local_scale) });
+                i = w.objects[k].parent;
+            }
+            let mut v = Self::line_visual(&db, r.file, data, 0, super::BareAnchor::Physical(a), chain, w.objects[o].layer as i32, w.objects[o].active);
+            v.gradient.set_start_color(WIRE_COLOR);
+            v.gradient.set_end_color(WIRE_COLOR);
+            let k = WIRE_WIDTH / v.width;
+            if v.curve.0.len() < 2 {
+                v.curve.0.push([1.0, k, 0.0, 0.0]);
+            }
+            v.curve.0[0][1] = k;
+            v.curve.0.last_mut().unwrap()[1] = k;
+            Some((v, at, total))
+        })();
+        self.assets = Some(db);
+        let (mut v, at, total) = made?;
+        let ids: Vec<i32> = (0..total).map(|_| self.allocate_instance_id()).collect();
+        v.id = ids[at];
+        self.lines.push(v);
+        Some(self.lines.len() - 1)
+    }
+
+    /// The belt line's Renderer.enabled as its ToolInvisibilityTracker keeps it (Start, then each OnToolVisibilityChanged):
+    /// ShouldBeVisible. The delete look (DeleteWireMaterial while hovered) is not drawn.
+    pub(crate) fn belt_lines_visibility(&mut self) {
+        for l in 0..self.belts.len() {
+            if let (true, true, Some(i)) = (self.belts[l].started, self.belts[l].line_renderer, self.belts[l].line) {
+                self.lines[i].enabled = self.tool_should_be_visible(self.belts[l].Invisible);
+            }
+        }
+    }
+
+    /// Destroy(lineRendererGm): the line goes.
+    fn belt_line_gone(&mut self, l: usize) {
+        self.belts[l].line_renderer = false;
+        if let Some(i) = self.belts[l].line {
+            self.lines[i].visible = false;
+        }
     }
 
     /// PhysicalBehaviour.GetScaledCircumference
@@ -182,6 +311,7 @@ impl Game {
         self.belt_reallocate_point_array(l);
         self.belt_recalculate_gear_ratio(l);
         self.belts[l].started = true;
+        self.belt_lines_visibility();
     }
 
     fn belt_alive(&self, l: usize) -> bool {
@@ -245,6 +375,10 @@ impl Game {
         if self.belts[l].worldPointArray.len() > 3 {
             self.belt_recalculate_point_array(l);
             self.belts[l].hull = Some(convex_hull(&mut self.belts[l].worldPointArray));
+            // LineRenderer.positionCount and SetPositions(linePositionBuffer).
+            if let (Some(i), Some(h)) = (self.belts[l].line, &self.belts[l].hull) {
+                self.lines[i].positions = h.iter().map(|p| [p[0], p[1], 0.0]).collect();
+            }
         }
     }
 
@@ -297,7 +431,7 @@ impl Game {
         if self.hovering == Some(self.belts[l].id) {
             self.hovering = None;
         }
-        self.belts[l].line_renderer = false;
+        self.belt_line_gone(l);
     }
 
     /// SerpentineBeltBehaviour.get_ShouldEnableRenderer
@@ -347,6 +481,8 @@ impl Game {
             if let Some((_, b)) = self.behaviour_of.remove(&id) {
                 self.behaviours.remove(b);
             }
+            let l = self.belts.iter().position(|x| x.id == id).unwrap();
+            self.belt_line_gone(l);
         }
         true
     }
@@ -360,6 +496,7 @@ impl Game {
                 if let Some((_, b)) = self.behaviour_of.remove(&id) {
                     self.behaviours.remove(b);
                 }
+                self.belt_line_gone(l);
             }
         }
     }

@@ -49,6 +49,8 @@ script! {
         t: f32 = 0.0,
         /// Rendering: LineRenderer's index in `Game::lines`.
         line: Option<usize> = None,
+        /// Rendering: the LightSprite SpriteRenderer's index in `Game::renderers` (Awake: disabled).
+        light: Option<usize> = None,
     }
 }
 
@@ -618,7 +620,7 @@ impl Game {
         self.map_lightning = self.lightnings.iter().position(|x| x.id == id);
     }
 
-    /// WeatherLightningBehaviour.Awake (the mask and the vertex buffer; LightSprite is not drawn) with Width and Chance set by
+    /// WeatherLightningBehaviour.Awake (the mask, the vertex buffer, LightSprite.enabled = false) with Width and Chance set by
     /// MapConfig.PrepareLightningPrefab; the behaviour joins the Update list in its execution order.
     fn weather_lightning_add(&mut self, w: &Prefab, inst: &super::spawn::Instance, o: usize, c: usize, width: f32, chance: f32) {
         let Component::Script { execution_order, fields, .. } = &w.objects[o].components[c].1 else { unreachable!() };
@@ -639,10 +641,29 @@ impl Game {
         let line = Self::line_visual(db, file, data, inst.objects[lo].components[lc], super::BareAnchor::Root, inst.chain(lo), w.objects[lo].layer as i32, inst.objects[lo].active);
         self.lines.push(line);
         x.line = Some(self.lines.len() - 1);
+        // Rendering: the LightSprite SpriteRenderer joins `Game::renderers`, disabled (Awake: LightSprite.enabled = false).
+        if let Some(p) = fields.get("LightSprite").and_then(|v| v.pptr()).filter(|p| !p.is_null() && p.file == 0) {
+            let (so, sc) = *w.index.get(&ObjRef { file, path_id: p.path_id }).expect("WeatherLightningBehaviour.LightSprite: dangling reference");
+            if let Component::SpriteRenderer(sr) = &w.objects[so].components[sc].1 {
+                let sprite = db.resolve(file, sr.sprite).expect("WeatherLightningBehaviour.LightSprite without a sprite");
+                let bounds = super::link::renderer_bounds(&db.sprite(sprite).expect("LightSprite sprite"), sr);
+                let draw = ([sr.flip_x, sr.flip_y], sr.draw_mode, sr.size, sr.adaptive_mode_threshold, sr.sprite_tile_mode == 1);
+                let material = sr.materials.first().and_then(|&m| db.resolve(file, m));
+                self.renderers.push(super::Renderer { anchor: super::BareAnchor::Root, chain: inst.chain(so), sprite: (sprite, sr.color, sr.sorting_order), layer: sr.sorting_layer_id, game_layer: w.objects[so].layer as i32, material, id: inst.objects[so].components[sc], draw, visible: inst.objects[so].active, enabled: false, bounds });
+                self.renderer_sync(self.renderers.len() - 1);
+                x.light = Some(self.renderers.len() - 1);
+            }
+        }
         self.lightnings.push(x);
         let (id, b) = (self.lightnings[self.lightnings.len() - 1].id, Behaviour::WeatherLightning(self.lightnings.len() - 1));
         self.behaviour_of.insert(id, (*execution_order, b));
         self.behaviours.add(*execution_order, b);
+    }
+
+    /// StartCoroutine(FireBolt()) of lightning `l` (the render check, PP_FX3).
+    pub(crate) fn weather_lightning_fire(&mut self, l: usize) {
+        let id = self.lightnings[l].id;
+        self.co_start(id, Self::weather_lightning_routine(l));
     }
 
     /// WeatherLightningBehaviour.Update
@@ -661,9 +682,18 @@ impl Game {
         }
     }
 
+    /// LightSprite.transform.position = `p`: its local position under its parents.
+    pub(crate) fn weather_lightning_light_to(&mut self, l: usize, p: [f32; 3]) {
+        if let Some(r) = self.lightnings[l].light {
+            let chain = &mut self.renderers[r].chain;
+            let ((t, _), _) = crate::unity::transform::set_world(&chain[1..], p, chain[0].q);
+            chain[0].t = [t[0], t[1], t[2], chain[0].t[3]];
+        }
+    }
+
     /// WeatherLightningBehaviour.FireBolt: a bolt from a random point along the top down to the first collider, an
     /// explosion and 1500 charge there, then 2 to 4 flashes of the LineRenderer (its Perlin points from the draws made
-    /// here). The audio and the flash sprite are presentation; their Random draws stay.
+    /// here) and the LightSprite at the top. The audio is presentation; its Random draws stay.
     pub(crate) fn weather_lightning_routine(l: usize) -> Routine {
         #[derive(Clone, Copy)]
         enum Stage {
@@ -687,6 +717,7 @@ impl Game {
                     if let Some(l) = s.line {
                         game.lines[l].positions = super::lightning_tool::lightning_bolt_points([vector[0], vector[1], s.position[2]], [hit.point.x, hit.point.y], hit.distance * 0.2, seed, &circles);
                     }
+                    game.weather_lightning_light_to(l, [vector[0], vector[1], s.position[2]]);
                     let point = [hit.point.x, hit.point.y];
                     let under_water = game.is_point_under_water(point);
                     game.create_explosion_with_water(under_water, ExplosionParameters {
@@ -711,6 +742,9 @@ impl Game {
                     if let Some(l) = game.lightnings[l].line {
                         game.lines[l].enabled = false;
                     }
+                    if let Some(r) = game.lightnings[l].light {
+                        game.set_sprite_enabled(super::visual::SpriteAt::Renderer(r), false);
+                    }
                     let wait = game.random.range(0.032, 0.3);
                     stage = Stage::Check(j + 1);
                     return Yield::WaitForSeconds(wait);
@@ -722,6 +756,9 @@ impl Game {
                 // The flash on, then WaitForSeconds(0.032f).
                 if let Some(l) = game.lightnings[l].line {
                     game.lines[l].enabled = true;
+                }
+                if let Some(r) = game.lightnings[l].light {
+                    game.set_sprite_enabled(super::visual::SpriteAt::Renderer(r), true);
                 }
                 return Yield::WaitForSeconds(0.032);
             }

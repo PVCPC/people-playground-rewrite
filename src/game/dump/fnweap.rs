@@ -612,6 +612,7 @@ fn load_belts(g: &mut Game, s: &Snapshot) -> Result<(), String> {
             worldPointArray: list(r.req("worldPointArray")?).into_iter().map(floats::<2>).collect(),
             hull: (!hull.is_empty()).then_some(hull),
             line_renderer: !matches!(r.req("LineRenderer")?, "destroyed" | "null"),
+            line: None,
         });
         let beh = Behaviour::Belt(g.belts.len() - 1);
         g.behaviour_of.insert(r.id, (0, beh));

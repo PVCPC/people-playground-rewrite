@@ -718,6 +718,20 @@ impl Game {
         self.wire_tool.hasDragged = false;
     }
 
+    /// The render check's wire (PP_FX3=energy, src/play.rs): DistanceWireTool.OnDeselect's selected-and-end-body branch from
+    /// `a`'s origin to `b`'s (anchors zero) with the chosen tool, then its OnJointCreate.
+    pub(crate) fn wire_lay_between(&mut self, a: usize, b: usize) {
+        self.allocate_instance_id();
+        let f = self.wire_add_joint(a, false);
+        self.fixed_joint_set_anchor(f, [0.0, 0.0]);
+        self.fixed_joint_set_auto_configure(f, false);
+        self.fixed_joint_set_connected_body(f, Some(BodyOwner::Physical(b)));
+        self.fixed_joint_set_connected_anchor(f, [0.0, 0.0]);
+        self.fixed_joint_set_enable_collision(f, true);
+        self.distance_joint_set_max_distance_only(f, true);
+        self.blood_wire_tool_on_joint_create(a, f);
+    }
+
     /// SliderTool.GetEndObject: endPos = the unsnapped mouse; endBody the object slider_end_body finds there.
     pub(crate) fn slider_tool_get_end_object(&mut self) -> Option<usize> {
         let m = self.MousePosition;

@@ -104,6 +104,7 @@ fn spawn(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ParticleMaterial>,
     delete_wires: &mut Assets<crate::delete_wire::DeleteWireMaterial>,
+    wire_lines: &mut Assets<crate::wires::WireLineMaterial>,
     textures: &mut Textures,
     i: usize,
 ) -> Drawn {
@@ -125,18 +126,30 @@ fn spawn(
         NoFrustumCulling,
         if s.visible { Visibility::Inherited } else { Visibility::Hidden },
     ));
-    let shader = db.resolve(r.file, m.shader).map(|s| s.path_id);
+    let shader = Some(db.material_shader_id(r.file, m.shader)).filter(|_| !m.shader.is_null());
     match shader.and_then(crate::custom_material::def_for) {
         // custom_sync gives it its material.
         Some(def) => e.insert((crate::custom_material::new_sprite(def, db, images, textures, r.file, &m, texture, Vec4::ZERO).expect("a line shader's textures"), crate::custom_material::LineSprite)),
         // LinkDeviceBehaviour.OnMouseOverlapEvent's Resources "Materials/DeleteWire".
         None if shader == Some(130) => e.insert(MeshMaterial2d(delete_wires.add(crate::delete_wire::line_material(db, images, textures)))),
+        // Unlit/VertexColourCutout (Materials/Wire's shader): wire_line.wesl's mode 0, as the wire tools draw it.
+        None if shader.is_some() && shader == wire_shader(db) => {
+            let st = main.map_or([1.0, 1.0, 0.0, 0.0], |t| t.2);
+            let settings = crate::wires::LineSettings { st: Vec4::from_array(st), glow: Vec4::ZERO, cutoff: m.float("_Cutoff").unwrap_or(0.5), progress: 0.0, mode: 0.0, time: 0.0, timestamp: 0.0, glow_time: 1.0 };
+            e.insert(MeshMaterial2d(wire_lines.add(crate::wires::WireLineMaterial { settings, texture })))
+        }
         None => {
             let st = main.map_or([1.0, 1.0, 0.0, 0.0], |t| t.2);
             e.insert(MeshMaterial2d(materials.add(particle_material(&m, st, texture, false))))
         }
     };
     Drawn { entity: e.id(), mesh, last: None, look: (l.material, l.game_layer) }
+}
+
+/// The shader of Resources "Materials/Wire" (Unlit/VertexColourCutout).
+fn wire_shader(db: &crate::assets::db::AssetDb) -> Option<i64> {
+    let r = db.resource("Materials/Wire", 21).ok()??;
+    Some(db.material_shader_id(r.file, Material::read(db.data(r)).ok()?.shader))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -147,6 +160,7 @@ pub fn lines(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ParticleMaterial>>,
     mut delete_wires: ResMut<Assets<crate::delete_wire::DeleteWireMaterial>>,
+    mut wire_lines: ResMut<Assets<crate::wires::WireLineMaterial>>,
     mut textures: ResMut<Textures>,
     mut drawn: Local<Vec<Drawn>>,
     mut visibility: Query<&mut Visibility>,
@@ -162,14 +176,14 @@ pub fn lines(
     }
     while drawn.len() < g.lines.len() {
         let i = drawn.len();
-        let d = spawn(&mut commands, g, &mut images, &mut meshes, &mut materials, &mut delete_wires, &mut textures, i);
+        let d = spawn(&mut commands, g, &mut images, &mut meshes, &mut materials, &mut delete_wires, &mut wire_lines, &mut textures, i);
         drawn.push(d);
     }
     // A line given another material or GameObject layer at run time (LinkDeviceBehaviour.OnMouseOverlapEvent): spawned again.
     for (i, l) in g.lines.iter().enumerate() {
         if drawn[i].look != (l.material, l.game_layer) {
             commands.entity(drawn[i].entity).despawn();
-            drawn[i] = spawn(&mut commands, g, &mut images, &mut meshes, &mut materials, &mut delete_wires, &mut textures, i);
+            drawn[i] = spawn(&mut commands, g, &mut images, &mut meshes, &mut materials, &mut delete_wires, &mut wire_lines, &mut textures, i);
         }
     }
     // The link end sprites' GameObject layer set at run time (VisualDeletableDetachedToolBehaviour.OnMouseOverlapEvent).

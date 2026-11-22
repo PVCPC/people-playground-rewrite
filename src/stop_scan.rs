@@ -344,7 +344,7 @@ fn stop_scan() {
                 }
                 21 => {
                     if let Ok(m) = crate::assets::components::Material::read(f.data(o)) {
-                        if m.render_queue < 0 && !crate::shader_queues::SHADER_QUEUES.iter().any(|q| q.0 == m.shader.path_id) && !m.shader.is_null() && m.shader.file == 0 {
+                        if m.render_queue < 0 && !crate::shader_queues::SHADER_QUEUES.iter().any(|q| q.0 == db.material_shader_id(fi, m.shader)) && !m.shader.is_null() && m.shader.file == 0 {
                             hit("material whose shader has no queue".into(), &n);
                         }
                     }

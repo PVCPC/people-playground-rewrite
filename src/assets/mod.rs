@@ -9,3 +9,4 @@ pub mod il;
 pub mod mono;
 pub mod components;
 pub mod db;
+pub mod shader_ids;
