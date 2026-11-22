@@ -34,6 +34,7 @@ pub enum GameVersion {
 }
 
 static VERSION: OnceLock<GameVersion> = OnceLock::new();
+static GAME: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 /// The loaded game's version (1.28.41 before `load`, as in the tests that build no table).
 pub fn version() -> GameVersion {
@@ -99,6 +100,7 @@ pub fn load(game: &Path) -> Result<(), String> {
         ));
     };
     let _ = VERSION.set(v);
+    let _ = GAME.set(game.to_path_buf());
     let _ = TABLE.set(Table::build(&a)?);
     Ok(())
 }
@@ -112,6 +114,13 @@ pub fn get() -> &'static Table {
         panic!("{e}");
     }
     TABLE.get().unwrap()
+}
+
+/// The Mvid of the game's Managed/`name`.dll (Assembly-CSharp, mscorlib, System.Core), as Mono's stack frames print it.
+pub fn mvid(name: &str) -> String {
+    get();
+    let path = GAME.get().unwrap().join(format!("People Playground_Data/Managed/{name}.dll"));
+    Assembly::open(&path).map(|a| a.mvid()).unwrap_or_default()
 }
 
 impl Table {

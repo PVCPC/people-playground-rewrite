@@ -11,22 +11,26 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-/// A thrown exception: its class and Message.
+/// A thrown exception: its class, Message and stack trace (Mono's frame lines, where the catcher shows them).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Exc {
     pub class: &'static str,
     pub message: String,
+    pub trace: Vec<String>,
 }
 
 impl Exc {
     pub fn new(class: &'static str, message: impl Into<String>) -> Exc {
-        Exc { class, message: message.into() }
+        Exc { class, message: message.into(), trace: Vec::new() }
     }
     pub fn nre() -> Exc {
         Exc::new("NullReferenceException", "Object reference not set to an instance of an object")
     }
-    /// Exception.ToString without the stack trace: `System.<class>: <message>`.
-    // ponytail: the game's text goes on with the stack trace ("   at ..."), which the rewrite has no frames for.
+    /// The exception with its stack trace.
+    fn at(self, trace: Vec<String>) -> Exc {
+        Exc { trace, ..self }
+    }
+    /// Exception.ToString as Mono writes it: `System.<class>: <message>`, then the trace's lines, each after "\r\n".
     pub fn to_text(&self) -> String {
         let ns = match self.class {
             "Win32Exception" => "System.ComponentModel.",
@@ -34,8 +38,18 @@ impl Exc {
             "FileNotFoundException" | "DirectoryNotFoundException" | "IOException" => "System.IO.",
             _ => "System.",
         };
-        format!("{ns}{}: {}", self.class, self.message)
+        let mut s = format!("{ns}{}: {}", self.class, self.message);
+        for f in &self.trace {
+            s += "\r\n";
+            s += f;
+        }
+        s
     }
+}
+
+/// A frame of a Mono stack trace in the player (no symbols): `  at <method> [0x<IL offset>] in <<assembly's Mvid>>:0 `.
+fn frame(assembly: &str, method: &str, il: u32) -> String {
+    format!("  at {method} [0x{il:05x}] in <{}>:0 ", crate::assets::il::mvid(assembly))
 }
 
 /// Win32Exception(code).Message as Mono on Windows makes it: FormatMessage's text (with its "\r\n") in a 256-char buffer,
@@ -501,11 +515,27 @@ pub fn GetModHashPath(base: &Path, m: &ModMetaData) -> Result<String, Exc> {
 }
 
 /// ModLoader.GetModSourcePaths: each script's GetFullPath(Path.Combine(MetaLocation, script)); a null Scripts throws
-/// NullReferenceException (when enumerated).
+/// NullReferenceException (when enumerated), Path.Combine's null part ArgumentNullException (path1 the location, path2 the
+/// script).
 pub fn GetModSourcePaths(base: &Path, m: &ModMetaData) -> Result<Vec<String>, Exc> {
     let scripts = m.Scripts.as_ref().ok_or_else(Exc::nre)?;
-    scripts.iter().map(|s| get_full_path(base, &path_combine(m.MetaLocation.as_deref(), s.as_deref()).map_err(path_exc)?).map_err(path_exc)).collect()
+    let combine = |s: Option<&str>| {
+        path_combine(m.MetaLocation.as_deref(), s).map_err(|e| match e {
+            "ArgumentNullException" => Exc::new(e, format!("Value cannot be null.\r\nParameter name: path{}", if m.MetaLocation.is_none() { 1 } else { 2 })),
+            _ => path_exc(e),
+        })
+    };
+    let full = |p: String| {
+        get_full_path(base, &p).map_err(|e| match e {
+            "ArgumentException" => Exc::new(e, EMPTY_PATH),
+            _ => path_exc(e),
+        })
+    };
+    scripts.iter().map(|s| full(combine(s.as_deref())?)).collect()
 }
+
+/// Path.GetFullPath's ArgumentException for a blank path.
+const EMPTY_PATH: &str = "The specified path is not of a legal form (empty).";
 
 /// ModHasher.Compute(mod): the hash of MetaLocation's .cs / .dll files (a null MetaLocation throws ArgumentNullException).
 fn hasher_compute(m: &ModMetaData) -> Result<u32, Exc> {
@@ -692,6 +722,65 @@ pub fn Compile(base: &Path, m: &ModRef, reject_shady: bool) -> Result<(ModCompil
     Ok((r, s))
 }
 
+/// What TryCompileMod catches, with the stack trace Mono gives it in the game (Exception.ToString is the mod's error
+/// text): GetModSourcePaths' exceptions (thrown in its iterator, run by ToArray), new DirectoryInfo(MetaLocation)'s,
+/// Directory.CreateDirectory("CompiledMods")'s over a file of that name and File.Delete's on a read-only output. Measured on
+/// the game's Mono with its own ModLoader (1.28.41 and 1.28.54: the same frames, each with its assembly's Mvid; the test's
+/// texts).
+fn tcm_frame(il: u32) -> String {
+    frame("Assembly-CSharp", "ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript)", il)
+}
+fn source_paths_trace(e: Exc) -> Exc {
+    let (thrower, il) = match (e.class, e.message.as_str()) {
+        ("NullReferenceException", _) => (vec![], 0x6f),
+        ("ArgumentNullException", m) => (vec![frame("mscorlib", "System.IO.Path.Combine (System.String path1, System.String path2)", if m.ends_with("path1") { 0x03 } else { 0x11 })], 0x33),
+        ("ArgumentException", EMPTY_PATH) => (vec![frame("mscorlib", "System.IO.Path.InsecureGetFullPath (System.String path)", 0x25), frame("mscorlib", "System.IO.Path.GetFullPath (System.String path)", 0)], 0x45),
+        ("ArgumentException", _) => (vec![frame("mscorlib", "System.IO.Path.Combine (System.String path1, System.String path2)", 0x57)], 0x33),
+        _ => return e,
+    };
+    let mut t = thrower;
+    t.push(frame("Assembly-CSharp", "ModLoader+<GetModSourcePaths>d__25.MoveNext ()", il));
+    t.push(frame("System.Core", "System.Collections.Generic.LargeArrayBuilder`1[T].AddRange (System.Collections.Generic.IEnumerable`1[T] items)", 0x5e));
+    t.push(frame("System.Core", "System.Collections.Generic.EnumerableHelpers.ToArray[T] (System.Collections.Generic.IEnumerable`1[T] source)", 0x33));
+    t.push(frame("System.Core", "System.Linq.Enumerable.ToArray[TSource] (System.Collections.Generic.IEnumerable`1[T] source)", 0x18));
+    t.push(tcm_frame(0x26));
+    e.at(t)
+}
+/// new DirectoryInfo(p).FullName: DirectoryInfo.CheckPath (null, empty, an invalid char, a ':' first found past index 1),
+/// then GetFullPath.
+fn directory_info_full_name(base: &Path, p: Option<&str>) -> Result<String, Exc> {
+    let ctor = |mut t: Vec<String>| {
+        t.push(frame("mscorlib", "System.IO.DirectoryInfo..ctor (System.String path)", 0));
+        t.push("  at (wrapper remoting-invoke-with-check) System.IO.DirectoryInfo..ctor(string)".into());
+        t.push(tcm_frame(0xde));
+        t
+    };
+    let check = |class, message: &str, il| {
+        Err(Exc::new(class, message).at(ctor(vec![
+            frame("mscorlib", "System.IO.DirectoryInfo.CheckPath (System.String path)", il),
+            frame("mscorlib", "System.IO.DirectoryInfo..ctor (System.String path, System.Boolean simpleOriginalPath)", 6),
+        ])))
+    };
+    let Some(p) = p else { return check("ArgumentNullException", "Value cannot be null.\r\nParameter name: path", 0x03) };
+    if p.is_empty() {
+        return check("ArgumentException", "An empty file name is not valid.", 0x16);
+    }
+    if bad_path_char(p) {
+        return check("ArgumentException", "Illegal characters in path.", 0x2f);
+    }
+    if p.chars().position(|c| c == ':').is_some_and(|i| i != 1) {
+        return check("ArgumentException", "path", 0x52);
+    }
+    get_full_path(base, p).map_err(|e| match e {
+        "ArgumentException" => Exc::new(e, EMPTY_PATH).at(ctor(vec![
+            frame("mscorlib", "System.IO.Path.InsecureGetFullPath (System.String path)", 0x25),
+            frame("mscorlib", "System.IO.Path.GetFullPath (System.String path)", 0),
+            frame("mscorlib", "System.IO.DirectoryInfo..ctor (System.String path, System.Boolean simpleOriginalPath)", 0x0d),
+        ])),
+        _ => path_exc(e),
+    })
+}
+
 /// ModLoader.TryCompileMod: a workshop mod's bin/ and obj/ deleted ("Workshop is disabled"); a local one sent to the
 /// compiler (CompilerClient) and its reply read. A failure deletes the hash file and returns its text.
 fn TryCompileMod(base: &Path, m: &ModRef, reject_shady: bool) -> Result<(ModCompilationResult, ModScript), Exc> {
@@ -706,7 +795,7 @@ fn TryCompileMod(base: &Path, m: &ModRef, reject_shady: bool) -> Result<(ModComp
         ModCompilationResult { Success: false, Errors: Some(e.to_text()), Suspicious: false }
     };
     let mut body = || -> Result<ModCompilationResult, Exc> {
-        script.AbsoluteScriptPaths = Some(GetModSourcePaths(base, &meta)?);
+        script.AbsoluteScriptPaths = Some(GetModSourcePaths(base, &meta).map_err(source_paths_trace)?);
         script.RelativePath = meta.MetaLocation.clone();
         if meta.FromWorkshop {
             let loc = meta.MetaLocation.clone().unwrap_or_default();
@@ -722,17 +811,31 @@ fn TryCompileMod(base: &Path, m: &ModRef, reject_shady: bool) -> Result<(ModComp
             OutputFileName: Some(output.clone()),
             RejectShadyCode: !TrustCache::IsTrusted(&meta) && reject_shady,
             AssemblyReferenceLocations: Some(MOD_LOADER.lock().unwrap().assemblyLocations.clone()),
-            // new DirectoryInfo(MetaLocation).FullName
-            Directory: Some(get_full_path(base, meta.MetaLocation.as_deref().ok_or_else(|| path_exc("ArgumentNullException"))?).map_err(path_exc)?),
+            Directory: Some(directory_info_full_name(base, meta.MetaLocation.as_deref())?),
             AssemblyName: meta.AssemblyName.clone(),
             ..Default::default()
         };
         let compiled = base.join("CompiledMods");
+        if compiled.is_file() {
+            let trace = vec![frame("mscorlib", "System.IO.Directory.CreateDirectory (System.String path)", 0x6a), tcm_frame(0x13c)];
+            return Err(Exc::new("IOException", "Cannot create CompiledMods because a file with the same name already exists.").at(trace));
+        }
         if !compiled.is_dir() {
             std::fs::create_dir_all(&compiled).map_err(|e| io_exc(&e, true))?;
         }
         if Path::new(&output).is_file() {
-            std::fs::remove_file(&output).map_err(|e| io_exc(&e, false))?;
+            // File.Delete refuses a read-only file (DeleteFile does; Rust's remove_file would clear the attribute).
+            let denied = || {
+                Exc::new("UnauthorizedAccessException", format!("Access to the path \"{}\" is denied.", output.replace('/', "\\")))
+                    .at(vec![frame("mscorlib", "System.IO.File.Delete (System.String path)", 0x73), tcm_frame(0x159)])
+            };
+            if std::fs::metadata(&output).is_ok_and(|m| m.permissions().readonly()) {
+                return Err(denied());
+            }
+            std::fs::remove_file(&output).map_err(|e| match e.kind() {
+                std::io::ErrorKind::PermissionDenied => denied(),
+                _ => io_exc(&e, false),
+            })?;
         }
         set_display_state(crate::il!(str "ModLoader::TryCompileMod" 6));
         let reply = COMPILER_CLIENT.lock().unwrap().RequestCompilationSynchronous(base, instructions);
@@ -925,8 +1028,6 @@ impl TrustCache {
         // Deserialize, then Clear and AddRange: a throw while reading leaves the set; a null set is cleared and AddRange(null)
         // throws (logged).
         if let Ok(b) = std::fs::read(base.join(&self.path)) {
-            // ponytail: decode_uint_hashset refuses -2 / -5, which read a type name and could name HashSet<uint> itself; a
-            // file the game wrote never has one (Save writes -3).
             if let Ok(set) = decode_uint_hashset(&b) {
                 self.trusted.clear();
                 self.free.clear();
@@ -944,11 +1045,6 @@ impl TrustCache {
     }
 }
 
-/// Environment.OSVersion.ToString() on Windows: "Microsoft Windows NT major.minor.build.0" (the Unity player declares
-/// Windows 10 support, so GetVersionEx reports the real version: read here from the registry).
-/// Elsewhere (the game ships for Windows only, so no game build is there to match; unchecked) Mono's Unix form:
-/// "Unix " + Environment.CreateVersionFromString(uname's release).
-// Checked: the Windows key hashes to the trust file the real game wrote on the developer's PC (the test below).
 /// TrustCache's static constructor's key: MachineName + UserName + UserDomainName + Environment.OSVersion + ProcessorCount,
 /// with `os` as the OSVersion string.
 fn machine_key(os: &str) -> String {
@@ -961,6 +1057,11 @@ fn machine_key(os: &str) -> String {
     format!("{machine}{user}{domain}{os}{cpus}")
 }
 
+/// Environment.OSVersion.ToString() on Windows: "Microsoft Windows NT major.minor.build.0" (the Unity player declares
+/// Windows 10 support, so GetVersionEx reports the real version: read here from the registry).
+/// Elsewhere (the game ships for Windows only, so no game build is there to match; unchecked) Mono's Unix form:
+/// "Unix " + Environment.CreateVersionFromString(uname's release).
+// Checked: the Windows key hashes to the trust file the real game wrote on the developer's PC (the test below).
 fn os_version() -> String {
     #[cfg(windows)]
     unsafe {
@@ -1037,17 +1138,19 @@ pub fn encode_uint_hashset(items: &[u32]) -> Vec<u8> {
 }
 
 /// CerasSerializer.Deserialize<HashSet<uint>> (no checksum, references on): the root reference is a VarInt biased by 5:
-/// -3 a new HashSet<uint> (its count, then each item, a HashSet so repeats once), -1 null (Ok(None)); -5 an inline type,
-/// -4 an external object, -2 a typed new value and an existing id (>= 0) all throw here (no type is cached and no object is
-/// known). Bytes after the set are ignored.
+/// -3 a new HashSet<uint> (its count, then each item, a HashSet so repeats once), -1 null (Ok(None)); -2 a type
+/// (TypeFormatter) then the new value, read as a HashSet<uint> when the type is that and thrown otherwise; -5 a type as the
+/// value, null for a null type and an InvalidCastException otherwise. -4 an external object (no resolver) and an existing
+/// object id (none is known) throw. Bytes after the set are ignored. Checked against the game's own Ceras.dll under its
+/// Mono (the test's bytes).
 pub fn decode_uint_hashset(d: &[u8]) -> Result<Option<Vec<u32>>, String> {
     let mut o = 0;
     // SerializerBinary.ReadVarInt(bits 32): a 6th byte (shift 35) is malformed; reading past the end throws.
-    let mut varint = || -> Result<u64, String> {
+    let varint = |o: &mut usize| -> Result<u64, String> {
         let (mut r, mut shift) = (0u64, 0u32);
         loop {
-            let b = *d.get(o).ok_or("IndexOutOfRangeException")? as u64;
-            o += 1;
+            let b = *d.get(*o).ok_or("IndexOutOfRangeException")? as u64;
+            *o += 1;
             r |= (b & 0x7f) << shift;
             if shift > 32 {
                 return Err("ArgumentOutOfRangeException: Malformed VarInt".into());
@@ -1058,20 +1161,77 @@ pub fn decode_uint_hashset(d: &[u8]) -> Result<Option<Vec<u32>>, String> {
             shift += 7;
         }
     };
-    match (varint()? as u32 as i32).wrapping_sub(5) {
+    let bias = |o: &mut usize, b: i32| varint(o).map(|v| (v as u32 as i32).wrapping_sub(b));
+    // TypeFormatter.Deserialize, as far as it matters here: whether the type is HashSet<uint> (Some(true)), another one
+    // (Some(false); one that does not resolve throws, the same outcome) or null (None). The type cache starts empty for each
+    // Deserialize: the first type read can name no cached id, and a cached id read later is the generic definition, never
+    // UInt32, so an id never makes HashSet<uint>.
+    let name = |o: &mut usize| -> Result<String, String> {
+        let n = bias(o, 1)?;
+        let n = usize::try_from(n).map_err(|_| "ArgumentNullException")?;
+        let s = d.get(*o..*o + n).ok_or("ArgumentOutOfRangeException")?;
+        *o += n;
+        Ok(String::from_utf8_lossy(s).into_owned())
+    };
+    let read_type = |o: &mut usize| -> Result<Option<bool>, String> {
+        match bias(o, 3)? {
+            -1 => Ok(None),
+            // A single name: Assembly.GetType's (Mono's) reading of it.
+            -3 => Ok(Some(names_hashset_uint(&name(o)?))),
+            // A generic one: its definition (a single name: cached ids and nested generics never make the definition), its
+            // argument count byte, the arguments, then MakeGenericType.
+            -2 => {
+                if bias(o, 3)? != -3 {
+                    return Err("Ceras: no generic definition".into());
+                }
+                let def = name(o)?;
+                let n = *d.get(*o).ok_or("IndexOutOfRangeException")?;
+                *o += 1;
+                if n != 1 || bias(o, 3)? != -3 {
+                    return Err("Ceras: not one named argument".into());
+                }
+                let arg = name(o)?;
+                Ok(Some(def.trim_start_matches(' ') == "System.Collections.Generic.HashSet`1" && arg.trim_start_matches(' ') == "System.UInt32"))
+            }
+            _ => Err("Ceras: no such cached type".into()),
+        }
+    };
+    match bias(&mut o, 5)? {
         -3 => {}
         -1 => return Ok(None),
-        _ => return Err("Ceras: no such type or object".into()),
+        // `value = (T)(object)type`: null casts, a type never does.
+        -5 => return if read_type(&mut o)?.is_none() { Ok(None) } else { Err("InvalidCastException".into()) },
+        -2 => {
+            if read_type(&mut o)? != Some(true) {
+                return Err("Ceras: the value's type is not HashSet<uint>".into());
+            }
+        }
+        _ => return Err("Ceras: no such object".into()),
     }
-    let n = varint()? as u32;
+    let n = varint(&mut o)? as u32;
     let mut items: Vec<u32> = Vec::new();
     for _ in 0..n {
-        let v = varint()? as u32;
+        let v = varint(&mut o)? as u32;
         if !items.contains(&v) {
             items.push(v);
         }
     }
     Ok(Some(items))
+}
+
+/// Whether Mono's Assembly.GetType (searched over the loaded assemblies, as SimpleTypeBinder does) gives HashSet<uint> for
+/// `name`: leading spaces skipped before each type name; the argument bare or `[name, assembly]` with mscorlib or
+/// mscorlib.dll (any case, spaces around it, any further assembly properties, not an empty last one). Measured on the
+/// game's Mono (the test's names): a trailing space, a tab or a space before the comma does not resolve.
+fn names_hashset_uint(name: &str) -> bool {
+    let Some(arg) = name.trim_start_matches(' ').strip_prefix("System.Collections.Generic.HashSet`1[").and_then(|r| r.strip_suffix(']')) else { return false };
+    let arg = arg.trim_start_matches(' ');
+    if arg == "System.UInt32" {
+        return true;
+    }
+    let Some((t, asm)) = arg.strip_prefix('[').and_then(|r| r.strip_suffix(']')).and_then(|r| r.split_once(',')) else { return false };
+    let first = asm.split(',').next().unwrap().trim().to_ascii_lowercase();
+    t.trim_start_matches(' ') == "System.UInt32" && (first == "mscorlib" || first == "mscorlib.dll") && !asm.ends_with(',')
 }
 
 // ---- the compiler links ----
@@ -1900,6 +2060,144 @@ mod tests {
         cache.Save(&root).unwrap();
         assert_eq!(std::fs::read(root.join(cache.path())).unwrap(), encode_uint_hashset(&cache.trusted()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The text a failed compile gives the mod (TryCompileMod's catch: Exception.ToString with Mono's stack trace), against the
+    /// game's own ModLoader.TryCompileMod run under its Mono (1.28.54 and 1.28.41 gave the same text but for Assembly-CSharp's
+    /// Mvid): {A} {M} {C} are Assembly-CSharp's, mscorlib's and System.Core's Mvid, {B} the working folder.
+    #[test]
+    fn compile_errors_read_as_the_game() {
+        let want_mvid = if crate::assets::il::is_1_28_45() { "0e6966f095524ea7842ae3baf092d9f8" } else { "fcdb535469eb49fa8183bb51f5a78228" };
+        let (a, m, c) = (crate::assets::il::mvid("Assembly-CSharp"), crate::assets::il::mvid("mscorlib"), crate::assets::il::mvid("System.Core"));
+        assert_eq!((a.as_str(), m.as_str(), c.as_str()), (want_mvid, "eae584ce26bc40229c1b1aa476bfa589", "351e49e2a5bf4fd6beabb458ce2255f3"));
+        let base = std::env::temp_dir().join(format!("ppg-legacy-compile-test-{}", std::process::id()));
+        let rows: &[(Option<Vec<Option<&str>>>, Option<&str>, bool, &str, &str)] = &[
+            (None, Some("Mods/A"), false, "", "System.NullReferenceException: Object reference not set to an instance of an object\r\n  at ModLoader+<GetModSourcePaths>d__25.MoveNext () [0x0006f] in <{A}>:0 \r\n  at System.Collections.Generic.LargeArrayBuilder`1[T].AddRange (System.Collections.Generic.IEnumerable`1[T] items) [0x0005e] in <{C}>:0 \r\n  at System.Collections.Generic.EnumerableHelpers.ToArray[T] (System.Collections.Generic.IEnumerable`1[T] source) [0x00033] in <{C}>:0 \r\n  at System.Linq.Enumerable.ToArray[TSource] (System.Collections.Generic.IEnumerable`1[T] source) [0x00018] in <{C}>:0 \r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x00026] in <{A}>:0 "),
+            (Some(vec![None]), Some("Mods/A"), false, "", "System.ArgumentNullException: Value cannot be null.\r\nParameter name: path2\r\n  at System.IO.Path.Combine (System.String path1, System.String path2) [0x00011] in <{M}>:0 \r\n  at ModLoader+<GetModSourcePaths>d__25.MoveNext () [0x00033] in <{A}>:0 \r\n  at System.Collections.Generic.LargeArrayBuilder`1[T].AddRange (System.Collections.Generic.IEnumerable`1[T] items) [0x0005e] in <{C}>:0 \r\n  at System.Collections.Generic.EnumerableHelpers.ToArray[T] (System.Collections.Generic.IEnumerable`1[T] source) [0x00033] in <{C}>:0 \r\n  at System.Linq.Enumerable.ToArray[TSource] (System.Collections.Generic.IEnumerable`1[T] source) [0x00018] in <{C}>:0 \r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x00026] in <{A}>:0 "),
+            (Some(vec![Some("a.cs")]), None, false, "", "System.ArgumentNullException: Value cannot be null.\r\nParameter name: path1\r\n  at System.IO.Path.Combine (System.String path1, System.String path2) [0x00003] in <{M}>:0 \r\n  at ModLoader+<GetModSourcePaths>d__25.MoveNext () [0x00033] in <{A}>:0 \r\n  at System.Collections.Generic.LargeArrayBuilder`1[T].AddRange (System.Collections.Generic.IEnumerable`1[T] items) [0x0005e] in <{C}>:0 \r\n  at System.Collections.Generic.EnumerableHelpers.ToArray[T] (System.Collections.Generic.IEnumerable`1[T] source) [0x00033] in <{C}>:0 \r\n  at System.Linq.Enumerable.ToArray[TSource] (System.Collections.Generic.IEnumerable`1[T] source) [0x00018] in <{C}>:0 \r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x00026] in <{A}>:0 "),
+            (Some(vec![Some("a<b.cs")]), Some("Mods/A"), false, "", "System.ArgumentException: Illegal characters in path.\r\n  at System.IO.Path.Combine (System.String path1, System.String path2) [0x00057] in <{M}>:0 \r\n  at ModLoader+<GetModSourcePaths>d__25.MoveNext () [0x00033] in <{A}>:0 \r\n  at System.Collections.Generic.LargeArrayBuilder`1[T].AddRange (System.Collections.Generic.IEnumerable`1[T] items) [0x0005e] in <{C}>:0 \r\n  at System.Collections.Generic.EnumerableHelpers.ToArray[T] (System.Collections.Generic.IEnumerable`1[T] source) [0x00033] in <{C}>:0 \r\n  at System.Linq.Enumerable.ToArray[TSource] (System.Collections.Generic.IEnumerable`1[T] source) [0x00018] in <{C}>:0 \r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x00026] in <{A}>:0 "),
+            (Some(vec![]), None, false, "", "System.ArgumentNullException: Value cannot be null.\r\nParameter name: path\r\n  at System.IO.DirectoryInfo.CheckPath (System.String path) [0x00003] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path, System.Boolean simpleOriginalPath) [0x00006] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path) [0x00000] in <{M}>:0 \r\n  at (wrapper remoting-invoke-with-check) System.IO.DirectoryInfo..ctor(string)\r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x000de] in <{A}>:0 "),
+            (Some(vec![]), Some("Mods/A<"), false, "", "System.ArgumentException: Illegal characters in path.\r\n  at System.IO.DirectoryInfo.CheckPath (System.String path) [0x0002f] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path, System.Boolean simpleOriginalPath) [0x00006] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path) [0x00000] in <{M}>:0 \r\n  at (wrapper remoting-invoke-with-check) System.IO.DirectoryInfo..ctor(string)\r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x000de] in <{A}>:0 "),
+            (Some(vec![]), Some("Mo:ds"), false, "", "System.ArgumentException: path\r\n  at System.IO.DirectoryInfo.CheckPath (System.String path) [0x00052] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path, System.Boolean simpleOriginalPath) [0x00006] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path) [0x00000] in <{M}>:0 \r\n  at (wrapper remoting-invoke-with-check) System.IO.DirectoryInfo..ctor(string)\r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x000de] in <{A}>:0 "),
+            (Some(vec![]), Some("  "), false, "", "System.ArgumentException: The specified path is not of a legal form (empty).\r\n  at System.IO.Path.InsecureGetFullPath (System.String path) [0x00025] in <{M}>:0 \r\n  at System.IO.Path.GetFullPath (System.String path) [0x00000] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path, System.Boolean simpleOriginalPath) [0x0000d] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path) [0x00000] in <{M}>:0 \r\n  at (wrapper remoting-invoke-with-check) System.IO.DirectoryInfo..ctor(string)\r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x000de] in <{A}>:0 "),
+            (Some(vec![]), Some("Mods/A"), false, "file", "System.IO.IOException: Cannot create CompiledMods because a file with the same name already exists.\r\n  at System.IO.Directory.CreateDirectory (System.String path) [0x0006a] in <{M}>:0 \r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x0013c] in <{A}>:0 "),
+            (None, Some("Mods/A"), true, "", "System.NullReferenceException: Object reference not set to an instance of an object\r\n  at ModLoader+<GetModSourcePaths>d__25.MoveNext () [0x0006f] in <{A}>:0 \r\n  at System.Collections.Generic.LargeArrayBuilder`1[T].AddRange (System.Collections.Generic.IEnumerable`1[T] items) [0x0005e] in <{C}>:0 \r\n  at System.Collections.Generic.EnumerableHelpers.ToArray[T] (System.Collections.Generic.IEnumerable`1[T] source) [0x00033] in <{C}>:0 \r\n  at System.Linq.Enumerable.ToArray[TSource] (System.Collections.Generic.IEnumerable`1[T] source) [0x00018] in <{C}>:0 \r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x00026] in <{A}>:0 "),
+            (Some(vec![]), Some(""), false, "", "System.ArgumentException: An empty file name is not valid.\r\n  at System.IO.DirectoryInfo.CheckPath (System.String path) [0x00016] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path, System.Boolean simpleOriginalPath) [0x00006] in <{M}>:0 \r\n  at System.IO.DirectoryInfo..ctor (System.String path) [0x00000] in <{M}>:0 \r\n  at (wrapper remoting-invoke-with-check) System.IO.DirectoryInfo..ctor(string)\r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x000de] in <{A}>:0 "),
+            (Some(vec![]), Some("Mods/A"), false, "ro", "System.UnauthorizedAccessException: Access to the path \"{B}\\CompiledMods\\me-Box-local.dll\" is denied.\r\n  at System.IO.File.Delete (System.String path) [0x00073] in <{M}>:0 \r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x00159] in <{A}>:0 "),
+            (Some(vec![Some("  ")]), Some(""), false, "", "System.ArgumentException: The specified path is not of a legal form (empty).\r\n  at System.IO.Path.InsecureGetFullPath (System.String path) [0x00025] in <{M}>:0 \r\n  at System.IO.Path.GetFullPath (System.String path) [0x00000] in <{M}>:0 \r\n  at ModLoader+<GetModSourcePaths>d__25.MoveNext () [0x00045] in <{A}>:0 \r\n  at System.Collections.Generic.LargeArrayBuilder`1[T].AddRange (System.Collections.Generic.IEnumerable`1[T] items) [0x0005e] in <{C}>:0 \r\n  at System.Collections.Generic.EnumerableHelpers.ToArray[T] (System.Collections.Generic.IEnumerable`1[T] source) [0x00033] in <{C}>:0 \r\n  at System.Linq.Enumerable.ToArray[TSource] (System.Collections.Generic.IEnumerable`1[T] source) [0x00018] in <{C}>:0 \r\n  at ModLoader.TryCompileMod (ModMetaData modmeta, ModScript& modScript) [0x00026] in <{A}>:0 "),
+        ];
+        for (scripts, loc, workshop, pre, want) in rows {
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).unwrap();
+            let mut meta = ModMetaData::new();
+            meta.Name = Some("Box".into());
+            meta.Author = Some("me".into());
+            meta.Scripts = scripts.as_ref().map(|v| v.iter().map(|s| s.map(str::to_string)).collect());
+            meta.MetaLocation = loc.map(str::to_string);
+            meta.FromWorkshop = *workshop;
+            let out = base.join("CompiledMods/me-Box-local.dll");
+            match *pre {
+                "file" => std::fs::write(base.join("CompiledMods"), "x").unwrap(),
+                "ro" => {
+                    std::fs::create_dir_all(base.join("CompiledMods")).unwrap();
+                    std::fs::write(&out, "x").unwrap();
+                    let mut p = std::fs::metadata(&out).unwrap().permissions();
+                    p.set_readonly(true);
+                    std::fs::set_permissions(&out, p).unwrap();
+                }
+                _ => {}
+            }
+            let (r, _) = TryCompileMod(&base, &Arc::new(Mutex::new(meta)), true).unwrap();
+            if *pre == "ro" {
+                let mut p = std::fs::metadata(&out).unwrap().permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                p.set_readonly(false);
+                std::fs::set_permissions(&out, p).unwrap();
+            }
+            // {B}: the working folder as the game prints it, Windows separators (a Mac temp folder /var/... as \var\...).
+            let want = want.replace("{A}", &a).replace("{M}", &m).replace("{C}", &c).replace("{B}", &base.display().to_string().replace('/', "\\"));
+            assert_eq!(r.Errors.as_deref(), Some(want.as_str()), "{scripts:?} {loc:?} {pre}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The game's own Ceras (Ceras.dll of the 1.28.54 hotfix under its Mono, CerasSerializer(null).Deserialize<HashSet<uint>>)
+    /// on root references -2 and -5 with type names written every way TypeFormatter reads them: Some(set or null), None where
+    /// it threw.
+    #[test]
+    fn trust_cache_decodes_typed_roots_as_the_game() {
+        let rows: &[(&str, Option<Option<Vec<u32>>>)] = &[
+            ("02020102", Some(Some(vec![1,2]))),
+            ("04", Some(None)),
+            ("0002", Some(None)),
+            ("00000e53797374656d2e55496e743332", None),
+            ("0001002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000e53797374656d2e55496e743332", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000e53797374656d2e55496e743332020507", Some(Some(vec![5,7]))),
+            ("03003453797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b53797374656d2e55496e7433325d020507", Some(Some(vec![5,7]))),
+            ("03004053797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c206d73636f726c69625d5d020507", Some(Some(vec![5,7]))),
+            ("0302020507", None),
+            ("", None),
+            ("0301002253797374656d2e436f6c6c656374696f6e732e47656e657269632e4c697374603101000e53797374656d2e55496e743332020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460310103020507", None),
+            ("03010301000e53797374656d2e55496e743332020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603102000e53797374656d2e55496e743332000e53797374656d2e55496e743332020507", None),
+            ("", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101001853797374656d2e55496e7433322c206d73636f726c6962020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000f2053797374656d2e55496e743332020507", Some(Some(vec![5,7]))),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000e73797374656d2e75696e743332020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000d53797374656d2e496e743332020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000e53797374656d2e55496e743332020507ffff", Some(Some(vec![5,7]))),
+            ("030000020507", None),
+            ("03002553797374656d2e436f6c6c656374696f6e732e47656e657269632e486173685365746031020507", None),
+            ("03000e53797374656d2e55496e743332020507", None),
+            ("0301002753797374656d2e436f6c6c656374696f6e732e47656e657269632e536f72746564536574603101000e53797374656d2e55496e743332020507", None),
+            ("0301003253797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460312c2053797374656d2e436f726501000e53797374656d2e55496e743332020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000f53797374656d2e55496e74333220020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e486173685365746031010010202053797374656d2e55496e743332020507", Some(Some(vec![5,7]))),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000f0953797374656d2e55496e743332020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000f53797374656d2e55496e74333209020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000f53797374656d2e55496e74333226020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000f53797374656d2e55496e7433322a020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101001053797374656d2e55496e7433325b5d020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000f0a53797374656d2e55496e743332020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101001753797374656d2e55496e7433322c6d73636f726c6962020507", None),
+            ("0301002553797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460310100112053797374656d202e2055496e743332020507", None),
+            ("0301002653797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460312001000e53797374656d2e55496e743332020507", None),
+            ("030100262053797374656d2e436f6c6c656374696f6e732e47656e657269632e48617368536574603101000e53797374656d2e55496e743332020507", Some(Some(vec![5,7]))),
+            ("0301002753797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5d01000e53797374656d2e55496e743332020507", None),
+            ("0301002753797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460312b5801000e53797374656d2e55496e743332020507", None),
+            ("03003553797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b2053797374656d2e55496e7433325d020507", Some(Some(vec![5,7]))),
+            ("03003553797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b53797374656d2e55496e743332205d020507", None),
+            ("03003f53797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c6d73636f726c69625d5d020507", Some(Some(vec![5,7]))),
+            ("03005153797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c206d73636f726c69622c2056657273696f6e3d312e322e332e345d5d020507", Some(Some(vec![5,7]))),
+            ("03004053797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c204d53434f524c49425d5d020507", Some(Some(vec![5,7]))),
+            ("03004353797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c2053797374656d2e436f72655d5d020507", None),
+            ("03003e53797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c206e6f737563685d5d020507", None),
+            ("03004253797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b205b53797374656d2e55496e7433322c206d73636f726c69625d205d020507", None),
+            ("03004153797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b53797374656d2e55496e7433325d2c2053797374656d2e436f7265020507", None),
+            ("03003653797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b53797374656d2e55496e7433325d2020020507", None),
+            ("0300352053797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b53797374656d2e55496e7433325d020507", Some(Some(vec![5,7]))),
+            ("03003353797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b53797374656d2e55496e743332020507", None),
+            ("03003353797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b53797374656d2e496e7433325d020507", None),
+            ("0300830153797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c206d73636f726c69622c2056657273696f6e3d342e302e302e302c2043756c747572653d6e65757472616c2c205075626c69634b6579546f6b656e3d623737613563353631393334653038395d5d020507", Some(Some(vec![5,7]))),
+            ("03004153797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b2053797374656d2e55496e7433322c206d73636f726c69625d5d020507", Some(Some(vec![5,7]))),
+            ("03004153797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c206d73636f726c6962205d5d020507", Some(Some(vec![5,7]))),
+            ("03004153797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e743332202c206d73636f726c69625d5d020507", None),
+            ("03004253797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b53797374656d2e55496e7433322c53797374656d2e55496e7433325d020507", None),
+            ("", None),
+            ("03004553797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c6d73636f726c69622c206a756e6b5d5d020507", Some(Some(vec![5,7]))),
+            ("03004c53797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c6d73636f726c69622c2056657273696f6e3d6162635d5d020507", Some(Some(vec![5,7]))),
+            ("03005253797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c6d73636f726c69622c205075626c69634b6579546f6b656e3d30305d5d020507", Some(Some(vec![5,7]))),
+            ("0300820153797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c6d73636f726c69622c2056657273696f6e3d342e302e302e302c2043756c747572653d6e65757472616c2c205075626c69634b6579546f6b656e3d623737613563353631393334653038395d5d020507", Some(Some(vec![5,7]))),
+            ("03004053797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c6d73636f726c69622c5d5d020507", None),
+            ("03004b53797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c6d73636f726c69622c2043756c747572653d66725d5d020507", Some(Some(vec![5,7]))),
+            ("03004353797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c6d73636f726c69622e646c6c5d5d020507", Some(Some(vec![5,7]))),
+            ("03004e53797374656d2e436f6c6c656374696f6e732e47656e657269632e4861736853657460315b5b53797374656d2e55496e7433322c206d73636f726c6962202c2056657273696f6e3d312e305d5d020507", Some(Some(vec![5,7]))),
+        ];
+        for (hex, want) in rows {
+            let b: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+            assert_eq!(&decode_uint_hashset(&b).ok(), want, "{hex}");
+        }
     }
 
     /// The trust cache the real game wrote on the developer's PC (TrustCache.Save of an empty set): its bytes decode and encode back,

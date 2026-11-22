@@ -107,6 +107,7 @@ pub struct Assembly {
     blobs: usize,
     /// The #US (user strings) heap.
     user_strings: usize,
+    guids: usize,
     wide_str: bool,
     wide_guid: bool,
     wide_blob: bool,
@@ -253,7 +254,7 @@ impl Assembly {
         let mut o = root + 16 + version_len + 2;
         let streams = u16_at(b, o) as usize;
         o += 2;
-        let (mut tables, mut strings, mut blobs, mut user_strings) = (0, 0, 0, 0);
+        let (mut tables, mut strings, mut blobs, mut user_strings, mut guids) = (0, 0, 0, 0, 0);
         for _ in 0..streams {
             let offset = root + u32_at(b, o) as usize;
             let name_start = o + 8;
@@ -263,6 +264,7 @@ impl Assembly {
                 b"#Strings" => strings = offset,
                 b"#Blob" => blobs = offset,
                 b"#US" => user_strings = offset,
+                b"#GUID" => guids = offset,
                 _ => {}
             }
             o = name_start + ((name_len + 4) & !3);
@@ -309,6 +311,7 @@ impl Assembly {
             strings,
             blobs,
             user_strings,
+            guids,
             wide_str,
             wide_guid,
             wide_blob,
@@ -480,6 +483,13 @@ impl Assembly {
         let o = self.strings + self.cell(table, row, col) as usize;
         let n = self.bytes[o..].iter().position(|&c| c == 0).unwrap();
         std::str::from_utf8(&self.bytes[o..o + n]).unwrap_or("")
+    }
+
+    /// The module's Mvid as Mono prints it in a stack frame: the GUID as 32 hex digits (its three leading fields
+    /// big-endian, as written out, then the last 8 bytes).
+    pub fn mvid(&self) -> String {
+        let o = self.guids + (self.cell(0x00, 1, 2) as usize - 1) * 16;
+        [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15].iter().map(|i| format!("{:02x}", self.bytes[o + i])).collect()
     }
 
     pub fn blob(&self, table: usize, row: u32, col: usize) -> &[u8] {
