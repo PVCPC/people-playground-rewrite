@@ -859,8 +859,9 @@ pub fn camera_layers(game_object_layer: i32) -> RenderLayers {
 }
 
 /// The culling pass that sees a GameObject layer, in render order: the cameras into textures first (FireCamera, then
-/// LightsCamera: both depth 1; ponytail: the order of the two is a guess from their order in Main.unity, unrecorded), then
-/// Main Camera.
+/// LightsCamera: both depth 1), then Main Camera. Measured in 1.28.54's hotfix (FireVisProbe.cs's camorder lines, from
+/// Camera.onPreCull and onPreRender): FireCamera culls and renders, then LightsCamera, Main Camera, On screen UI camera;
+/// Main Camera's PostProcessLayer runs LightsEffect then FireEffect BeforeStack, HeatEffect AfterStack (ppsorted).
 pub(crate) fn culling_pass(game_object_layer: i32) -> u8 {
     match game_object_layer {
         FIRE => 0,
@@ -882,6 +883,24 @@ pub fn add(app: &mut App) {
     embedded_asset!(app, "thermal.wesl");
     app.add_plugins((Material2dPlugin::<Glow>::default(), Material2dPlugin::<Lit>::default(), Material2dPlugin::<Bloom>::default(), Material2dPlugin::<Composite>::default(), Material2dPlugin::<Heat>::default(), Material2dPlugin::<Fire>::default(), Material2dPlugin::<GrainBaker>::default(), Material2dPlugin::<Panels>::default(), Material2dPlugin::<Thermal>::default()))
         .add_systems(Startup, setup)
+        // PP_FIRETEX=<file> (the fire check, FireVisProbe.cs's fire.bin): FireCamera's texture at PPG_AT, raw (width, height as
+        // u32, then its Rgba16Float rows).
+        .add_systems(Update, |time: Res<Time>, targets: Option<Res<Targets>>, mut done: Local<bool>, mut commands: Commands| {
+            let (Ok(path), Some(targets)) = (std::env::var("PP_FIRETEX"), targets) else { return };
+            let at: f32 = std::env::var("PPG_AT").map_or(7.0, |v| v.parse().unwrap());
+            if !*done && time.elapsed_secs() >= at - 0.05 {
+                *done = true;
+                use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+                let which = match std::env::var("PP_FIRETEX_OF").as_deref() { Ok("lights") => &targets.lights, Ok("fired") => &targets.fired, _ => &targets.fire };
+                commands.spawn(Screenshot::image(which.clone())).observe(move |e: On<ScreenshotCaptured>| {
+                    let i = &e.image;
+                    let mut out = [i.width(), i.height()].map(u32::to_le_bytes).concat();
+                    out.extend_from_slice(i.data.as_deref().unwrap_or_default());
+                    std::fs::write(&path, out).unwrap();
+                    eprintln!("firetex {:?} {}x{}", i.texture_descriptor.format, i.width(), i.height());
+                });
+            }
+        })
         .add_systems(PostUpdate, (follow, fire, thermal_vision, smaa, present).before(TransformSystems::Propagate))
         .add_systems(PreUpdate, scaled_pointer.after(bevy::picking::PickingSystems::ProcessInput).before(bevy::picking::PickingSystems::Backend))
         .add_systems(PreUpdate, scaled_cursor.after(bevy::ui::UiSystems::Focus));
@@ -1036,8 +1055,6 @@ fn setup(
         DebandDither::Disabled,
         RenderLayers::layer(1),
     ));
-    // FireCameraBehaviour.CreateNewRendertexture: MainCamera.pixelWidth / 3 by pixelHeight / 3, R32G32B32_SFloat (here
-    // Rgba16Float: wgpu filters 32-bit floats only with a feature), bilinear.
     // FireCameraBehaviour.Start.
     let mut behaviour = FireCameraBehaviour::default();
     let [fw, fh] = behaviour.start([w as i32, h as i32]);

@@ -3108,6 +3108,16 @@ fn attached_systems(
                     }
                 }
                 step(run, &library.systems, None, g, dt, rng);
+                // PP_FIREDUMP (the fire check, FireVisProbe.cs's firedump lines): each 0.25 s of game time, a fire system's particles.
+                if k == 0 && std::env::var_os("PP_FIREDUMP").is_some() && (g.time.timeAsDouble * 4.0).floor() != ((g.time.timeAsDouble - dt as f64) * 4.0).floor() {
+                    let s = &library.systems[run.sys];
+                    let parts: Vec<String> = run.particles.iter().map(|q| format!("{:.2},{:.2}:{:.3}:{:.3}x{:.3}:{:.2}/{:.2}:{:08x}:{}", q.position.x, q.position.y, q.size, q.current_size.x, q.current_size.y, q.age, q.lifetime, bytes(looks(s, q, 0.0).0).swap_bytes(), q.seed)).collect();
+                    eprintln!("firedump t={:.2} phys={} sys={} shape={} n={} {}", g.time.timeAsDouble, g.physicals[p].name, run.sys, s.ps.shape_type, run.particles.len(), parts.join(" "));
+                    if let Some(f) = g.physicals[p].fire_map {
+                        let pts: Vec<String> = g.fire_maps[f].Points.iter().enumerate().filter(|(_, q)| q.FireIntensity > 0.001).map(|(i, q)| format!("{i}:{:.2},{:.2}:{:.3}", q.LocalPoint[0], q.LocalPoint[1], q.FireIntensity)).collect();
+                        eprintln!("firemap t={:.2} n={} {}", g.time.timeAsDouble, g.fire_maps[f].Points.len(), pts.join(" "));
+                    }
+                }
             }
         }
     }

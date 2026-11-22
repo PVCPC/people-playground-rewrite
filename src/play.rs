@@ -55,7 +55,8 @@ pub enum Start {
 fn load(start: &Start, rig: &HumanRig, prefs: Option<Prefs>) -> Result<Option<Game>, String> {
     let recording = match start {
         Start::Recording(recording) => recording,
-        Start::Map(game, map, item, _) => return new_game(game, map, item.as_deref(), prefs, 0).map(Some),
+        // PPG_SEED: the session's Random seed (the player seeds it from the clock); 0 without it.
+        Start::Map(game, map, item, _) => return new_game(game, map, item.as_deref(), prefs, std::env::var("PPG_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0)).map(Some),
         Start::Menu(_) => return Ok(None),
     };
     let start = dump::snapshots(recording)?
@@ -932,14 +933,24 @@ fn fx3_scene(app: &mut App, scene: String, path: String) {
             first
         };
         match *step {
-            // "fire" (1.28.54, FireVisProbe.cs): a Wooden Pole at (0, -1), ignited at 5 s.
+            // "fire" (1.28.54, FireVisProbe.cs): a Wooden Pole at (0, -1), ignited at its centre at 5 s (Ignite(true, position): the
+            // random fire-map point of Ignite(true) varies per run in the game).
             0 if t >= 4.0 && scene == "fire" => {
                 *step = 10;
                 wheels.push(spawn(g, [0.0, -1.0]));
             }
             10 if t >= 5.0 => {
                 *step = 11;
-                g.ignite(wheels[0], true);
+                let c = g.transform_point3(wheels[0], [0.0; 3]);
+                g.ignite_at(wheels[0], true, [c[0], c[1]]); eprintln!("fireignite t={:.3}", g.time.timeAsDouble);
+            }
+            // FireVisProbe.cs's firestate lines: each 0.25 s after the ignite.
+            11 if std::env::var_os("PP_FIREDUMP").is_some() => {
+                let e = g.time.time - 5.0;
+                if (e * 4.0).floor() != ((e - g.time.deltaTime) * 4.0).floor() {
+                    let ph = &g.physicals[wheels[0]];
+                    eprintln!("firestate t={:.2} onfire={} burn={:.3} prog={:.3} temp={:.1} wet={:.2}", g.time.timeAsDouble, ph.OnFire, ph.burnIntensity, ph.BurnProgress, ph.Temperature, ph.Wetness);
+                }
             }
             0 if t >= 4.0 => {
                 *step = 1;
