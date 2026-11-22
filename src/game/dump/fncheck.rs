@@ -85,7 +85,7 @@ pub(super) struct Case<'a> {
 
 /// gapB r2: the recorder version this checkout's recorder stamps (tools/recorder/Recorder.cs RecVer). A field a newer
 /// recorder added is asked for with `Case::field_since`: an older recording's case is "too old", not a failure.
-pub(super) const REC_VER: u32 = 4;
+pub(super) const REC_VER: u32 = 5;
 
 impl Case<'_> {
     /// gapC: a kind the game fixes by the self component's class (PowerKind::of_tool, WireKind::of_tool): `of` the self
@@ -266,8 +266,10 @@ impl Case<'_> {
                     .ok_or_else(|| format!("no record #{id}")),
             };
         };
-        if r.ty == "PhysicalBehaviour" {
-            return Ok((r.ty.clone(), phys_by_id(g, id)?));
+        // sc4: a per-case item's PhysicalBehaviour has no record of its own: its DecalControllers or ItemPenetrations one
+        // (by the PhysicalBehaviour's id) comes first.
+        if matches!(r.ty.as_str(), "PhysicalBehaviour" | "DecalControllers" | "ItemPenetrations") {
+            return Ok(("PhysicalBehaviour".into(), phys_by_id(g, id)?));
         }
         // A Rigidbody2D (Utils' extensions): the PhysicalBehaviour whose `rigidbody` it is.
         if r.ty == "Rigidbody2D" {
@@ -5217,6 +5219,17 @@ pub fn fn_check(path: &Path, rig: &HumanRig) -> Result<(), String> {
                                 let ours = clip_of(&g, r.id);
                                 let changed = Some(&theirs) != pre.as_ref() || ours_pre_clips.get(&r.id).is_some_and(|p| *p != ours);
                                 if changed && theirs != ours { d.push(format!("AudioSource {} #{} clip: game {theirs} ours {ours}", r.name, r.id)) }
+                            }
+                            // sc4: a playing one-shot (`shot=@clip#id,<age>`, every recording since recver 5): ours' last one-shot
+                            // of that source plays the same clip. Only a shot the call started: PI's (same clip, older at PO: the
+                            // snapshot ages it) is not one.
+                            for r in s.of("ItemAudioSource") {
+                                let shot = |v: Option<&str>| v.and_then(|v| v.split_once(',')).map(|(k, a)| (k.to_string(), super::f(a)));
+                                if let (Some((k, a)), Some((pk, pa))) = (shot(r.get("shot")), shot(pi.of(&r.ty).find(|x| x.id == r.id).and_then(|x| x.get("shot")))) && k == pk && a >= pa { continue }
+                                let Some(theirs) = r.get("shot").and_then(|v| v.strip_prefix('@')?.rsplit_once('#')).map(|x| x.0) else { continue };
+                                let Some(src) = g.audio.sources.get(&r.id) else { continue };
+                                let ours = src.one_shots.last().map_or("none".to_string(), |v| v.clip.clip.name.replace(' ', "_"));
+                                if ours != theirs { d.push(format!("AudioSource {} #{} one-shot: game {theirs} ours {ours}", r.name, r.id)) }
                             }
                             // v52h: volume, minDistance and maxDistance (a recording made with PPG_AUDIO_VOL=1), by the same rule.
                             for r in s.of("ItemAudioSource") {

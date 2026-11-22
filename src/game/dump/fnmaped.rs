@@ -49,10 +49,23 @@ impl Game {
                 self.physicals[p].stabWoundCount = n.parse::<i64>().map_err(|_| "stabWoundCount")? as u32;
             }
         }
-        // A stabber without a PhysicalBehaviour record (a per-case snapshot's item, linked from its prefab): its penetrations
-        // as its victims list them.
-        // ponytail: an inactive penetration its victims already dropped is missing; record the item's list if a case needs it.
-        for i in 0..self.penetration_arena.len() {
+        // A stabber without a PhysicalBehaviour record (a per-case snapshot's item, linked from its prefab): its
+        // ItemPenetrations record (sc4), with an inactive penetration its victims already dropped (OnJointBreak2D, before
+        // the stabber's next Update). A recording before that record: its penetrations as its victims list them.
+        let mut item_lists = false;
+        for r in s.of("ItemPenetrations") {
+            item_lists = true;
+            let Some(p) = self.physicals.iter().position(|x| x.id == r.id) else { continue };
+            if recorded.contains(&p) {
+                continue;
+            }
+            recorded.push(p);
+            for item in list(r.req("penetrations")?) {
+                let i = parse(self, item)?;
+                self.physicals[p].penetrations.push(i);
+            }
+        }
+        for i in (0..self.penetration_arena.len()).filter(|_| !item_lists) {
             let st = self.penetration_arena[i].Stabber;
             if !recorded.contains(&st) && !self.physicals[st].penetrations.contains(&i) {
                 self.physicals[st].penetrations.push(i);

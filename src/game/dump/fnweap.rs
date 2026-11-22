@@ -1,7 +1,7 @@
 //! The human's distance-joint wires in a snapshot (fnweap): the wire records (`BloodWireBehaviour`, and the recorder's
 //! FnWeap.DumpWires records named by class) rebuilt as `Game::blood_wires` entries on their DistanceJoint2D, and
-//! compared field by field after a fn-check case.
-// ponytail: slider wires are left out until a case needs them.
+//! compared field by field after a fn-check case. A SliderJointWireBehaviour sits on its SliderJoint2D (the loader's
+//! adopted joint): fnw21_slider and fnw26_wires check it.
 
 use super::super::blood_wire::{BloodWire, WireKind};
 use super::super::container::Owner;

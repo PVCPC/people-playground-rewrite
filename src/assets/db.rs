@@ -376,6 +376,19 @@ impl AssetDb {
         Ok(Some((script, mb, v)))
     }
 
+    /// The script execution order of class `class` (its MonoScript's), None when no MonoScript names it.
+    pub fn execution_order(&self, class: &str) -> Result<Option<i32>, String> {
+        for f in &self.files {
+            for o in f.objects.iter().filter(|o| o.class_id == 115) {
+                let s = MonoScript::read(f.data(o))?;
+                if s.class_name == class {
+                    return Ok(Some(s.execution_order));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Every MonoBehaviour / ScriptableObject whose script class is `class`.
     pub fn find_scripts(&mut self, class: &str) -> Result<Vec<ObjRef>, String> {
         let mut out = Vec::new();

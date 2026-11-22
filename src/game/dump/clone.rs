@@ -834,19 +834,29 @@ impl Game {
                 t.base.TotalLiquidAmount = f32::from_bits(u32::from_str_radix(v, 16).map_err(|e| format!("BloodTankBehaviour TotalLiquidAmount: {e}"))?);
             }
         }
-        // A Tritium glow (GlowInTheDarkBehaviour, added at runtime) on a flask: Start again with the recorded ids (its glow
-        // object's first), which builds the ModLightPrefab light and its LightSprite; the loop below gives the fields.
-        // ponytail: flasks only; a syringe's or a limb's glow is skipped (no recording has one yet).
-        for r in s.of("ItemScript").filter(|r| r.get("class") == Some("GlowInTheDarkBehaviour")) {
+        // A Tritium glow (GlowInTheDarkBehaviour, added at runtime) on a flask, a syringe (an item's ItemScript record) or a
+        // limb (the person's GlowInTheDarkBehaviour record, sc4): Start again with the recorded ids (its glow object's
+        // first), which builds the ModLightPrefab light and its LightSprite; the loop below gives the fields.
+        use crate::game::container::Owner;
+        let limbs: Vec<String> = s.of("LimbBehaviour").map(|r| r.name.clone()).collect();
+        for r in s.of("ItemScript").filter(|r| r.get("class") == Some("GlowInTheDarkBehaviour")).chain(s.of("GlowInTheDarkBehaviour")) {
             if self.glows.iter().any(|x| x.id == r.id) {
                 continue;
             }
-            let own = format!("GlowInTheDarkBehaviour:{}", r.id);
-            let Some(clone) = s.of("Clone").find(|c| c.get("comps").is_some_and(|x| x.split(['[', ';', ']']).any(|t| t == own))) else { continue };
-            let flask = clone.req("comps")?.split(['[', ';', ']']).find_map(|t| t.strip_prefix("FlaskBehaviour:")).and_then(|t| t.parse::<i32>().ok());
-            let Some(f) = flask.and_then(|id| self.flasks.iter().position(|x| x.id == id)) else { continue };
+            let owner = if r.ty == "GlowInTheDarkBehaviour" {
+                let Some(l) = limbs.iter().position(|n| *n == r.name) else { continue };
+                Owner::Circulation(l)
+            } else {
+                let own = format!("GlowInTheDarkBehaviour:{}", r.id);
+                let Some(clone) = s.of("Clone").find(|c| c.get("comps").is_some_and(|x| x.split(['[', ';', ']']).any(|t| t == own))) else { continue };
+                // Its object's container: a FlaskBehaviour, or a SyringeBehaviour (or subclass) by its component id.
+                let ids: Vec<i32> = clone.req("comps")?.split(['[', ';', ']']).filter_map(|t| t.rsplit_once(':')?.1.parse().ok()).collect();
+                let flask = ids.iter().find_map(|&id| self.flasks.iter().position(|x| x.id == id)).map(Owner::Flask);
+                let Some(o) = flask.or_else(|| ids.iter().find_map(|&id| self.syringes.iter().position(|x| x.id == id)).map(Owner::Syringe)) else { continue };
+                o
+            };
             let Some(glow_go) = r.get("glow").and_then(super::reference) else { continue };
-            self.glows.push(crate::game::glow::GlowInTheDark { id: r.id, owner: crate::game::container::Owner::Flask(f), light: None, glow_go: 0, light_go: 0 });
+            self.glows.push(crate::game::glow::GlowInTheDark { id: r.id, owner, light: None, glow_go: 0, light_go: 0 });
             let next = self.next_instance_id;
             self.next_instance_id = glow_go;
             self.glow_start(self.glows.len() - 1);
@@ -1263,7 +1273,8 @@ impl Game {
                         }
                     }
                     // `clip=null` while playing: only one-shots play (a sentry's TurretGun Shoot's PlayOneShot), so a
-                    // one-shot stands in for them. ponytail: any script clip, the record names none; only isPlaying is compared.
+                    // one-shot stands in for them: the recorded one (`shot=`, every recording since recver 5; fn-check
+                    // compares it), else (an older recording) any loaded clip, of which only isPlaying is compared.
                     if r.get("clip") == Some("null") && self.audio.get(r.id).clip.is_none() {
                         // `shot=@name#id,<age>`: the recorder's last one-shot of this source (fnlive), by name at its age.
                         if let Some((n, age)) = r.get("shot").and_then(|v| v.strip_prefix('@')?.rsplit_once('#')).and_then(|(n, rest)| Some((n.to_string(), super::f(rest.split_once(',')?.1)))) {

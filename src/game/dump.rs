@@ -2171,10 +2171,13 @@ impl Game {
         for l in 0..g.gforces.len() {
             g.behaviours.add(0, super::Behaviour::GForce(l));
         }
-        // The unstarted limbs' LimbBehaviour.Start waits for the next Start pass (it adds the GForceMeasureBehaviours, in limb order).
-        // ponytail: only the limbs' Starts are queued; the person's other unstarted components (Circulation, Node, GoreString,
-        // Person) load as started. Queue them too when a stepped check needs a fresh person.
-        if limbs_unstarted {
+        // The person's components whose Start has not begun (the Unstarted record, sc4: a person snapshotted between its
+        // Instantiate and its Starts, or within that Start pass) start in the next Start pass, in the order Unity queued
+        // them: script execution order, then the higher id. A recording before that record: when no limb has started (no
+        // GForceMeasureBehaviour), the limbs' LimbBehaviour.Start only (it adds the GForceMeasureBehaviours, in limb order).
+        if let Some(r) = s.of("Unstarted").next() {
+            g.queue_unstarted(s, r.req("ids")?.split(';').filter(|x| !x.is_empty()).map(|x| x.parse::<i32>().map_err(|e| format!("Unstarted ids {x}: {e}"))).collect::<Result<HashSet<_>, _>>()?)?;
+        } else if limbs_unstarted {
             for l in 0..g.limbs.len() {
                 g.limbs[l].started = false;
                 g.pending_starts.push(super::misc::PendingStart::Limb(l));
@@ -3601,7 +3604,8 @@ pub(super) fn load_person_poses(g: &Game, p: &mut Person, rig: Vec<RagdollPose>,
         gone.iter().position(|q| q.Name == name).or_else(|| listed.iter().position(|q| q.Name == name).map(|i| i + p.PoseStart)).ok_or(format!("pose {name}"))
     };
     p.ActivePose = match r.req("ActivePose")? {
-        "null" => None,
+        // sc4: before Start, the field's unnamed default pose (ours: none until Start sets it).
+        "null" | "RagdollPose:\"\"" => None,
         t => Some(pose_named(t)?),
     };
     for entry in linked {
@@ -4716,6 +4720,75 @@ fn compare_physics(g: &mut Game, from: &Snapshot, to: &Snapshot) -> Result<Vec<S
 
 /// --loop-test: load the first snapshot with the b2 world once, then run the game loop through the rest of the
 /// recording (FixedUpdate scripts, physics pass, Update) taking only Time from it, comparing at every point.
+impl Game {
+    /// The Unstarted record's components (`due`, by id; sc4): their Starts queued as Unity's Start pass takes them.
+    fn queue_unstarted(&mut self, s: &Snapshot, due: HashSet<i32>) -> Result<(), String> {
+        for (_, start) in self.unstarted_starts(s, due)? {
+            if let super::misc::PendingStart::Limb(l) = start {
+                self.limbs[l].started = false;
+            }
+            self.pending_starts.push(start);
+        }
+        Ok(())
+    }
+
+    /// The Starts of the person's components `due` (by id), with their ids, in Unity's Start pass order: script
+    /// execution order (the game's MonoScripts), then the higher id.
+    fn unstarted_starts(&mut self, s: &Snapshot, due: HashSet<i32>) -> Result<Vec<(i32, super::misc::PendingStart)>, String> {
+        use super::misc::PendingStart as P;
+        if due.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limb_of = |name: &str| s.of("LimbBehaviour").position(|r| r.name == name).ok_or(format!("Unstarted: no limb {name}"));
+        let mut starts: Vec<(&'static str, i32, P)> = Vec::new();
+        for (p, r) in s.of("PersonBehaviour").enumerate() {
+            starts.push(("PersonBehaviour", r.id, P::Person(p)));
+            // The root's HingeJointLimitAutofixBehaviour (no record of its own): its id from the root's Clone record.
+            let own = format!("PersonBehaviour:{}", r.id);
+            let comps = s.of("Clone").filter_map(|c| c.get("comps")).find(|c| c.split(['[', ';', ']']).any(|t| t == own));
+            if let Some(id) = comps.and_then(|c| c.split(['[', ';', ']']).find_map(|t| t.strip_prefix("HingeJointLimitAutofixBehaviour:")?.parse().ok())) {
+                starts.push(("HingeJointLimitAutofixBehaviour", id, P::HingeJointLimitAutofix(p)));
+            }
+        }
+        for (l, r) in s.of("LimbBehaviour").enumerate() {
+            starts.push(("LimbBehaviour", r.id, P::Limb(l)));
+            let p = self.limbs[l].PhysicalBehaviour;
+            starts.push(("PhysicalBehaviour", self.physicals[p].id, P::Physical(p)));
+        }
+        for (l, r) in s.of("CirculationBehaviour").enumerate() {
+            starts.push(("CirculationBehaviour", r.id, P::Circulation(l)));
+        }
+        for (l, r) in s.of("ConnectedNodeBehaviour").enumerate() {
+            let keep = r.get("SerialisableConnectedNodes").map(|v| list(v).iter().map(|x| *x == "1").collect());
+            starts.push(("ConnectedNodeBehaviour", r.id, P::Node(l, keep)));
+        }
+        for r in s.of("GripBehaviour") {
+            let grip = self.limbs[limb_of(&r.name)?].GripBehaviour.ok_or("Unstarted: a GripBehaviour record its limb has no grip for")?;
+            starts.push(("GripBehaviour", r.id, P::Grip(grip)));
+        }
+        for r in s.of("GoreStringBehaviour") {
+            starts.push(("GoreStringBehaviour", r.id, P::GoreString(limb_of(&r.name)?, r.get("CreateJointOnStart") == Some("1"))));
+        }
+        if let Some(id) = due.iter().find(|&&id| !starts.iter().any(|x| x.1 == id)) {
+            return Err(format!("Unstarted: no person component {id}"));
+        }
+        starts.retain(|x| due.contains(&x.1));
+        if self.assets.is_none() {
+            let game = crate::game_assets::find_game(None).map_err(|e| format!("Unstarted: the execution orders need the game's data: {e}"))?;
+            self.assets = Some(Box::new(crate::assets::db::AssetDb::open(&game)?));
+        }
+        let db = self.assets.as_ref().unwrap();
+        let mut order = HashMap::new();
+        for &(class, _, _) in &starts {
+            if !order.contains_key(class) {
+                order.insert(class, db.execution_order(class)?.ok_or(format!("Unstarted: no MonoScript {class}"))?);
+            }
+        }
+        starts.sort_by_key(|x| (order[x.0], std::cmp::Reverse(x.1)));
+        Ok(starts.into_iter().map(|(_, id, start)| (id, start)).collect())
+    }
+}
+
 pub fn loop_test(dump: &Path, rig: &HumanRig) -> Result<(), String> {
     let mut snaps = snapshots(dump)?.skip_while(|s| !(s.pt == "FS" && s.of("b2World").next().is_some()));
     let first = snaps.next().ok_or("no FS snapshot")?;
@@ -5029,6 +5102,41 @@ mod tests {
         assert_eq!(split_top("a=1 b=X(c=1 d=2) e=[f;g h]", ' '), ["a=1", "b=X(c=1 d=2)", "e=[f;g h]"]);
         assert_eq!(key_value("<IsOnFloor>k__BackingField=0"), ("IsOnFloor".into(), "0".into()));
         assert_eq!(super::super::circulation::liquid("BLOOD"), 0);
+    }
+
+    /// sc4: a person snapshotted within its Start pass (sc4_unstarted54, PPG_FNLIVE_START: live cases of its own Starts,
+    /// with the Unstarted records). Each snapshot's queue starts with the components that started before the next one
+    /// (its Unstarted ids less the next's), and after the Start pass every CirculationBehaviour's NewlySpawned and every
+    /// limb's started is as in the first snapshot with none left.
+    #[test]
+    fn unstarted_person_starts() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let probe = std::env::var("PPG_REFERENCE_PROBE").map(std::path::PathBuf::from).unwrap_or_else(|_| root.join("reference-probe"));
+        let dump = probe.join("game/sc4_unstarted54.txt");
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let Ok(rig) = HumanRig::load(&crate::game_assets::test_cache(root, &game), &game) else { return };
+        let Ok(snaps) = snapshots(&dump) else {
+            eprintln!("unstarted_person_starts: skipped, no {}", dump.display());
+            return;
+        };
+        let header = header(&dump).unwrap();
+        let due = |s: &Snapshot| -> HashSet<i32> { s.of("Unstarted").next().map_or(HashSet::new(), |r| r.req("ids").unwrap().split(';').filter(|x| !x.is_empty()).map(|x| x.parse().unwrap()).collect()) };
+        let pi: Vec<Snapshot> = snaps.filter(|s| s.pt == "PI" && s.of("Unstarted").next().is_some()).collect();
+        let done = pi.iter().position(|s| due(s).is_empty()).expect("a snapshot with every Start begun");
+        assert!(done > 0, "no snapshot within the Start pass");
+        let want = Game::from_snapshot_header(&pi[done], &rig, &header).unwrap();
+        for k in 0..done {
+            let mut g = Game::from_snapshot_header(&pi[k], &rig, &header).unwrap();
+            let (now, next) = (due(&pi[k]), due(&pi[k + 1]));
+            let order: Vec<i32> = g.unstarted_starts(&pi[k], now.clone()).unwrap().into_iter().map(|x| x.0).collect();
+            let begun: HashSet<i32> = now.difference(&next).copied().collect();
+            assert_eq!(order[..begun.len()].iter().copied().collect::<HashSet<_>>(), begun, "case {k}: the Starts begun by the next case are not first in {order:?}");
+            g.run_pending_starts();
+            for l in 0..g.limbs.len() {
+                assert_eq!(g.circulations[l].NewlySpawned, want.circulations[l].NewlySpawned, "case {k} limb {}: NewlySpawned", g.limbs[l].name);
+                assert_eq!(g.limbs[l].started, want.limbs[l].started, "case {k} limb {}: started", g.limbs[l].name);
+            }
+        }
     }
 }
 
