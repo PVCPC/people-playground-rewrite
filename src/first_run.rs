@@ -231,7 +231,11 @@ fn clipboard_text() -> String {
 /// The asset cache, built from the installed game the first time.
 pub fn ensure_cache(cache: &Path, game: &Path) -> Result<(), String> {
     if cache.join("human.json").is_file() {
-        return Ok(());
+        // A cache made from another game version (a Steam update) is made again instead of stopping the rewrite.
+        if crate::game_assets::HumanRig::load(cache, game).is_ok() {
+            return Ok(());
+        }
+        eprintln!("The asset cache was made from a different version of the game: making it again.");
     }
     eprintln!("Preparing the asset cache from your installed game: {}", cache.display());
     build_cache(game, cache)
