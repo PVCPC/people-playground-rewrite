@@ -469,6 +469,12 @@ impl Game {
         if let Some((l, end)) = self.phase_link_end_object(id) {
             return self.phase_link_end_destroy(l, end);
         }
+        // A DecalControllerBehaviour.Clear decal or decalHolder (no clone kept): its GameObject goes; Optout and the
+        // SpriteRenderers run nothing (crash #33: Clear Everything after blood decals panicked here).
+        if self.decal_objects_destroying.remove(&id) {
+            self.destroyed_components.insert(id);
+            return;
+        }
         // v52h r12: a GlowInTheDarkBehaviour's glow object or its light (no clone kept: GlowInTheDarkBehaviour.OnDestroy's).
         if let Some(g) = self.glows.iter().position(|x| id != 0 && (x.glow_go == id || x.light_go == id)) {
             self.glow_object_destroyed(g, id);

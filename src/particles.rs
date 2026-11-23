@@ -2124,8 +2124,21 @@ impl Game {
 
     fn field_ps_at(&self, sid: i32, field: &str, children: bool) -> Option<Vec<usize>> {
         let (inst, t, psid) = self.field_target(sid, field)?;
+        self.ps_tree_at(inst, t, |e| e.owner == psid || e.owner == sid, children)
+    }
+
+    /// The embedded systems of ParticleSystem component `psid` (whoever drives it in its clone), then with `children`
+    /// those on the objects below it: a UnityEvent's Play/Stop(withChildren) on it.
+    pub(crate) fn ps_component_tree(&self, psid: i32, children: bool) -> Vec<usize> {
+        let Some(inst) = self.unsynced.iter().chain(&self.retained).find(|i| i.objects.iter().any(|x| x.components.contains(&psid))) else { return Vec::new() };
+        let t = inst.objects.iter().position(|x| x.components.contains(&psid)).unwrap();
+        let mine = |e: &crate::game::EmbeddedPs| inst.objects.iter().any(|x| x.components.contains(&e.owner));
+        self.ps_tree_at(inst, t, mine, children).unwrap_or_default()
+    }
+
+    fn ps_tree_at(&self, inst: &crate::game::spawn::Instance, t: usize, root: impl Fn(&crate::game::EmbeddedPs) -> bool, children: bool) -> Option<Vec<usize>> {
         let go = inst.prefab.objects[t].game_object;
-        let mut out = vec![self.embedded_ps.iter().position(|e| e.go == go && (e.owner == psid || e.owner == sid))?];
+        let mut out = vec![self.embedded_ps.iter().position(|e| e.go == go && root(e))?];
         let below = |mut x: usize| loop {
             match inst.objects[x].parent {
                 Some(p) if p == t => break true,

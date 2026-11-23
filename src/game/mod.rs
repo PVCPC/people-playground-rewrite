@@ -2939,6 +2939,9 @@ pub struct Game {
     pub recorded_linked: HashMap<i32, link::Linked>,
     /// The GameObjects (by the id of their Transform) that GetOrAddComponent<DebrisComponent> added one to.
     pub debris_added: std::collections::HashSet<i32>,
+    /// The decalHolder and decal GameObjects DecalControllerBehaviour.Clear destroyed (no clone kept: their Destroy
+    /// runs no script, Optout is empty), until their delayed destroy runs.
+    pub decal_objects_destroying: std::collections::HashSet<i32>,
     /// FuseBoxBehaviour.audioProvider (Awake's AudioClip.Create clip), its instance id by the FuseBoxBehaviour's.
     pub fuse_box_clips: HashMap<i32, i32>,
     /// Clones Instantiate(.., parent) put under an existing GameObject, by the parent's Transform id. Destroying the

@@ -28,6 +28,7 @@ impl Game {
         // (No instance in ours: only the pending destroys, under their GameObject ids, as limb_on_destroy's myStatus.)
         for &id in ids.iter().skip(1).chain(ids.first()) {
             self.object_destroys.push((at, id));
+            self.decal_objects_destroying.insert(id);
         }
     }
 

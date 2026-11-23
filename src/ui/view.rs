@@ -1343,8 +1343,9 @@ fn hud(root: &mut Kids, ui: &Ui, settings: &Settings, controls: &Controls, art: 
                     text_button(r, "Reset", 28.0, ui.map.as_ref().map(|_| Act::Restart), Sel::None, "", node());
                     text_button(r, "Menu", 28.0, Some(Act::ToMenu), Sel::None, "", node());
                     text_button(r, "Report", 28.0, Some(Act::CrashReport), Sel::None, "", node());
+                    text_button(r, "Show file", 28.0, Some(Act::CrashFolder), Sel::None, "", node());
                 });
-                label(b, "Report opens a GitHub issue and the crash file to attach to it", 16.0, WHITE);
+                label(b, "Report opens a GitHub issue and the crash file to attach to it; Show file only opens its folder", 16.0, WHITE);
             });
         });
     }

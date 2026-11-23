@@ -2947,6 +2947,24 @@ mod tests {
         frames(&mut g, 30);
     }
 
+    // billy's crash #33 (e34cbbc, live play): Human, Android, two Crabs, a Soviet Submachine Gun and a Shotgun, ~55 s,
+    // then Clear Everything panicked in run_object_destroy (component -13102 on no clone).
+    #[test]
+    fn clear_everything_after_a_live_scene() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let mut g = new_game(&game, "Default", None, None, 0).unwrap();
+        frames(&mut g, 5);
+        let mut db = g.assets.take().expect("the game's data");
+        for (k, item) in ["Human", "Android", "Crab", "Crab", "Soviet Submachine Gun", "Shotgun"].into_iter().enumerate() {
+            let (inst, _) = g.catalog_spawn(&mut db, item, [-6.0 + 2.5 * k as f32, 3.0, 0.0], false).expect(item);
+            g.unsynced.push(inst);
+        }
+        g.assets = Some(db);
+        frames(&mut g, 55 * 60);
+        g.clear_everything();
+        frames(&mut g, 60);
+    }
+
     // A fired Blaster / Archelix Caster starts its muzzle flash particles (they were never played).
     #[test]
     fn weapons_play_their_muzzle_flash() {
@@ -2966,6 +2984,22 @@ mod tests {
             }
             assert!(g.ps_calls.iter().any(|c| matches!(c.1, super::super::PsCall::Play)), "{item}: no muzzle flash Play");
         }
+    }
+
+    // ISSUES 35: a used Pulse Drum plays its Vapor (UseEventTrigger.Event's persistent ParticleSystem.Play call).
+    #[test]
+    fn pulse_drum_plays_its_vapor() {
+        let Ok(game) = crate::game_assets::find_game(None) else { return };
+        let mut g = new_game(&game, "Default", None, None, 0).unwrap();
+        let mut db = g.assets.take().expect("the game's data");
+        let first = g.physicals.len();
+        let (inst, _) = g.catalog_spawn(&mut db, "Pulse Drum", [0.0, 2.0, 0.0], false).expect("Pulse Drum");
+        g.assets = Some(db);
+        g.unsynced.push(inst);
+        frames(&mut g, 5);
+        g.ps_calls.clear();
+        g.activate_for_test(first);
+        assert!(g.ps_calls.iter().any(|c| matches!(c.1, super::super::PsCall::Play)), "no Vapor Play");
     }
 
     // A Blaster bolt's TrailRenderer draws as a line behind it; a held Heatray shows its beam.

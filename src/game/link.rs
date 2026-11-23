@@ -693,6 +693,9 @@ pub enum EventCall {
     /// Renderer.enabled = v of a SpriteRenderer: its component id, the PhysicalBehaviour's component id when its
     /// object has one (the sprite is the physical's), and v.
     SpriteEnabled(i32, Option<i32>, bool),
+    /// ParticleSystem.Play(withChildren) (true) or Stop(withChildren) (false, StopEmitting) by the system's component id:
+    /// Play() and Stop() (m_Mode 1) pass withChildren = true, Play(bool)/Stop(bool) (m_Mode 6) the bool.
+    ParticleSystem(i32, bool, bool),
     /// A call whose target is not rewritten: it stops when it runs.
     Stop(&'static str),
 }
@@ -718,6 +721,10 @@ pub(super) fn try_event_calls(prefab: &Prefab, file: usize, event: &Value, inst:
     for call in invoked_calls(event) {
         if let Some(a) = audio_call(prefab, file, inst, call) {
             out.push(a);
+            continue;
+        }
+        if let Some(e) = particle_call(prefab, file, inst, call) {
+            out.push(e);
             continue;
         }
         if presentation_call(prefab, file, call) {
@@ -840,6 +847,25 @@ pub(super) fn invoked_calls(event: &Value) -> Vec<&Value> {
 fn call_target(prefab: &Prefab, file: usize, call: &Value) -> Option<(usize, usize)> {
     let target = call.get("m_Target").and_then(Value::pptr).unwrap();
     (target.file == 0).then(|| prefab.index.get(&ObjRef { file, path_id: target.path_id }).copied()).flatten().filter(|&(_, c)| c != usize::MAX)
+}
+
+/// ParticleSystem.Play/Stop as a UnityEvent calls them (UseEventTrigger.Event on the Pulse Drum's Vapor, ...).
+fn particle_call(prefab: &Prefab, file: usize, inst: &Instance, call: &Value) -> Option<EventCall> {
+    let (o, c) = call_target(prefab, file, call)?;
+    if !matches!(prefab.objects[o].components[c].1, Component::Other(super::water::PARTICLE_SYSTEM)) {
+        return None;
+    }
+    let play = match string(call, "m_MethodName").ok()?.as_str() {
+        "Play" => true,
+        "Stop" => false,
+        _ => return None,
+    };
+    let children = match call.get("m_Mode").and_then(Value::i64)? {
+        1 => true,
+        6 => call.get("m_Arguments")?.get("m_BoolArgument")?.bool()?,
+        _ => return None,
+    };
+    Some(EventCall::ParticleSystem(inst.objects[o].components[c], play, children))
 }
 
 /// Play on a Translation/Rotation/ColorAnimationBehaviour animating a subtree without physics.
@@ -6890,6 +6916,13 @@ impl Game {
                     None => super::visual::SpriteAt::Renderer(self.renderers.iter().position(|r| r.id == id).expect("a SpriteRenderer with a sprite")),
                 };
                 self.set_sprite_enabled(s, on);
+            }
+            EventCall::ParticleSystem(id, _, _) if self.destroyed_components.contains(&id) => {}
+            EventCall::ParticleSystem(id, play, children) => {
+                let call = if play { super::PsCall::Play } else { super::PsCall::Stop(self.time.timeAsDouble) };
+                for i in self.ps_component_tree(id, children) {
+                    self.push_ps_call((i, call));
+                }
             }
             EventCall::SetUseEventEnabled(id, _) if self.destroyed_components.contains(&id) => {}
             EventCall::SetUseEventEnabled(id, on) => self.use_events.get_mut(&id).expect("a UseEventTrigger in the arena").enabled = on,

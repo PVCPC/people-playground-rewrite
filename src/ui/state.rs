@@ -431,6 +431,7 @@ pub enum Act {
     Nav(Page),
     /// The crash screen's Report button.
     CrashReport,
+    CrashFolder,
     Back,
     /// Esc / the "pause" action.
     Escape,
@@ -935,6 +936,7 @@ impl Ui {
         crate::crash::note(format!("{act:?}"));
         match act {
             Act::CrashReport => crate::crash::open_report(),
+            Act::CrashFolder => crate::crash::open_report_folder(),
             Act::Nav(p) => {
                 // Opened from the toolbar, a page belongs to the pause menu.
                 if self.mode == Mode::Game {

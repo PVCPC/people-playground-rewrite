@@ -116,6 +116,17 @@ pub fn open_report() {
     let title = body.lines().find_map(|l| l.strip_prefix("Error: ")).unwrap_or("Crash").trim_matches('`').to_string();
     let url = format!("https://github.com/{REPO}/issues/new?labels=crash&title={}&body={}", encode(&format!("Crash: {title}")), encode(&body));
     let _ = open(&url);
+    show_file(&path);
+}
+
+/// The Show file button: only the crash file shown in its folder (no browser).
+pub fn open_report_folder() {
+    if let Some((path, _)) = LAST_REPORT.lock().ok().and_then(|l| l.clone()) {
+        show_file(&path);
+    }
+}
+
+fn show_file(path: &std::path::Path) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
