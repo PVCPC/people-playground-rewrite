@@ -3445,9 +3445,10 @@ pub(crate) struct Manager {
     nodes: Vec<u32>,
     /// The pooled clones made so far: a later Request reactivates one (SetActive(true)).
     pooled: std::collections::HashSet<crate::game::Pooled>,
-    /// A loaded recording's listed systems the replay does not run (Listed::Ghost, Listed::Destroyed): they hold their
-    /// slots until the EndUpdateAll that counts their walks left down to 0, or their clone's Destroy (its Transform).
-    ghosts: HashMap<u32, (Option<i32>, Option<GhostClock>)>,
+    /// A loaded recording's listed systems the replay does not run (Listed::WaterPuff, SmokePuff, Destroyed): they hold
+    /// their slots until their Destroy (the bleed Start's, or the clone's Transform), or the EndUpdateAll walk that finds
+    /// them empty and stopped (a SmokePuff at once, a SpawnParticles once its clock passes its end).
+    ghosts: HashMap<u32, (Listed, Option<GhostClock>)>,
 }
 
 /// One slot of a recording's active list (Game::recorded_active).
@@ -3462,10 +3463,19 @@ pub enum Listed {
     /// The Trail (sub-emitter) of the loaded bleed with this psm: its own run, which leaves when the walk finds it empty
     /// and stopEmitting.
     Trail(i32),
-    /// ponytail: any other listed system (a loaded bleed's water_puff, the only other kind in the recordings) is taken
-    /// to leave at the first EndUpdateAll, as the 1.28.52 recordings show. The recordings carry neither the puff's
-    /// seeds and particles nor whether its bleed's Start (the Destroy) has run, so a puff that plays on needs both.
-    Ghost,
+    /// The water puff of loaded bleed `b` (Game::bleeding): its bleed's Start has not run (WaterPuffSystem is still
+    /// alive), so that Start's Object.Destroy(WaterPuffSystem) takes it out (RemoveFromManager). It holds no particles
+    /// before that: an unstarted bleed has not played it.
+    WaterPuff(usize),
+    /// The water puff of loaded bleed `b` with ShouldBecomeSmokeInWater: Start keeps it and each Update out of water
+    /// Stops it (isPlaying), so it is stopped and empty and the next EndUpdateAll walk removes it. Under water Update
+    /// would Play it, which needs its seeds (a stop in the replay).
+    SmokePuff(usize),
+    /// ponytail: an item's own system (in the loops only dumpL4raycannon's ray cannon: Ray_renderer, Ray_impact,
+    /// Charge_embers, Vapor_1, SpriteLightFlash), played and stopped before the recording, is taken to be empty, so the
+    /// first EndUpdateAll walk removes it, as the recording shows. The recordings carry no particles for it; one that
+    /// still holds particles needs them re-recorded.
+    ItemSystem,
 }
 
 /// A loaded SpawnParticles' system clock (it holds no particles): `t` advances as Update0's
@@ -3501,7 +3511,7 @@ impl GhostClock {
 pub fn destroyed_ghost(g: &mut Game, key: i32) {
     let Some(w) = g.particle_world.as_mut() else { return };
     let m = &mut w.manager;
-    if let Some((&id, _)) = m.ghosts.iter().find(|(_, k)| k.0 == Some(key)) {
+    if let Some((&id, _)) = m.ghosts.iter().find(|(_, k)| matches!(k.0, Listed::Destroyed(x) if x == key)) {
         m.ghosts.remove(&id);
         if let Some(i) = m.active.iter().position(|&x| x == id) {
             m.active.swap_remove(i);
@@ -3682,6 +3692,13 @@ pub fn begin_update_all(g: &mut Game) {
                     let (i, rate, color, now, _) = puff_updates[u];
                     u += 1;
                     let Some(ps) = puff_sys(library, &mut db, g.bleeding[i].prefab) else { continue };
+                    if g.bleeding[i].loaded {
+                        // Out of water: Stop if isPlaying, a no-op on the stopped, empty puff (Listed::SmokePuff).
+                        if rate.is_some() {
+                            unimplemented!("recording harness: a loaded bleed's water puff under water (re-record with its seeds and particles)");
+                        }
+                        continue;
+                    }
                     match bleeds.get_mut(&i).and_then(|r| r.children.iter_mut().find(|c| c.sys == ps)) {
                         Some(c) => puff_update(c, &library.systems, g, manager, rate, color, now),
                         None => early.entry(i).or_default().push((rate, color, now)),
@@ -3893,7 +3910,7 @@ pub fn begin_update_all(g: &mut Game) {
                 Listed::Bleed => bleed_of(i),
                 Listed::Trail(psm) => Some(trail_of(psm).expect("a listed Trail's bleed has its sub-emitter run")),
                 Listed::Puff(b, j) => puff_of(b, j),
-                Listed::Destroyed(_) | Listed::Ghost => None,
+                Listed::Destroyed(_) | Listed::WaterPuff(_) | Listed::SmokePuff(_) | Listed::ItemSystem => None,
             };
             let id = id.unwrap_or_else(|| {
                 manager.next += 1;
@@ -3908,7 +3925,7 @@ pub fn begin_update_all(g: &mut Game) {
                 } else {
                     None
                 };
-                manager.ghosts.insert(manager.next, (if let Listed::Destroyed(k) = l { Some(k) } else { None }, clock));
+                manager.ghosts.insert(manager.next, (l, clock));
                 manager.next
             });
             list.push(id);
@@ -4099,6 +4116,14 @@ pub fn end_update_all(g: &mut Game) -> Vec<crate::game::Pooled> {
                 if let Some(ps) = g.assets.as_mut().and_then(|db| puff_sys(&mut w.library, db, prefab)) {
                     puff_off(&mut w.bleeds, &mut w.manager, i, ps);
                 }
+                // A loaded bleed's listed puff: RemoveFromManager swap-removes its slot.
+                let m = &mut w.manager;
+                if let Some((&id, _)) = m.ghosts.iter().find(|(_, k)| matches!(k.0, Listed::WaterPuff(b) if b == i)) {
+                    m.ghosts.remove(&id);
+                    if let Some(k) = m.active.iter().position(|&x| x == id) {
+                        m.active.swap_remove(k);
+                    }
+                }
             }
         }
     }
@@ -4132,10 +4157,10 @@ pub fn end_update_all(g: &mut Game) -> Vec<crate::game::Pooled> {
         i -= 1;
         let id = m.active[i];
         // A recording's placeholder: a loaded SpawnParticles stops when its clock passes its end (unless its Destroy
-        // comes first); the others at the first walk.
+        // comes first); a stopped smoke puff at once; a water puff only at its Destroy.
         if let Some(k) = m.ghosts.get_mut(&id) {
             let gone = match &mut k.1 {
-                None => true,
+                None => matches!(k.0, Listed::SmokePuff(_) | Listed::ItemSystem),
                 Some(c) => {
                     c.t += if c.unscaled { g.time.unscaledDeltaTime } else { g.time.deltaTime } * c.speed;
                     c.t > c.end

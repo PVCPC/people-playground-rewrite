@@ -1731,8 +1731,7 @@ impl Game {
         }
         // The active list (psm=, newer recordings): each listed system by its slot. A bleed's root by its own psm, its Trail
         // by the bleed's (the parent record, same root); a BloodPuff's systems by GetComponentsInChildren position; a
-        // DeleteAfterTime clone's (SpawnParticles) leaves at its Destroy; any other (a bleed's water_puff) is a placeholder
-        // that leaves at the first EndUpdateAll.
+        // DeleteAfterTime clone's (SpawnParticles) leaves at its Destroy; a bleed's water_puff at its bleed's Start.
         let psm = |t: &str| t.parse::<i32>().map_err(|_| format!("bad psm {t}"));
         let clones: Vec<&Record> = s.of("Clone").collect();
         for r in s.of("Clone").filter(|r| !pasted_twin(s, r)) {
@@ -1745,9 +1744,27 @@ impl Game {
                 crate::particles::Listed::Destroyed(key)
             } else {
                 let parent = clones.iter().find(|c| c.get("root") == r.get("root") && c.get("index").is_some() && c.get("index") == r.get("parent"));
-                match parent.filter(|c| r.name == "Trail" && c.get("comps").is_some_and(|x| x.contains("BleedingParticleBehaviour:"))) {
-                    Some(c) => crate::particles::Listed::Trail(c.req("psm").and_then(psm)?),
-                    None => crate::particles::Listed::Ghost,
+                let bleed = parent.filter(|c| c.get("comps").is_some_and(|x| x.contains("BleedingParticleBehaviour:")));
+                match (bleed, r.name.as_str()) {
+                    (Some(c), "Trail") => crate::particles::Listed::Trail(c.req("psm").and_then(psm)?),
+                    (Some(c), "water_puff") => {
+                        let p = c.req("psm").and_then(psm)?;
+                        let b = g.bleeding.iter().position(|b| b.psm == Some(p)).ok_or("a listed water_puff without its bleed")?;
+                        if !g.bleeding[b].WaterPuffSystem {
+                            return Err(format!("listed water_puff {} whose bleed's WaterPuffSystem is gone", r.id));
+                        }
+                        // BleedingParticleBehaviour.Start destroys a live WaterPuffSystem unless ShouldBecomeSmokeInWater: one
+                        // still alive is unstarted, its Start queued for the first Start pass.
+                        if g.bleeding[b].ShouldBecomeSmokeInWater {
+                            crate::particles::Listed::SmokePuff(b)
+                        } else {
+                            g.bleeding[b].water_puff = true;
+                            g.pending_starts.push(super::misc::PendingStart::Bleeding(b));
+                            crate::particles::Listed::WaterPuff(b)
+                        }
+                    }
+                    (None, _) if r.get("root") == Some("Item") => crate::particles::Listed::ItemSystem,
+                    _ => return Err(format!("listed system {} {} of no known kind", r.name, r.id)),
                 }
             };
             g.recorded_active.push((i, listed));
