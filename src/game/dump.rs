@@ -131,7 +131,8 @@ pub fn open_recording(path: &Path) -> Result<Box<dyn std::io::Read>, String> {
 /// else the path itself.
 pub fn recording_for_version(path: &Path) -> std::path::PathBuf {
     // A later re-recording over an earlier one: -v54 over -v53 over -v52c over -v52b (every particle system's active-list slot) over -v52.
-    let versions: &[&str] = if crate::assets::il::is_1_28_45() { &["v54", "v53", "v52c", "v52b", "v52"] } else { &["v41b"] };
+    // On 1.28.41: -v41c (dumpL4raycannon: the snapshots start after the spawn's item systems died) over -v41b.
+    let versions: &[&str] = if crate::assets::il::is_1_28_45() { &["v54", "v53", "v52c", "v52b", "v52"] } else { &["v41c", "v41b"] };
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         for v in versions {
             let re = path.with_file_name(format!("{stem}-{v}.txt"));
@@ -1763,7 +1764,6 @@ impl Game {
                             crate::particles::Listed::WaterPuff(b)
                         }
                     }
-                    (None, _) if r.get("root") == Some("Item") => crate::particles::Listed::ItemSystem,
                     _ => return Err(format!("listed system {} {} of no known kind", r.name, r.id)),
                 }
             };

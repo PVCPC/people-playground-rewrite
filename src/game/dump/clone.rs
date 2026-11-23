@@ -239,6 +239,15 @@ impl Game {
                 moved.insert(std::mem::replace(&mut self.world.fixtures[f].as_mut().unwrap().collider.game_object, inst.objects[o].game_object), inst.objects[o].game_object);
             }
         }
+        // The restored Collision2D records name the same GameObjects: a record's collider on its rigidbody's own
+        // GameObject sends that GameObject the message once (not again as the rigidbody's).
+        for r in self.world.contacts2d.records.iter_mut().flatten() {
+            for c in [&mut r.collider_a, &mut r.collider_b] {
+                if let Some(&to) = moved.get(&c.game_object) {
+                    c.game_object = to;
+                }
+            }
+        }
         for (from, to) in moved {
             if let Some(l) = self.world.layers.remove(&from) {
                 self.world.layers.insert(to, l);
