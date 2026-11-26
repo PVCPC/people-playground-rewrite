@@ -209,7 +209,7 @@ mod tests {
     fn report_text() {
         let sys = SystemInfo { operating_system: "OS".into(), processor_type: "CPU".into(), graphics_device_name: "GPU".into(), system_memory_size: 32538 };
         let s = get_debug_info_string(&sys);
-        let v = if crate::assets::il::is_1_28_45() { "1.28.54" } else { "1.28.41" };
+        let v = if crate::assets::il::is_1_28_45() { "1.28.57" } else { "1.28.41" };
         assert!(s.starts_with(&format!("# EXPORTED GAME DEBUG INFO\n## People Playground [v{v}] [64 bit]\n")));
         assert!(s.contains(" - **Memory**: 32 GB\n\n"));
         assert!(s.ends_with("## All loaded mods\n\n\r\n") || s.ends_with("## All loaded mods\n\n\n"));

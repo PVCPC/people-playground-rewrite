@@ -30,6 +30,8 @@ script! {
         /// (Resources.Load<Material>("Materials/BrokenMachine")).
         originalMaterial: Option<crate::assets::db::ObjRef> = None,
         brokenMachineMaterial: Option<crate::assets::db::ObjRef> = None,
+        /// DamagedMaterialOverride (1.28.57, [SkipSerialisation]): the prefab's material, None when null.
+        DamagedMaterialOverride: Option<crate::assets::db::ObjRef> = None,
         /// propertyBlock: Start's copy of the SpriteRenderer's block (None before Start).
         propertyBlock: Option<super::props::PropBlock> = None,
         /// SparkPrefab (or the Resources fallback) and ExplosionPrefab are set.
@@ -79,8 +81,11 @@ impl Game {
         let p = self.machinery[m].PhysicalBehaviour;
         self.machinery[m].originalMaterial = self.physicals[p].sprite_material;
         let db = db.or(self.assets.as_deref()).expect("DamagableMachineryBehaviour without the game's data");
-        // Material is class 21.
-        self.machinery[m].brokenMachineMaterial = db.resource("Materials/BrokenMachine", 21).unwrap_or_else(|e| panic!("Resources.Load(Materials/BrokenMachine): {e}"));
+        // 1.28.57: DamagedMaterialOverride ? DamagedMaterialOverride : Resources.Load<Material>("Materials/BrokenMachine"). Material is class 21.
+        self.machinery[m].brokenMachineMaterial = match self.machinery[m].DamagedMaterialOverride {
+            Some(r) => Some(r),
+            None => db.resource("Materials/BrokenMachine", 21).unwrap_or_else(|e| panic!("Resources.Load(Materials/BrokenMachine): {e}")),
+        };
     }
 
     /// DamagableMachineryBehaviour.Start, with its four context menu buttons.

@@ -293,6 +293,8 @@ pub enum Entry {
     LedColour(usize),
     CathodeColour(usize),
     LaserColour(usize),
+    /// EnergySwordBehaviour "setColour" (1.28.57).
+    BladeColour(usize),
     /// EditableTintBehaviour: its index in Game::editable_tints.
     Tint(usize),
     /// ContextMenuBehaviour.SaveAction's TextEntry: the contraption name (contraption.rs).
@@ -975,6 +977,7 @@ impl Game {
             LedColour(i) => Some((self.leds[i].Color, crate::il!(str "CathodeLightBehaviour::<Start>b__13_1" 1))),
             CathodeColour(i) => Some((self.cathode_lights[i].Color, crate::il!(str "CathodeLightBehaviour::<Start>b__13_1" 1))),
             LaserColour(i) => Some((self.lasers[i].UserSetColour, crate::il!(str "LaserBehaviour::<Start>b__24_1" 1))),
+            BladeColour(i) => Some((self.energy_swords[i].Color, crate::il45!(str "EnergySwordBehaviour::<Start>b__35_1" 1))),
             Tint(i) => Some((self.editable_tints[i], crate::il!(str "EditableTintBehaviour::<Start>b__5_1" 1))),
             _ => None,
         };
@@ -998,7 +1001,7 @@ impl Game {
             return;
         }
         let (value, title, placeholder) = match e {
-            LedColour(_) | CathodeColour(_) | LaserColour(_) | Tint(_) | SaveContraption => unreachable!(),
+            LedColour(_) | CathodeColour(_) | LaserColour(_) | BladeColour(_) | Tint(_) | SaveContraption => unreachable!(),
             CouplerStick(c) => (self.couplers[c].StickDistance, crate::il!(str "AdhesiveCouplerBehaviour::<Start>b__18_0" 0), "Distance".into()),
             GateThreshold(g) => (self.gates[g].ThresholdPercentage * 100.0, crate::il!(str "GateBehaviour::<Start>b__17_0" 0), crate::il!(str "GateBehaviour::<Start>b__17_0" 1).into()),
             GateMaxPower(g) => (self.gates[g].MaxPower, crate::il!(str "GateBehaviour::<Start>b__17_1" 0), crate::il!(str "GateBehaviour::<Start>b__17_1" 1).into()),
@@ -1131,7 +1134,7 @@ impl Game {
                     self.heating_elements[i].TargetTemperature = clamp(self.prefs.preference_to_celsius(v), r[0], r[1]);
                 }
                 Temperature(p) => self.physicals[p].Temperature = clamp(self.prefs.preference_to_celsius(v), -273.0, 1e9),
-                CounterWrap(_) | DisplayText(_) | RadioChannel(_) | KeyDescription(_) | LedColour(_) | CathodeColour(_) | LaserColour(_) | Tint(_) | Angle(_) | SaveContraption => unreachable!(),
+                CounterWrap(_) | DisplayText(_) | RadioChannel(_) | KeyDescription(_) | LedColour(_) | CathodeColour(_) | LaserColour(_) | BladeColour(_) | Tint(_) | Angle(_) | SaveContraption => unreachable!(),
                 WinchUpper(w) => {
                     let b = self.winches[w].LowerLimit + 0.01;
                     // Mathf.Max: a > b ? a : b
@@ -1172,11 +1175,14 @@ impl Game {
         let first = b.targets.first().copied();
         for t in b.targets {
             match t {
-                // The callback's UpdateBulbMaskColour is the clicked LED's (`this`, the first target).
+                // 1.28.41's callback (<Start>b__10_1's b__10_2) calls the clicked LED's UpdateBulbMaskColour (`this`, the first
+                // target); 1.28.57's static <>c.<Start>b__10_2 calls each target's own (obj.UpdateBulbMaskColour()).
                 LedColour(i) => {
                     self.leds[i].Color = c;
                     self.leds[i].colourCached = false;
-                    if let Some(LedColour(owner)) = first {
+                    if crate::assets::il::is_1_28_45() {
+                        self.led_update_bulb_mask_colour(i);
+                    } else if let Some(LedColour(owner)) = first {
                         self.led_update_bulb_mask_colour(owner);
                     }
                 }
@@ -1187,6 +1193,8 @@ impl Game {
                     self.lasers[i].UserSetColour = hsv_to_rgb([h, s, if 0.01 > v { 0.01 } else { v }]);
                 }
                 Tint(i) => self.editable_tint_set_tint(i, c),
+                // (obj, c) => obj.SetColour(c)
+                BladeColour(i) => self.energy_sword_set_colour(i, c),
                 _ => unreachable!(),
             }
         }

@@ -2475,6 +2475,8 @@ impl Game {
                 x.id = inst.objects[o].components[c];
                 x.enabled = enabled;
                 x.physical = l.arenas.physical.get(&o).copied().expect("GlowingHotMetalBehaviour: the editor enforces RequireComponent(PhysicalBehaviour)");
+                // 1.28.57's Awake: `if (!gameObject.TryGetComponent<DamagableMachineryBehaviour>(out _)) propertyBlock = new ...`.
+                x.block_null = crate::assets::il::is_1_28_45() && script(prefab, o, "DamagableMachineryBehaviour").is_some();
                 self.glowing_metals.push(x);
                 let g = self.glowing_metals.len() - 1;
                 self.glowing_hot_metal_awake(g);
@@ -4498,6 +4500,10 @@ impl Game {
                 m.ExplosionPrefabSource = Some(db.resolve(file, explosion_prefab).ok_or("DamagableMachineryBehaviour.ExplosionPrefab outside the data")?);
             }
             m.Explosion = explosion_parameters(field(v, "Explosion")?)?;
+            // 1.28.57's DamagedMaterialOverride (1.28.41 has no such field).
+            if let Some(p) = v.get("DamagedMaterialOverride").and_then(|x| x.pptr()).filter(|p| !p.is_null()) {
+                m.DamagedMaterialOverride = Some(db.resolve(file, p).ok_or("DamagableMachineryBehaviour.DamagedMaterialOverride outside the data")?);
+            }
             for b in array(v, "BehavioursToToggle")? {
                 if let Some(t) = b.pptr().filter(|p| !p.is_null()) {
                     let (to, tc) = prefab.index[&ObjRef { file, path_id: t.path_id }];
@@ -6503,6 +6509,22 @@ impl Game {
                 x.LayerMask = field(field(v, "LayerMask")?, "m_Bits")?.i64().ok_or("LayerMask.m_Bits")? as u32;
                 x.ImpactSound = array(v, "ImpactSound")?.len();
                 x.LoopSource = audio_source_field(prefab, inst, file, v, "EnergySwordBehaviour", "LoopSource")?;
+                // 1.28.57's SetColour targets.
+                if crate::assets::il::is_1_28_45() {
+                    x.LightSprite = self.sprite_field(&l, v, "LightSprite")?;
+                    x.BladeRenderer = self.sprite_field(&l, v, "BladeRenderer")?;
+                    x.BladeOverlayRenderer = self.sprite_field(&l, v, "BladeOverlayRenderer")?;
+                    let script_id = |name: &str| -> Result<i32, String> {
+                        let p = field(v, name)?.pptr().ok_or_else(|| format!("EnergySwordBehaviour.{name}: not a reference"))?;
+                        if p.is_null() {
+                            return Ok(0);
+                        }
+                        let (o, c) = *prefab.index.get(&ObjRef { file, path_id: p.path_id }).filter(|_| p.file == 0).ok_or_else(|| format!("EnergySwordBehaviour.{name}: outside its prefab"))?;
+                        Ok(inst.objects[o].components[c])
+                    };
+                    x.MotionBlurRenderer = script_id("MotionBlurRenderer")?;
+                    x.ClashBehaviour = script_id("ClashBehaviour")?;
+                }
                 // SetActivation plays and stops these and the particles unconditionally.
                 for name in ["HitParticle", "BoilingVFX", "RainParticles", "LoopSource"] {
                     if l.object(field(v, name)?)?.is_none() {
@@ -6563,7 +6585,7 @@ impl Game {
                     unimplemented!("mod-only: EnergySwordBladeClashBehaviour: a CollideWithOtherSwordVFX with physics (its pose)");
                 }
                 let colliders = prefab.objects[o].components.iter().enumerate().filter(|(_, (_, k))| matches!(k, Component::Collider2D(_))).map(|(k, _)| inst.objects[o].components[k]).collect();
-                self.blade_clashes.push((inst.objects[o].components[c], colliders, r));
+                self.blade_clashes.push((inst.objects[o].components[c], colliders, r, [1.0; 4]));
             }
             if let Some((_, _, v)) = script(prefab, o, "SignalConverterBehaviour") {
                 let mut x = super::signal_converter::SignalConverter::default();

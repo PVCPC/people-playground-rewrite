@@ -746,8 +746,9 @@ impl Game {
             return false;
         }
         let num = mathf::magnitude2([c.relative_velocity.x, c.relative_velocity.y]) / props.SharpForceThresholdMultiplier;
-        let num2 = mathf::map_range(0.01, 1.0, 20.0, 1.25, if props.IgnoreStabResistance { 1.0 } else { mathf::sqrt(victim.Softness) });
-        if num < num2 {
+        let a = mathf::map_range(0.01, 1.0, 20.0, 1.25, if props.IgnoreStabResistance { 1.0 } else { mathf::sqrt(victim.Softness) });
+        // 1.28.57: `num < Mathf.Max(a, 5f)`.
+        if num < if crate::assets::il::is_1_28_45() { mathf::max(a, 5.0) } else { a } {
             return false;
         }
         let point = [contact.point.x, contact.point.y];

@@ -21,6 +21,8 @@ script! {
         physical: usize = 0,
         /// propertyBlock, read from the renderer in Awake.
         block: PropBlock = PropBlock::default(),
+        /// 1.28.57: TryGetComponent<DamagableMachineryBehaviour> found one on the object, so Awake left propertyBlock null.
+        block_null: bool = false,
     }
 }
 
@@ -83,7 +85,12 @@ impl Game {
 
     /// GlowingHotMetalBehaviour.Awake: physicalBehaviour and the renderer are `physical`'s; the block is read from the sprite.
     /// (The Debug.LogWarning for a material not named GlowingMetal writes the log only.)
+    /// 1.28.57: with a DamagableMachineryBehaviour on the object propertyBlock stays null, and renderer.GetPropertyBlock(null)
+    /// throws (ArgumentNullException), ending Awake there.
     pub fn glowing_hot_metal_awake(&mut self, g: usize) {
+        if self.glowing_metals[g].block_null {
+            return;
+        }
         self.glowing_metals[g].block = self.get_property_block(SpriteAt::Physical(self.glowing_metals[g].physical));
     }
 
@@ -94,6 +101,11 @@ impl Game {
             let s = &self.glowing_metals[g];
             let at = SpriteAt::Physical(s.physical);
             if !self.will_render_dispatch(s.id, s.enabled && !self.disabled_ids.contains(&s.id) && self.sprite_drawn(at)) {
+                continue;
+            }
+            // A null propertyBlock (1.28.57, Awake): propertyBlock.SetTexture / SetFloat throw NullReferenceException before
+            // anything is set.
+            if s.block_null {
                 continue;
             }
             let num = mathf::clamp01(self.physicals[s.physical].Temperature / s.UpperTemperatureBound);

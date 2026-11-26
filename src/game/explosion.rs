@@ -949,6 +949,7 @@ Parameter name: index"));
                 parent: None,
                 off: Vec::new(),
                 tint_all: false,
+                tint_opaque: false,
                 start_size: None,
                 material: None,
             });
@@ -1275,7 +1276,7 @@ Parameter name: index"));
 
     pub(super) fn log_effect(&mut self, prefab: ObjRef, position: [f32; 3], rotation: [f32; 4], scale: f32, color: Option<[f32; 4]>, root: Option<i32>) {
         if !self.effects_off {
-            self.effect_log.push(super::EffectSpawn { prefab, position, rotation, scale, color, root, subtree: None, water: None, pooled: None, parent: None, off: Vec::new(), tint_all: false, start_size: None, material: None });
+            self.effect_log.push(super::EffectSpawn { prefab, position, rotation, scale, color, root, subtree: None, water: None, pooled: None, parent: None, off: Vec::new(), tint_all: false, tint_opaque: false, start_size: None, material: None });
         }
     }
 

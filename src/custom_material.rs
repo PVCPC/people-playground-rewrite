@@ -193,6 +193,10 @@ fn custom_sync<T: Custom>(
         params[..14].copy_from_slice(&sprite.base);
         params[TINT_SLOT] = linear(color);
         params[ST_SLOT] = sprite.st;
+        // ponytail: a version flag in an unused slot of Unlit/BrokenElectronics (1.28.57 changed its program); a shader def if more shaders branch.
+        if T::DEF.path_id == 143 && crate::assets::il::is_1_28_45() {
+            params[13].w = 1.0;
+        }
         let mut tex = sprite.tex.clone();
         for layer in props.iter().flat_map(|p| [&p.material, &p.block]) {
             for (name, value) in &layer.0 {

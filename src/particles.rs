@@ -305,6 +305,9 @@ struct Emission {
     rate: Option<f32>,
     distance: Option<f32>,
     size: Option<f32>,
+    /// main.gravityModifier's constantMax (1.28.57's SetParticleEmission): the curve's scalar in the Constant and
+    /// TwoConstants modes; the curve modes keep their curveMultiplier.
+    gravity: Option<f32>,
 }
 
 /// BleedingParticleBehaviour.Update's writes to the system.
@@ -386,6 +389,8 @@ struct Part {
     /// Lossy and own scale.
     hierarchy: f32,
     local: f32,
+    /// Its GameObject's layer.
+    layer: i32,
 }
 
 #[derive(Default)]
@@ -582,6 +587,8 @@ struct Ctx {
     noise: (crate::game::particle_modules::V3, f32),
     /// The NoiseModule after a script's strengthMultiplier write (m_StrengthX's scalar, its mode kept).
     noise_written: Option<crate::assets::particles::Noise>,
+    /// main.gravityModifier after a script's constantMax write (Emission::gravity).
+    gravity_written: Option<crate::assets::particles::MinMaxCurve>,
     /// ExternalForcesModule::Update's cached forces, CalculateWorldBounds of the state's bounds and worldToLocal.
     external: Option<(Vec<crate::game::particle_forces::Force>, [f32; 6], [f32; 16])>,
     /// The cached forces' fields as ApplyForceField<0> takes them (None: not a field or out of reach).
@@ -614,6 +621,11 @@ fn ctx(run: &Run, s: &Sys, drive: Option<&Drive>, g: &Game, state_t: f32) -> Ctx
             n.strength[0].scalar = k;
             n
         }),
+        gravity_written: run.emission.and_then(|e| e.gravity).filter(|_| matches!(s.ps.gravity.state, 0 | 3)).map(|k| {
+            let mut g = s.ps.gravity.clone();
+            g.scalar = k;
+            g
+        }),
         external,
         fields,
         pose: (pose.l2w, pose.w2l),
@@ -639,15 +651,16 @@ fn presim(s: &Sys, c: &Ctx, p: &mut Particle, dt: f32, live: u64) {
     use crate::game::particle_modules as m;
     let ps = &s.ps;
     let mut vel = p.velocity.to_array();
+    let gravity = c.gravity_written.as_ref().unwrap_or(&ps.gravity);
     // GetGravity (0x1801ff0f0): 0 when the modifier's scalar is 0.
-    let g = if ps.gravity.scalar == 0.0 { [0.0; 3] } else { c.gravity };
+    let g = if gravity.scalar == 0.0 { [0.0; 3] } else { c.gravity };
     let w2l = (!c.world).then_some(&c.w2l);
-    if ps.gravity.state < 2 {
-        if let Some(v) = m::gravity_shared(&ps.gravity, g, c.t, dt, w2l) {
+    if gravity.state < 2 {
+        if let Some(v) = m::gravity_shared(gravity, g, c.t, dt, w2l) {
             vel = [0, 1, 2].map(|i| v[i] + vel[i]);
         }
     } else {
-        m::gravity_random(&ps.gravity, g, c.t, dt, w2l, p.seed, &mut vel);
+        m::gravity_random(gravity, g, c.t, dt, w2l, p.seed, &mut vel);
     }
     let mut anim = [0.0; 3];
     if let Some(v) = &ps.velocity {
@@ -2190,6 +2203,18 @@ impl Game {
         self.ps_field_call(sid, field, false, crate::game::PsCall::Writes(w));
     }
 
+    /// `foreach (ParticleSystem p in <field>.GetComponentsInChildren<ParticleSystem>()) if (p.gameObject.layer !=
+    /// LayerMask.NameToLayer("TransparentFX")) p.main.startColor = color` (1.28.57's EnergySwordBehaviour.SetColour).
+    pub(crate) fn ps_field_start_color_opaque(&mut self, sid: i32, field: &str, color: [f32; 4]) {
+        self.adopt_field_ps(sid, field);
+        let Some((inst, ..)) = self.field_target(sid, field) else { return };
+        let layer = |go| inst.prefab.objects.iter().find(|o| o.game_object == go).map(|o| o.layer);
+        let tree: Vec<usize> = self.field_ps_tree(sid, field, true).into_iter().filter(|&i| layer(self.embedded_ps[i].go) != Some(1)).collect();
+        for i in tree {
+            self.push_ps_call((i, crate::game::PsCall::Writes(PsWrites { color: Some(color), ..Default::default() })));
+        }
+    }
+
     /// gapC r11: `<field>.Play()` (on) / `<field>.Stop()` (off), unconditional.
     pub(crate) fn ps_field_play_stop(&mut self, sid: i32, field: &str, on: bool) {
         self.ps_field_call(sid, field, true, if on { crate::game::PsCall::Play } else { crate::game::PsCall::Stop(self.time.timeAsDouble) });
@@ -2826,7 +2851,7 @@ impl Library {
                 self.systems[i].fancy_only = ob.components.iter().any(|(_, c)| matches!(c, Component::Script { class, .. } if class == "ActivateIfFancyEffects"));
                 let chain: Vec<usize> = std::iter::successors(Some(o), |&x| prefab.objects[x].parent).collect();
                 let names = chain.iter().map(|&x| prefab.objects[x].name.clone()).collect();
-                parts.push(Part { sys: i, chain, names, position: world, rotation: turned, hierarchy, local: scale.x });
+                parts.push(Part { sys: i, chain, names, position: world, rotation: turned, hierarchy, local: scale.x, layer: ob.layer as i32 });
             }
         }
         parts.retain(|p| !sub.contains(&p.sys) && (subtree.is_some() || self.systems[p.sys].ps.play_on_awake));
@@ -2972,12 +2997,13 @@ fn play_effect(library: &mut Library, runs: &mut Vec<Run>, db: &mut AssetDb, e: 
         run.clone_scale = e.scale;
         run.water = water.clone();
         if let Some(size) = e.start_size {
-            run.emission = Some(Emission { enabled: true, rate: None, distance: None, size: Some(size) });
+            run.emission = Some(Emission { enabled: true, rate: None, distance: None, size: Some(size), gravity: None });
         }
         if water.is_some() {
             written(&mut run);
         }
-        if e.tint_all || tinted.iter().any(|go| library.index.get(go) == Some(&part.sys)) {
+        // LayerMask.NameToLayer("TransparentFX") is 1.
+        if e.tint_all || (e.tint_opaque && part.layer != 1) || tinted.iter().any(|go| library.index.get(go) == Some(&part.sys)) {
             run.color = e.color;
             if e.color.is_some() {
                 written(&mut run);
@@ -3052,17 +3078,20 @@ fn attached_systems(
             ((e[0] * e[0] + e[1] * e[1] + e[2] * e[2]) * 4.0).sqrt()
         });
         let burn = (1.0 - ph.BurnProgress) * ph.burnIntensity * 2.0 * area;
-        let grey = burn.clamp(0.0, 1.0);
+        // startColor = Color.Lerp(black, white, Mathf.Clamp01(num4)); 1.28.57: Mathf.Clamp01(num4 + 0.4f).
+        let grey = if crate::assets::il::is_1_28_45() { (burn + 0.4).clamp(0.0, 1.0) } else { burn.clamp(0.0, 1.0) };
         let charge = ph.Charge();
         let charge_on = !ph.ForceNoCharge && !ph.ForceNoChargeParticles;
-        let rate = |v: f32| Emission { enabled: true, rate: charge_on.then_some(v), distance: None, size: None };
+        let rate = |v: f32| Emission { enabled: true, rate: charge_on.then_some(v), distance: None, size: None, gravity: None };
+        // 1.28.57: gravityModifier.constantMax = Mathf.Clamp01(BurnIntensity * 0.5f) * -0.2f, on every dirtyFire call (either branch).
+        let fire_gravity = crate::assets::il::is_1_28_45().then(|| crate::game::mathf::clamp01(ph.burnIntensity * 0.5) * -0.2);
         let wet = ph.Wetness > 0.1;
-        // SetParticleEmission's else branch. 1.28.54: startSize Min(num4 * 2, 3.5) + Clamp01(num5 * 0.25), rateOverTime 15 * num5;
-        // 1.28.41: Min(num4 * 2, 2.5) and 12 * num5. startColor Lerp(black, white, num4) clamps either way.
-        let (fire_size, fire_rate) = if crate::assets::il::is_1_28_45() { ((burn * 2.0).min(3.5) + (area * 0.25).clamp(0.0, 1.0), 15.0 * area) } else { ((burn * 2.0).min(2.5), 12.0 * area) };
+        // SetParticleEmission's else branch. 1.28.57: startSize Min(num4 * 2, 3.5) + Clamp01(num5 * 0.25), rateOverTime 11 * num5;
+        // 1.28.41: Min(num4 * 2, 2.5) and 12 * num5.
+        let (fire_size, fire_rate) = if crate::assets::il::is_1_28_45() { ((burn * 2.0).min(3.5) + (area * 0.25).clamp(0.0, 1.0), 11.0 * area) } else { ((burn * 2.0).min(2.5), 12.0 * area) };
         let writes = [
-            Emission { enabled: !ph.has_fire_map && ph.burnIntensity >= 0.05, rate: Some(fire_rate), distance: Some(area), size: Some(fire_size) },
-            Emission { enabled: true, rate: None, distance: Some(ph.Wetness * 2.0), size: None },
+            Emission { enabled: !ph.has_fire_map && ph.burnIntensity >= 0.05, rate: Some(fire_rate), distance: Some(area), size: Some(fire_size), gravity: fire_gravity },
+            Emission { enabled: true, rate: None, distance: Some(ph.Wetness * 2.0), size: None, gravity: None },
             rate((charge * 2.0).min(30.0)),
             rate((charge * flammability).min(10.0)),
         ];
@@ -3280,7 +3309,7 @@ fn embedded_systems(
         *pose = Some((position, turn));
         run.position = position;
         run.rotation = turn;
-        run.emission = emitting.map(|enabled| Emission { enabled, rate: None, distance: None, size: None });
+        run.emission = emitting.map(|enabled| Emission { enabled, rate: None, distance: None, size: None, gravity: None });
         if emitting.is_some() {
             written(run);
         }

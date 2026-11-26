@@ -204,7 +204,9 @@ impl Game {
         let n = self.fire_maps[f].Points.len();
         let mut indices = Vec::with_capacity(n);
         for i in 0..n {
-            self.fire_maps[f].Points[i].Softness = self.random.range(0.001, 1.0);
+            // 1.28.57: Random.Range(0.004f, 1f); 1.28.41: Random.Range(0.001f, 1f).
+            let min = if crate::assets::il::is_1_28_45() { 0.004 } else { 0.001 };
+            self.fire_maps[f].Points[i].Softness = self.random.range(min, 1.0);
             indices.push(i as i32);
         }
         // Array.Sort(RandomisedIndices, (a, b) => Random.value > 0f ? 1 : -1)
@@ -303,8 +305,8 @@ impl Game {
         let ph = &self.physicals[p];
         let num2 = ((d(1.0) - ph.BurnProgress) * ph.burnIntensity * 2.0f32 * num).f();
         let len = self.fire_maps[f].Points.len() as i32;
-        // RateHz = 15f * (float)Mathf.Max(Points.Length, 25) * 0.06f
-        let rate = (d(15.0) * len.max(25) as f32 * 0.06f32).f();
+        // 1.28.57: RateHz = 12f * (float)Mathf.Max(Points.Length, 25) * 0.2f; 1.28.41: 15f * ... * 0.06f.
+        let rate = if crate::assets::il::is_1_28_45() { (d(12.0) * len.max(25) as f32 * 0.2f32).f() } else { (d(15.0) * len.max(25) as f32 * 0.06f32).f() };
         self.fire_maps[f].fireEmissionInterval.IntervalSeconds = 1.0 / rate;
         let dt = self.time.deltaTime;
         // The loop condition re-runs CalculateCycleCount (adding dt again) every iteration.
@@ -314,16 +316,17 @@ impl Game {
             let index = self.fire_map_random_firey_index(f, 0.05);
             if index != -1 {
                 let fi = self.fire_maps[f].Points[index as usize].FireIntensity;
-                // 1.28.54: Mathf.Clamp01(fireIntensity * fireIntensity * num2); 1.28.41: fireIntensity^6 * num2.
+                // 1.28.57: Mathf.Clamp01(fireIntensity * fireIntensity * num2); 1.28.41: fireIntensity^6 * num2.
                 let new = crate::assets::il::is_1_28_45();
                 let num3 = if new { mathf::clamp01((d(fi) * fi * num2).f()) } else { (d(fi) * fi * fi * fi * fi * fi * num2).f() };
                 if self.random.value() < num3 && !self.effects_off {
                     // FireParticleSystem.Emit(position = TransformPoint(LocalPoint), startSize, startColor).
                     let local = self.fire_maps[f].Points[index as usize].LocalPoint;
                     let position = self.transform_point3(p, [local[0], local[1], 0.0]);
-                    let grey = mathf::clamp01(num3);
-                    // 1.28.54's startSize adds Mathf.Clamp01(num * 0.25f).
-                    let size = mathf::min(num3 * 2.0, 2.5) + if new { mathf::clamp01(num * 0.25) } else { 0.0 };
+                    // startColor = Color.Lerp(Color.black, Color.white, t) (Lerp clamps t): 1.28.57's t is 0.4f + num3.
+                    let grey = mathf::clamp01(if new { 0.4 + num3 } else { num3 });
+                    // 1.28.57: startSize = Mathf.Min(num3 * 2f, 3.5f) + Mathf.Clamp01(num * 0.25f); 1.28.41: Mathf.Min(num3 * 2f, 2.5f).
+                    let size = if new { mathf::min(num3 * 2.0, 3.5) + mathf::clamp01(num * 0.25) } else { mathf::min(num3 * 2.0, 2.5) };
                     self.fire_emits.push((p, position, size, [grey, grey, grey, 1.0]));
                 }
             }

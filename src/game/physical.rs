@@ -1691,7 +1691,9 @@ impl Game {
             }
             let Some(v) = self.physical_of_collider(c.collider).filter(|&v| self.physicals[v].in_world) else { continue };
             let sq = mathf::sqr_magnitude([c.relative_velocity.x, c.relative_velocity.y]);
-            if !(sq > 5.0) {
+            // 1.28.57: `sqrMagnitude > 5f && Mathf.Abs(Vector2.Dot(reference.normal, reference.relativeVelocity)) < 0.05f` (a slide
+            // along the surface, not an impact into it).
+            if !(sq > 5.0 && (d(c.normal.x) * c.relative_velocity.x + d(c.normal.y) * c.relative_velocity.y).f().abs() < 0.05) {
                 continue;
             }
             let softness = self.properties[self.physicals[v].Properties].Softness;

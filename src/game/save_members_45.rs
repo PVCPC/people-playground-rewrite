@@ -20,6 +20,8 @@ pub const PUBLIC_MEMBERS: &[(&str, &[&str])] = &[
     ("UltraStrengthSyringe", &["Finite", "CanToggleInfinite", "PressureMode", "NewlySpawned", "IsAttachedToLauncher", "MeasuredPressure", "SerialisableDistributions"]),
     ("WaterBreathingSyringe", &["Finite", "CanToggleInfinite", "PressureMode", "NewlySpawned", "IsAttachedToLauncher", "MeasuredPressure", "SerialisableDistributions"]),
     ("ZombieSyringe", &["Finite", "CanToggleInfinite", "PressureMode", "NewlySpawned", "IsAttachedToLauncher", "MeasuredPressure", "SerialisableDistributions"]),
+    // 1.28.57: EnergySwordBehaviour.Color.
+    ("EnergySwordBehaviour", &["Color", "Activated", "SerialisableVictims"]),
     ("AppliedBandageBehaviour", &["SoakColour", "localRenderEndpoint", "targetDistance", "SpringStrength", "WireWidth", "WireColor", "WireMaterialName", "usedToHaveConnectedBody", "currentConnectedAnchor", "currentAnchor", "currentBreakingForce", "Invisible"]),
     // 1.28.45's new classes.
     ("CrossbowBehaviour", &["SyringeEjectForce", "SyringeFluidUsage"]),
@@ -82,6 +84,7 @@ pub const MEMBER_TYPES: &[(&str, &str, &str)] = &[
     ("ProjectileLauncherBehaviour", "ShouldPutProjectileInOtherLayer", "System.Boolean"),
     ("ProjectileLauncherBehaviour", "LayerToPutProjectileOn", "System.Int32"),
     ("ProjectileLauncherBehaviour", "RemoveLaunchedObjectsWithMe", "System.Boolean"),
+    ("EnergySwordBehaviour", "Color", "UnityEngine.Color"),
 ];
 
 pub const IMMUTABLE_MEMBERS: &[(&str, &str)] = &[

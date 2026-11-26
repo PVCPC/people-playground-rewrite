@@ -16,9 +16,18 @@ script! {
         MinSoftness: f32 = 0.0,
         Damage: f32 = 256.0,
         BladeTemperature: f32 = 900.0,
+        /// 1.28.57: `public Color Color = Color.red` (1.28.41's prefab has none; its default is never read there).
+        Color: [f32; 4] = [1.0, 0.0, 0.0, 1.0],
         Activated: bool = false,
     }
     links {
+        /// 1.28.57's [SkipSerialisation] LightSprite, BladeRenderer, BladeOverlayRenderer (SpriteRenderers), and
+        /// MotionBlurRenderer (EnergySwordMotionBlur) and ClashBehaviour (EnergySwordBladeClashBehaviour) by instance id.
+        LightSprite: Option<super::visual::SpriteAt> = None,
+        BladeRenderer: Option<super::visual::SpriteAt> = None,
+        BladeOverlayRenderer: Option<super::visual::SpriteAt> = None,
+        MotionBlurRenderer: i32 = 0,
+        ClashBehaviour: i32 = 0,
         /// The component's instance id.
         id: i32 = 0,
         enabled: bool = true,
@@ -69,6 +78,8 @@ script! {
     links {
         /// The component's instance id.
         id: i32 = 0,
+        /// ColorMultiplier (1.28.57, [SkipSerialisation]): Color.white until EnergySwordBehaviour.SetColour.
+        ColorMultiplier: [f32; 4] = [1.0; 4],
         /// Life, MinDistance and ColorOverMesh ([SkipSerialisation]).
         Life: f32 = 1.0,
         MinDistance: f32 = 0.1,
@@ -126,9 +137,39 @@ impl Game {
     }
 
     /// EnergySwordBehaviour.Start: FindObjectOfType<MapConfig>, then SetActivation(playActivationSounds: false).
+    /// 1.28.57: first the "Change colour" context button (its condition, !ColorpickerDialogBehaviour.IsOpen, holds: no
+    /// dialog is open while a menu is); currentMapConfig = MapConfig.Instance; last SetColour(Color).
     pub fn energy_sword_start(&mut self, i: usize) {
+        let new = crate::assets::il::is_1_28_45();
+        if new {
+            let p = self.energy_swords[i].physical;
+            self.physicals[p].menu.push(super::menu::MenuButton::new("setColour", crate::il45!(str "EnergySwordBehaviour::Start" 1), crate::il45!(str "EnergySwordBehaviour::Start" 2), super::menu::MenuAction::Entry(super::menu::Entry::BladeColour(i))));
+        }
         self.energy_swords[i].map_config = self.map_config_present;
         self.energy_sword_set_activation(i, false);
+        if new {
+            let c = self.energy_swords[i].Color;
+            self.energy_sword_set_colour(i, c);
+        }
+    }
+
+    /// EnergySwordBehaviour.SetColour (1.28.57): alpha 1; Color, LightSprite and BladeOverlayRenderer take it, BladeRenderer a
+    /// quarter of it (alpha 1), the motion blur's ColorMultiplier and the clash's Color; then the startColor of each
+    /// ParticleSystem under HitParticle not on the TransparentFX layer.
+    pub(crate) fn energy_sword_set_colour(&mut self, i: usize, mut color: [f32; 4]) {
+        color[3] = 1.0;
+        let s = &mut self.energy_swords[i];
+        s.Color = color;
+        let (light, blade, overlay, blur, clash, id) = (s.LightSprite, s.BladeRenderer, s.BladeOverlayRenderer, s.MotionBlurRenderer, s.ClashBehaviour, s.id);
+        let null = |x: Option<super::visual::SpriteAt>| x.unwrap_or_else(|| super::menu::throw("UnassignedReferenceException: EnergySwordBehaviour.SetColour"));
+        self.set_sprite_color(null(light), color);
+        self.set_sprite_color(null(blade), [color[0] * 0.25, color[1] * 0.25, color[2] * 0.25, 1.0]);
+        self.set_sprite_color(null(overlay), color);
+        let b = self.energy_blurs.iter().position(|b| b.id == blur).unwrap_or_else(|| super::menu::throw("UnassignedReferenceException: EnergySwordBehaviour.MotionBlurRenderer"));
+        self.energy_blurs[b].ColorMultiplier = color;
+        let k = self.blade_clashes.iter().position(|x| x.0 == clash).unwrap_or_else(|| super::menu::throw("UnassignedReferenceException: EnergySwordBehaviour.ClashBehaviour"));
+        self.blade_clashes[k].3 = color;
+        self.ps_field_start_color_opaque(id, "HitParticle", color);
     }
 
     /// EnergySwordBehaviour.Use
@@ -430,6 +471,8 @@ impl Game {
         let current = self.energy_blur_current_blade_pos(i);
         let b = &mut self.energy_blurs[i];
         let clear = [0.0f32; 4];
+        // Color * Color: per channel.
+        let mul = |a: [f32; 4], m: [f32; 4]| [a[0] * m[0], a[1] * m[1], a[2] * m[2], a[3] * m[3]];
         b.colors.clear();
         b.vertices.clear();
         let count = b.nodes.len();
@@ -438,13 +481,14 @@ impl Game {
             let node = b.nodes[k];
             b.vertices.push(node.A);
             b.vertices.push(node.B);
-            let color = if k == 0 { clear } else { b.ColorOverMesh.evaluate(1.0 - num) };
+            // 1.28.57: ColorOverMesh.Evaluate(1f - num) * ColorMultiplier (white on 1.28.41).
+            let color = if k == 0 { clear } else { mul(b.ColorOverMesh.evaluate(1.0 - num), b.ColorMultiplier) };
             b.colors.push(color);
             b.colors.push(if b.MakeBottomColorTransparent { clear } else { color });
         }
         b.vertices.push(current.0);
         b.vertices.push(current.1);
-        let color2 = b.ColorOverMesh.evaluate(0.0);
+        let color2 = mul(b.ColorOverMesh.evaluate(0.0), b.ColorMultiplier);
         b.colors.push(color2);
         b.colors.push(if b.MakeBottomColorTransparent { clear } else { color2 });
         b.indices.clear();

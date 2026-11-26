@@ -38,9 +38,10 @@ const FIRE: i32 = 21;
 const FIRE_LAYER: usize = 28;
 /// The FireEffect pass (BeforeStack, after LightsEffect's on 4); the bloom passes take 6 and up.
 const FIRE_PASS_LAYER: usize = 5;
-/// DEFAULT POST PROCESSING PROFILE's FireEffect (1.28.54): Intensity 5, LookupOffset -0.05, LookupMultiplier 3; its
-/// ColorRamp and WarpSequence are the Texture2Ds fire_colorramp and warp_noise_24. No other profile has one.
-const FIRE_PROFILE: [f32; 3] = [5.0, -0.05, 3.0];
+/// DEFAULT POST PROCESSING PROFILE's FireEffect (1.28.57, sharedassets1 path id 377): Intensity 5, LookupOffset -0.04,
+/// LookupMultiplier 0.69 (1.28.54's were 5, -0.05, 3); its WarpSequence is the Texture2D warp_noise_24 (1.28.57 has no
+/// ColorRamp). No other profile has one.
+const FIRE_PROFILE: [f32; 3] = [5.0, -0.04, 0.69];
 /// LightsEffect's Intensity, MinBrightness and MaxBrightness.
 #[derive(Debug, Default)]
 pub(crate) struct LightsEffect {
@@ -65,7 +66,7 @@ impl LightsEffect {
     }
 }
 
-/// 1.28.54's FireEffect (Custom/Fire, BeforeStack): its FloatParameters (the textures are FireCamera's and the profile's).
+/// 1.28.57's FireEffect (Custom/Fire, BeforeStack): its FloatParameters (the textures are FireCamera's and the profile's).
 #[derive(Debug, Default)]
 pub(crate) struct FireEffect {
     intensity: f32,
@@ -87,10 +88,12 @@ impl FireEffect {
     }
 }
 
-/// 1.28.54's FireEffectRenderer: the shader Init finds.
+/// 1.28.57's FireEffectRenderer: the shader Init finds, and the _Gravity last set (for the env_settings_changes count seen).
 #[derive(Debug, Default)]
 pub(crate) struct FireEffectRenderer {
     pub(crate) shader: Option<&'static str>,
+    gravity_seen: Option<u32>,
+    gravity: Vec2,
 }
 
 impl FireEffectRenderer {
@@ -441,12 +444,12 @@ struct Fire {
     #[texture(5)]
     #[sampler(6)]
     fire: Handle<Image>,
-    #[texture(7)]
-    #[sampler(8)]
-    ramp: Handle<Image>,
     #[texture(9)]
     #[sampler(10)]
     warp: Handle<Image>,
+    /// _FrameOffset (1.28.57).
+    #[uniform(11)]
+    frame: Vec4,
 }
 
 impl Material2d for Fire {
@@ -1076,7 +1079,7 @@ fn setup(
     commands.spawn(pass_camera(0, 4, &lit));
     let fired = images.add(level_image(w, h));
     commands.spawn((pass_camera(1, FIRE_PASS_LAYER, &fired), crate::exposure::ExposureView(exposure.clone())));
-    let fire_material = fires.add(Fire { settings: Vec4::ZERO, view: Vec4::ZERO, camera: Vec4::ZERO, source: lit.clone(), fire: fire.clone(), ramp: white.clone(), warp: white.clone() });
+    let fire_material = fires.add(Fire { settings: Vec4::ZERO, view: Vec4::ZERO, camera: Vec4::ZERO, source: lit.clone(), fire: fire.clone(), warp: white.clone(), frame: Vec4::ZERO });
     commands.spawn((Mesh2d(quad.clone()), MeshMaterial2d(fire_material.clone()), RenderLayers::layer(FIRE_PASS_LAYER)));
     let fx = LightsEffect::profile();
     let lit_material = lits.add(Lit { settings: Vec4::new(fx.intensity, fx.min_brightness, fx.max_brightness, 1.0), scene: scene.clone(), lights: lights.clone() });
@@ -1161,7 +1164,7 @@ fn fire(
     mut fires: ResMut<Assets<Fire>>,
     mut images: ResMut<Assets<Image>>,
     mut textures: Local<crate::play::Textures>,
-    (mut loaded, mut renderer): (Local<Option<(Handle<Image>, Handle<Image>)>>, Local<FireEffectRenderer>),
+    (mut loaded, mut renderer): (Local<Option<Handle<Image>>>, Local<FireEffectRenderer>),
 ) {
     let (w, h, _) = render_size(&window, settings.as_deref());
     let (my, my_projection, behaviour) = &mut *camera;
@@ -1180,25 +1183,31 @@ fn fire(
     if loaded.is_none() {
         let db = game.and_then(|g| g.assets.as_deref());
         let load = |name: &str, images: &mut Assets<Image>, textures: &mut crate::play::Textures| db.and_then(|db| crate::play::load_texture(db, images, textures, db.texture_by_name(name)?)).map(|t| t.0);
-        if let (Some(ramp), Some(warp)) = (load("fire_colorramp", &mut images, &mut textures), load("warp_noise_24", &mut images, &mut textures)) {
-            *loaded = Some((ramp, warp));
-        }
+        *loaded = load("warp_noise_24", &mut images, &mut textures);
     }
     let ortho = if let Projection::Orthographic(o) = main.1 { o.scale } else { 1.0 };
     let aspect = w as f32 / h as f32;
     let on = renderer.shader.is_some() && game.is_some() && loaded.is_some();
     let FireEffect { intensity, lookup_offset: offset, lookup_multiplier: multiplier } = FireEffect::profile();
     let new_settings = Vec4::new(intensity, offset, multiplier, on as u32 as f32);
-    // Physics2D.gravity * 0.11f; Time.timeSinceLevelLoad as _Time.y.
-    let (time, gravity) = game.map_or((0.0, Vec2::ZERO), |g| (g.time.time, Vec2::new(g.world.gravity.x * 0.11, g.world.gravity.y * 0.11)));
+    // _Gravity = Physics2D.gravity * 0.11f only while shouldUpdateGravity (Init, and each OnEnvironmentSettingsChange:
+    // Game::env_settings_changes); the sheet keeps the last one set. Time.timeSinceLevelLoad as _Time.y.
+    let time = game.map_or(0.0, |g| g.time.time);
+    if let Some(g) = game.filter(|g| renderer.gravity_seen != Some(g.env_settings_changes)) {
+        renderer.gravity_seen = Some(g.env_settings_changes);
+        renderer.gravity = Vec2::new(g.world.gravity.x * 0.11, g.world.gravity.y * 0.11);
+    }
+    let gravity = renderer.gravity;
+    // _AspectRatio = camera.aspect; _FrameOffset = Mathf.Floor(Time.time * 64f) % 24f * (1f / 24f).
     let view = Vec4::new(time, ortho * aspect, aspect, ortho);
+    let frame = Vec4::new((time * 64.0).floor() % 24.0 * (1.0f32 / 24.0), 0.0, 0.0, 0.0);
     let at = Vec4::new(main.0.translation.x, main.0.translation.y, gravity.x, gravity.y);
-    if fires.get(&targets.fire_material).is_some_and(|m| m.settings != new_settings || m.view != view || m.camera != at) {
+    if fires.get(&targets.fire_material).is_some_and(|m| m.settings != new_settings || m.view != view || m.camera != at || m.frame != frame) {
         let mut m = fires.get_mut(&targets.fire_material).unwrap();
-        (m.settings, m.view, m.camera) = (new_settings, view, at);
-        if let Some((ramp, warp)) = loaded.as_ref() {
-            if m.ramp != *ramp {
-                (m.ramp, m.warp) = (ramp.clone(), warp.clone());
+        (m.settings, m.view, m.camera, m.frame) = (new_settings, view, at, frame);
+        if let Some(warp) = loaded.as_ref() {
+            if m.warp != *warp {
+                m.warp = warp.clone();
             }
         }
     }

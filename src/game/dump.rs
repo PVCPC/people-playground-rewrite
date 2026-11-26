@@ -126,13 +126,13 @@ pub fn open_recording(path: &Path) -> Result<Box<dyn std::io::Read>, String> {
     }
 }
 
-/// A loop recording for the running game: on 1.28.54 its re-recording `<name>-v54.txt` (or `.txt.gz`) beside it when
-/// there is one, else its 1.28.52 one (`-v52c`, `-v52b`, `-v52`: the data both builds share); on 1.28.41 its re-recording `<name>-v41b.txt` (the loaded bleeds' randoms, pseed=) when there is one;
+/// A loop recording for the running game: on 1.28.57 its re-recording `<name>-v57.txt` (or `.txt.gz`) beside it when
+/// there is one, else its 1.28.54 / 1.28.53 one (`-v54`, `-v53`), else its 1.28.52 one (`-v52c`, `-v52b`, `-v52`: the data both builds share); on 1.28.41 its re-recording `<name>-v41b.txt` (the loaded bleeds' randoms, pseed=) when there is one;
 /// else the path itself.
 pub fn recording_for_version(path: &Path) -> std::path::PathBuf {
-    // A later re-recording over an earlier one: -v54 over -v53 over -v52c over -v52b (every particle system's active-list slot) over -v52.
+    // A later re-recording over an earlier one: -v57 over -v54 over -v53 over -v52c over -v52b (every particle system's active-list slot) over -v52.
     // On 1.28.41: -v41c (dumpL4raycannon: the snapshots start after the spawn's item systems died) over -v41b.
-    let versions: &[&str] = if crate::assets::il::is_1_28_45() { &["v54", "v53", "v52c", "v52b", "v52"] } else { &["v41c", "v41b"] };
+    let versions: &[&str] = if crate::assets::il::is_1_28_45() { &["v57", "v54", "v53", "v52c", "v52b", "v52"] } else { &["v41c", "v41b"] };
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         for v in versions {
             let re = path.with_file_name(format!("{stem}-{v}.txt"));
@@ -3502,10 +3502,16 @@ impl Game {
         }
     }
 
-    /// SkinMaterialHandler.OnWillRenderObject
+    /// SkinMaterialHandler.OnWillRenderObject. 1.28.57, last: `if (limb.SpeciesIdentity != "Android")` smoothBurnIntensity =
+    /// Utils.SmoothApproach(smoothBurnIntensity, limb.PhysicalBehaviour.BurnIntensity, 5f, Time.deltaTime), set as _BurnIntensity.
     pub fn skin_will_render(&mut self, l: usize) {
         let blood = super::circulation::liquid_color(super::circulation::liquid(&self.limbs[l].BloodLiquidType));
         self.get_computed_color(super::container::Owner::Circulation(l), blood);
+        if crate::assets::il::is_1_28_45() && self.limbs[l].SpeciesIdentity != "Android" {
+            let target = self.physicals[self.limbs[l].PhysicalBehaviour].burnIntensity;
+            let s = &mut self.skins[l];
+            s.smoothBurnIntensity = super::fire::smooth_approach(s.smoothBurnIntensity, target, 5.0, self.time.deltaTime);
+        }
     }
 }
 

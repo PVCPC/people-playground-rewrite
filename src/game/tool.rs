@@ -4908,16 +4908,26 @@ mod tests {
     #[test]
     fn activator_electrode_activates_the_hand_it_touches() {
         let Some((mut g, _)) = spawned("Human") else { return };
-        let grip = 1;
-        let hand = g.grips[grip].PhysicalBehaviour;
+        // The human lies with both hands at one point (their grip points 1e-4 apart); the electrode goes there.
+        let hand = g.grips[1].PhysicalBehaviour;
         // The hand's grip point: the electrode's emission point goes there, so the hand is touched and can reach the electrode.
-        let c = g.transform_point3(hand, g.grips[grip].GripPosition);
+        let c = g.transform_point3(hand, g.grips[1].GripPosition);
         // Something the grip can hold, within its reach but out of the electrode's emission circle.
         let pistol = spawn_at(&mut g, "Pistol", [c[0], c[1] - 0.35, 0.0]);
         assert!(!g.physicals[pistol].HoldingPositions.is_empty());
         spawn_at(&mut g, "Activator Electrode", [c[0] - 0.39, c[1], 0.0]);
         let e = g.activator_electrodes.len() - 1;
         let ep = g.activator_electrodes[e].physical;
+        // Use passes the activation to the physicals of OverlapCircle's first BUFFER (4) colliders, in the query's order: the
+        // hand that comes first among them picks up (the limbs at that point are 5 on 1.28.57, so the other hand can be the 5th).
+        let first_hand = {
+            let s = &g.activator_electrodes[e];
+            let (r, layers, at) = (s.EmissionRadius, s.LayersToConsider, s.EmissionPoint);
+            let w = g.transform_point3(ep, [at[0], at[1], 0.0]);
+            let hits = g.overlap_circle(crate::b2::math::Vec2::new(w[0], w[1]), r, layers);
+            hits.iter().take(super::activator_electrode::BUFFER).find_map(|h| h.0.and_then(|p| (0..g.grips.len()).find(|&k| g.grips[k].PhysicalBehaviour == p)))
+        };
+        let grip = first_hand.expect("no hand among the electrode's first colliders");
         assert!(!g.grips[grip].isHolding);
         // Using the electrode passes the Use on to the object at its emission point: the hand's GripBehaviour picks up.
         g.activate_direct(ep);

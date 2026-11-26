@@ -24,6 +24,23 @@ fn fragment(@location(2) in_uv: vec2<f32>) -> @location(0) vec4<f32> {
     let at = vec2<f32>(pos.x, 1.0 - pos.y);
     let d = textureSample(damage_tex, damage_sampler, at);
     var b = textureSample(broken_tex, broken_sampler, at);
+    // 1.28.57's program (params[13].w = 1: custom_material.rs).
+    if params[13].w == 1.0 {
+        let uv = d.xz * vec2<f32>(0.00200000009) + vec2<f32>(in_uv.x, 1.0 - in_uv.y);
+        let c = textureSample(main_tex, main_sampler, vec2<f32>(uv.x, 1.0 - uv.y));
+        let t = c.xyz * glow.xyz * vec3<f32>(progress) - c.xyz;
+        let c2 = vec3<f32>(progress) * t + c.xyz;
+        let sum = c2.z + (c2.y + c2.x);
+        let toward = vec3<f32>(sum) * vec3<f32>(0.100000001) - c2;
+        // smoothstep of saturate(damage * 2.5) and saturate(damage * 10): s * s * (3 - 2 s).
+        let s = clamp(d.xx * vec2<f32>(2.5, 10.0), vec2<f32>(0.0), vec2<f32>(1.0));
+        let k = (s * vec2<f32>(-2.0) + vec2<f32>(3.0)) * (s * s);
+        let g = vec4<f32>(k.y * toward + c2, c.w);
+        let dark = vec4<f32>(0.0, 0.0, 0.0, g.w);
+        let faded = d.zzzz * (dark - g) + g;
+        let lit = vec4<f32>(b.xyz * k.x, c.w);
+        return select(faded, lit, 0.200000003 < d.x);
+    }
     let uv = d.xz * vec2<f32>(0.00999999978) + vec2<f32>(in_uv.x, 1.0 - in_uv.y);
     var c = textureSample(main_tex, main_sampler, vec2<f32>(uv.x, 1.0 - uv.y));
     let t = c.xyz * glow.xyz * vec3<f32>(progress) - c.xyz;

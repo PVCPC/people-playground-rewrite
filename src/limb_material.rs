@@ -97,6 +97,9 @@ struct Layout {
 const BODY: Layout = Layout { stamps: Some(2208), count: 4244, burn: 4248, acid: 4256, temperature: 4260, influence: 4264, electrocution: 4268, rotten: 4272, multiplier: None };
 const LEGACY: Layout = Layout { stamps: None, count: 4256, burn: 4260, acid: 4268, temperature: 4272, influence: 4276, electrocution: 4280, rotten: 4284, multiplier: Some(4288) };
 const BLOOD_COLOR: usize = 144;
+/// 1.28.57's BodyShader: _BurnIntensity, and the rewrite's flag for its program (cb0[268].w, past the shader's 268 rows).
+const BURN_INTENSITY: usize = 4280;
+const BODY57_FLAG: usize = 4300;
 const DAMAGE_POINTS: usize = 160;
 
 fn put(cb: &mut [UVec4; 269], at: usize, bits: u32) {
@@ -156,6 +159,10 @@ pub fn new_material(m: &crate::assets::components::Material, legacy: bool, extra
         put_vec(&mut cb, 32 + i * 16, if hdr { c } else { to_linear(c) });
     }
     let layout = if legacy { &LEGACY } else { &BODY };
+    // 1.28.57's BodyShader: body.wesl's body57, flagged in $Globals' unused last row.
+    if !legacy && crate::assets::il::is_1_28_45() {
+        put(&mut cb, BODY57_FLAG, 1);
+    }
     put_f32(&mut cb, layout.influence, m.float("_BurnProgressInfluence").unwrap_or(1.0));
     if let Some(at) = layout.multiplier {
         put_f32(&mut cb, at, m.float("_DamageMultiplier").unwrap_or(1.0));
@@ -208,6 +215,10 @@ fn sync(g: &mut crate::game::Game, l: usize, blood: &mut [f32; 4], layout: &Layo
     // The setters' last writes to the material.
     put_f32(cb, layout.rotten, k.oldRottenProgress);
     put_f32(cb, layout.acid, k.materialAcid);
+    // 1.28.57: OnWillRenderObject's _BurnIntensity (smoothBurnIntensity, 0 for an Android).
+    if layout.stamps.is_some() && crate::assets::il::is_1_28_45() {
+        put_f32(cb, BURN_INTENSITY, k.smoothBurnIntensity);
+    }
     // Sync.
     for (i, v) in k.damagePoints.iter().enumerate() {
         put_vec(cb, DAMAGE_POINTS + i * 16, *v);

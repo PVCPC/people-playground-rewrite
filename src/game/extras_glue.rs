@@ -173,7 +173,7 @@ impl Game {
         }
         let Some(prefab) = self.assets.as_deref().and_then(|db| db.resource(path, 1).ok().flatten()) else { return };
         let (s, c) = (angle * 0.5).sin_cos();
-        self.effect_log.push(super::EffectSpawn { prefab, position: [at[0], at[1], 0.0], rotation: [0.0, 0.0, s, c], scale, color: Some(TINTS[colour]), root: None, subtree: None, water: None, pooled: None, parent: None, off: Vec::new(), tint_all: true, start_size: None, material: None });
+        self.effect_log.push(super::EffectSpawn { prefab, position: [at[0], at[1], 0.0], rotation: [0.0, 0.0, s, c], scale, color: Some(TINTS[colour]), root: None, subtree: None, water: None, pooled: None, parent: None, off: Vec::new(), tint_all: true, tint_opaque: false, start_size: None, material: None });
     }
 
     /// One of the game's clips, by name, at `at` from the extras' AudioSource `k` (pitched; Sound effects group).

@@ -540,7 +540,7 @@ impl Game {
                 let at = self.casing_position(f);
                 let dir = self.casing_direction(f);
                 let a = dir[1].atan2(dir[0]) * 0.5;
-                self.effect_log.push(super::EffectSpawn { prefab, position: [at[0], at[1], 0.0], rotation: [0.0, 0.0, a.sin(), a.cos()], scale: 1.0, color: None, root: None, subtree: None, water: None, pooled: None, parent: None, off: Vec::new(), tint_all: false, start_size: Some(self.firearms[f].casing_size), material: self.firearms[f].casing_material });
+                self.effect_log.push(super::EffectSpawn { prefab, position: [at[0], at[1], 0.0], rotation: [0.0, 0.0, a.sin(), a.cos()], scale: 1.0, color: None, root: None, subtree: None, water: None, pooled: None, parent: None, off: Vec::new(), tint_all: false, tint_opaque: false, start_size: Some(self.firearms[f].casing_size), material: self.firearms[f].casing_material });
             }
         }
         for _ in 0..n {

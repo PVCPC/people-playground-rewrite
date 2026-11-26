@@ -2345,6 +2345,8 @@ pub struct EffectSpawn {
     pub off: Vec<&'static str>,
     /// Rewrite extra (extras_glue): `color` tints every system of the prefab, not only a BloodImpactBehaviour's.
     pub tint_all: bool,
+    /// `color` is main.startColor of every system not on the TransparentFX layer (1.28.57's sword clash VFX).
+    pub tint_opaque: bool,
     /// main.startSize = this constant on the clone's systems (FirearmBehaviour.Awake's 0.18 * CasingSizeMultiplier).
     pub start_size: Option<f32>,
     /// ParticleSystemRenderer.sharedMaterial = this on the clone's systems (FirearmBehaviour.Awake's Cartridge.Casing).
@@ -2769,8 +2771,9 @@ pub struct Game {
     pub random_events: Vec<random_event::RandomEvent>,
     pub energy_swords: Vec<energy_sword::EnergySword>,
     pub energy_blurs: Vec<energy_sword::EnergySwordBlur>,
-    /// EnergySwordBladeClashBehaviour: its id, its GameObject's colliders and CollideWithOtherSwordVFX.
-    pub blade_clashes: Vec<(i32, Vec<i32>, crate::assets::db::ObjRef)>,
+    /// EnergySwordBladeClashBehaviour: its id, its GameObject's colliders, CollideWithOtherSwordVFX and Color (1.28.57,
+    /// [SkipSerialisation], Color.white until the sword's SetColour).
+    pub blade_clashes: Vec<(i32, Vec<i32>, crate::assets::db::ObjRef, [f32; 4])>,
     /// A MapConfig was woken (FindObjectOfType<MapConfig>() is not null).
     pub map_config_present: bool,
     /// MapLoaderBehaviour.CurrentMap's Prefab and the Transform id of the map clone under WORLD (set by the main
@@ -2905,6 +2908,8 @@ pub struct Game {
     pub destroyed_components: std::collections::HashSet<i32>,
     /// The grips and FixedJointWireBehaviours whose OnChangePause listener ModdingApi.Events.ClearListeners removed.
     pub pause_listeners_cleared: std::collections::HashSet<i32>,
+    /// 1.28.57's ModdingApi.Events.OnEnvironmentSettingsChange invocations (MapConfig.ApplySettings).
+    pub env_settings_changes: u32,
     // ModAPI.get_Draw, ModAPI.set_Draw: ModdingApi.Draw (Global.Awake: a new ModDebugDrawer over an empty stack).
     /// ModdingApi.Draw
     pub mod_debug_draw: mods::ModDebugDrawer,

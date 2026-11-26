@@ -475,6 +475,11 @@ impl Game {
         if self.map_settings.is_none() {
             return;
         }
+        // 1.28.57: ModdingApi.Events.OnEnvironmentSettingsChange.Invoke(settings): FireEffectRenderer's listener sets
+        // shouldUpdateGravity (lights.rs reads the count).
+        if crate::assets::il::is_1_28_45() {
+            self.env_settings_changes = self.env_settings_changes.wrapping_add(1);
+        }
         self.map_config_set_gravity(settings.Gravity);
         self.map_config_set_flood_lights(&settings);
         self.map_config_set_overlay_targets(&settings);

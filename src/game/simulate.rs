@@ -885,10 +885,15 @@ impl Game {
                 // EnergySwordBladeClashBehaviour.OnCollisionEnter2D: Instantiate(CollideWithOtherSwordVFX,
                 // GetContact(0).point, identity). The VFX has no physics; only its instance ids matter.
                 if r.message == Message::CollisionEnter {
-                    let vfx: Vec<_> = self.blade_clashes.iter().filter(|(id, cs, _)| cs.contains(&collider.id) && !self.destroyed_components.contains(id)).map(|x| x.2).collect();
-                    for v in vfx {
+                    let vfx: Vec<_> = self.blade_clashes.iter().filter(|(id, cs, ..)| cs.contains(&collider.id) && !self.destroyed_components.contains(id)).map(|x| (x.2, x.3)).collect();
+                    for (v, color) in vfx {
                         let p = c.contacts.first().unwrap_or_else(|| crate::game::menu::throw("IndexOutOfRangeException: Index was outside the bounds of the array.")).point;
                         self.spawn_prefab(v, [p.x, p.y, 0.0]);
+                        // 1.28.57: the clone's GetComponentsInChildren<ParticleSystem>() not on TransparentFX take main.startColor = Color.
+                        if crate::assets::il::is_1_28_45() && !self.effects_off {
+                            let e = self.effect_log.last_mut().expect("the clone's effect");
+                            (e.color, e.tint_opaque) = (Some(color), true);
+                        }
                     }
                 }
                 if let Some(p) = self.physical_of_collider(collider.id) {

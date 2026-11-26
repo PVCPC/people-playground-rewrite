@@ -148,6 +148,9 @@ script! {
         colours: [Option<[f32; 4]>; 5] = [None; 5],
         /// Counts the changes the renderer has to draw (sprite and textures).
         version: u32 = 0,
+        /// 1.28.57's smoothBurnIntensity: the material's _BurnIntensity (Start sets 0; OnWillRenderObject approaches the
+        /// limb's BurnIntensity).
+        smoothBurnIntensity: f32 = 0.0,
     }
 }
 

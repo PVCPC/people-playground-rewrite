@@ -478,8 +478,11 @@ impl Game {
         let value = (d(dot.abs()) * (d(0.01f32) * mathf::sqr_magnitude(velocity))).f();
         let value = mathf::clamp(value, 0.0, 1500.0);
         let lift_at = self.with_component_instance(lift_id, |_, inst, o| inst.position(o));
-        // transform.up * LiftForce * value: two Vector3 * float operators, each rounding its components.
-        let f = |u: f32| ((d(u) * force).f() * value);
+        // transform.up * LiftForce * value: two Vector3 * float operators, each rounding its components; 1.28.57:
+        // transform.up * (LiftForce * value), one operator on the rounded product.
+        let k = force * value;
+        let new = crate::assets::il::is_1_28_45();
+        let f = |u: f32| if new { u * k } else { (d(u) * force).f() * value };
         rb.add_force_at_position(&mut self.world, [f(up[0]), f(up[1])], [lift_at[0], lift_at[1]]);
         let heading = (d(57.29578f32) * crate::game::mathf::atan2(velocity[1], velocity[0])).f();
         let value2 = mathf::clamp(mathf::delta_angle(crate::game::dump::euler_z(rotation), heading), -10.0, 10.0);
