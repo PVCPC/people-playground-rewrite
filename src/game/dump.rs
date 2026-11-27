@@ -126,13 +126,13 @@ pub fn open_recording(path: &Path) -> Result<Box<dyn std::io::Read>, String> {
     }
 }
 
-/// A loop recording for the running game: on 1.28.57 its re-recording `<name>-v57.txt` (or `.txt.gz`) beside it when
-/// there is one, else its 1.28.54 / 1.28.53 one (`-v54`, `-v53`), else its 1.28.52 one (`-v52c`, `-v52b`, `-v52`: the data both builds share); on 1.28.41 its re-recording `<name>-v41b.txt` (the loaded bleeds' randoms, pseed=) when there is one;
+/// A loop recording for the running game: on 1.28.59 its re-recording `<name>-v59.txt` (or `.txt.gz`) beside it when
+/// there is one, else its 1.28.57 / 1.28.54 / 1.28.53 one (`-v57`, `-v54`, `-v53`), else its 1.28.52 one (`-v52c`, `-v52b`, `-v52`: the data both builds share); on 1.28.41 its re-recording `<name>-v41b.txt` (the loaded bleeds' randoms, pseed=) when there is one;
 /// else the path itself.
 pub fn recording_for_version(path: &Path) -> std::path::PathBuf {
-    // A later re-recording over an earlier one: -v57 over -v54 over -v53 over -v52c over -v52b (every particle system's active-list slot) over -v52.
+    // A later re-recording over an earlier one: -v59 over -v57 over -v54 over -v53 over -v52c over -v52b (every particle system's active-list slot) over -v52.
     // On 1.28.41: -v41c (dumpL4raycannon: the snapshots start after the spawn's item systems died) over -v41b.
-    let versions: &[&str] = if crate::assets::il::is_1_28_45() { &["v57", "v54", "v53", "v52c", "v52b", "v52"] } else { &["v41c", "v41b"] };
+    let versions: &[&str] = if crate::assets::il::is_1_28_45() { &["v59", "v57", "v54", "v53", "v52c", "v52b", "v52"] } else { &["v41c", "v41b"] };
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         for v in versions {
             let re = path.with_file_name(format!("{stem}-{v}.txt"));
@@ -687,9 +687,11 @@ impl Game {
                 // Older recordings: the material asset's serialized value.
                 (None, m) => Some(material_friction(&m[1..m.find('#').unwrap()])?),
             };
-            p.bounciness = match r.req("PhysicMaterial")? {
-                "null" => 0.0,
-                m => material_value(&m[1..m.find('#').unwrap()], "bounciness")?,
+            p.bounciness = match (r.get("bounciness"), r.req("PhysicMaterial")?) {
+                (Some(bits), _) => f(bits),
+                (None, "null") => 0.0,
+                // Older recordings: the material asset's serialized value (needs the AssetRipper export).
+                (None, m) => material_value(&m[1..m.find('#').unwrap()], "bounciness")?,
             };
             // Older recordings lack these (only the ballistics read them).
             if let Some(bits) = r.get("Brittleness") {
@@ -1764,7 +1766,10 @@ impl Game {
                             crate::particles::Listed::WaterPuff(b)
                         }
                     }
-                    _ => return Err(format!("listed system {} {} of no known kind", r.name, r.id)),
+                    // Any other listed system (a PhysicalBehaviour's BubbleVFX or ChargedParticles clone, which the generic prober's
+                    // wetness and charge seeds start): a placeholder that leaves at the first EndUpdateAll, as before 10a17b7c
+                    // (whose error here failed every case after such a seed: fc41_42_gen 0 of 30).
+                    _ => crate::particles::Listed::Ghost,
                 }
             };
             g.recorded_active.push((i, listed));

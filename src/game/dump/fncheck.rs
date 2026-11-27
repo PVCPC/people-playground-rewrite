@@ -1941,6 +1941,14 @@ const CALLS: &[(&str, Call)] = &[
     // _GlowIntensity (" flr=", " flh=": not in the dump) and junk in the held blocks; the return is the held blocks after (st=fl:).
     // fc41 r16: Use(ActivationPropagation): its Channel. Older recordings passed the channel as an int; a bare "signal"
     // (Direct, channel 0) is dropped from the args.
+    // v59: TankBarrelBehaviour.Use(ActivationPropagation): GenRun's `signal:<direct>,<channel>,<target>` too (fncheck_gen's
+    // entry takes only a bare "signal"); Use reads none of it.
+    ("TankBarrelBehaviour.Use", |g, c| {
+        let i = g.tr.tank_barrel_behaviour.iter().position(|x| x.this_id == c.id).ok_or("no tank_barrel_behaviour entry")?;
+        let ch = signal_arg(c.args.first().copied().unwrap_or("signal"))?.1 as i32;
+        g.tank_barrel_behaviour_use(i, crate::game::translated::rt::Activation { Channel: ch });
+        VOID
+    }),
     ("ValveBehaviour.Use", |g, c| {
         let i = g.valves.iter().position(|x| x.id == c.id).ok_or("no valves entry")?;
         let ch = match c.args.first() { Some(a) if !a.starts_with("signal") => c.arg(0)?, a => signal_arg(a.copied().unwrap_or("signal"))?.1 as i32 };

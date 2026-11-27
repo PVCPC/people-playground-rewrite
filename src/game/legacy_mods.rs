@@ -2311,10 +2311,10 @@ mod tests {
 
     /// The text a failed compile gives the mod (TryCompileMod's catch: Exception.ToString with Mono's stack trace), against the
     /// game's own ModLoader.TryCompileMod run under its Mono (1.28.54 and 1.28.41 gave the same text but for Assembly-CSharp's
-    /// Mvid; 1.28.57's Mvid is read from its DLL, its text not re-run): {A} {M} {C} are Assembly-CSharp's, mscorlib's and System.Core's Mvid, {B} the working folder.
+    /// Mvid; 1.28.57's and 1.28.59's Mvid are read from their DLLs, their text not re-run): {A} {M} {C} are Assembly-CSharp's, mscorlib's and System.Core's Mvid, {B} the working folder.
     #[test]
     fn compile_errors_read_as_the_game() {
-        let want_mvid = if crate::assets::il::is_1_28_45() { "003f2f86540b480386d7a8d0b40d72bd" } else { "fcdb535469eb49fa8183bb51f5a78228" };
+        let want_mvid = if crate::assets::il::is_1_28_45() { "23c83f01e8904fafbeec8607616d705f" } else { "fcdb535469eb49fa8183bb51f5a78228" };
         let (a, m, c) = (crate::assets::il::mvid("Assembly-CSharp"), crate::assets::il::mvid("mscorlib"), crate::assets::il::mvid("System.Core"));
         assert_eq!((a.as_str(), m.as_str(), c.as_str()), (want_mvid, "eae584ce26bc40229c1b1aa476bfa589", "351e49e2a5bf4fd6beabb458ce2255f3"));
         let base = std::env::temp_dir().join(format!("ppg-legacy-compile-test-{}", std::process::id()));

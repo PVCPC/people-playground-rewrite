@@ -825,6 +825,7 @@ const GEN: &[(&str, Call)] = &[
     ("StickyGrenadeBehaviour.OnCollisionEnter2D", |g, c| { let c = c.with(1)?; let a0 = c.p_collision(0)?; Ok(Enc::enc(g.sticky_get_physical_behaviour(&a0))) }),
     ("SyringeBehaviour.AddButtons", |g, c| { let c = c.with(1)?; let a0 = c.p_usize(g, 0)?; g.syringe_add_buttons(a0); VOID }),
     ("SyringeBehaviour.GetColor", |g, c| { let c = c.with(1)?; let a0 = c.p_usize(g, 0)?; Ok(Enc::enc(g.syringe_get_color(a0))) }),
+    ("TankBarrelBehaviour.Awake", |g, c| { let c = c.with(1)?; let a0 = c.p_usize(g, 0)?; g.tank_barrel_behaviour_awake(a0); VOID }),
     ("TankBarrelBehaviour.FixedUpdate", |g, c| { let c = c.with(1)?; let a0 = c.p_usize(g, 0)?; g.tank_barrel_behaviour_fixed_update(a0); VOID }),
     ("TankBarrelBehaviour.GetBarrelDirection", |g, c| { let c = c.with(1)?; let a0 = c.p_usize(g, 0)?; Ok(Enc::enc(g.tank_barrel_behaviour_get_barrel_direction(a0))) }),
     ("TankBarrelBehaviour.GetBarrelPosition", |g, c| { let c = c.with(1)?; let a0 = c.p_usize(g, 0)?; Ok(Enc::enc(g.tank_barrel_behaviour_get_barrel_position(a0))) }),

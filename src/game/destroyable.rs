@@ -327,10 +327,39 @@ impl Game {
         }
         // The GameObject and its direct children only: a grandchild's scripts stay enabled (a destroyed Sentry_Turret's
         // TurretFrontLeg NodeBehaviour reads enabled=0, the leg's own Metal_scrape(Clone) Flash still 1).
-        let own = self.with_component_instance(id, |g, inst, o| {
-            let prefab = inst.prefab.clone();
+        let (own, comps) = self.with_component_instance(id, |g, inst, o| {
             let children: Vec<usize> = (0..inst.objects.len()).filter(|&k| inst.objects[k].parent == Some(o)).collect();
             for x in std::iter::once(o).chain(children) {
+                g.destroy_disable_one(inst, x);
+            }
+            (inst.objects[o].components[0], inst.objects[o].components.clone())
+        });
+        // v59: a runtime clone attached under the object (an ExplosiveBehaviour's Killzone(Clone), Instantiate(.., transform))
+        // is a direct child too: a destroyed Gastank's inactive Killzone scripts read enabled=0 (fnv59_9_gen Explode).
+        let on_object = |g: &Game, p: AttachParent| match p {
+            AttachParent::Physical(p) => comps.contains(&g.physicals[p].id),
+            AttachParent::Bare(c) | AttachParent::Object(c) => comps.contains(&c),
+        };
+        let attached: Vec<i32> = self.attached_clones.values().flatten().filter(|c| on_object(self, c.parent)).map(|c| c.id).collect();
+        for c in attached {
+            if !self.destroyed_components.contains(&c) {
+                self.with_component_instance(c, |g, inst, o| g.destroy_disable_one(inst, o));
+            }
+        }
+        // The runtime children's DeleteAfterTime.
+        for i in 0..self.delete_afters.len() {
+            if self.delete_afters[i].enabled && self.delete_afters[i].parent == Some(own) && self.destroy_disabled.insert(self.delete_afters[i].id) {
+                self.delete_afters[i].enabled = false;
+                self.behaviours.remove(crate::game::Behaviour::DeleteAfter(i));
+            }
+        }
+    }
+
+    /// destroy_disable_behaviours' SetEnabled(false) on one object `x` of `inst`.
+    fn destroy_disable_one(&mut self, inst: &mut super::spawn::Instance, x: usize) {
+        let g = self;
+        let prefab = inst.prefab.clone();
+        {
                 // gapC r9: an inactive object's Behaviours get m_Enabled = false too (SetEnabled stores it; no OnDisable, no
                 // Physics2D state to drop): a destroyed Firework's inactive Killzone scripts read enabled=0 (fng4_items1).
                 if !inst.objects[x].active {
@@ -345,7 +374,7 @@ impl Game {
                             _ => {}
                         }
                     }
-                    continue;
+                    return;
                 }
                 for k in 0..prefab.objects[x].components.len() {
                     match &prefab.objects[x].components[k].1 {
@@ -373,15 +402,6 @@ impl Game {
                         _ => {}
                     }
                 }
-            }
-            inst.objects[o].components[0]
-        });
-        // The runtime children's DeleteAfterTime.
-        for i in 0..self.delete_afters.len() {
-            if self.delete_afters[i].enabled && self.delete_afters[i].parent == Some(own) && self.destroy_disabled.insert(self.delete_afters[i].id) {
-                self.delete_afters[i].enabled = false;
-                self.behaviours.remove(crate::game::Behaviour::DeleteAfter(i));
-            }
         }
     }
 

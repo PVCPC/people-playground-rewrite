@@ -1550,7 +1550,8 @@ impl Game {
     pub(crate) fn explosive_shot(&mut self, e: usize, triggers_explosive_override: bool) {
         if triggers_explosive_override && self.random.value() < self.explosives[e].ShotExplodeChance {
             let delay = self.random.value() * 0.2;
-            self.explosive_start_explode(e, delay, true);
+            // 1.28.59: Explode(Random.value * 0.2f) (forceDoubleCheck false); 1.28.41: forceDoubleCheck: true.
+            self.explosive_start_explode(e, delay, !crate::assets::il::is_1_28_45());
         }
     }
 

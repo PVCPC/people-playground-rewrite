@@ -13,7 +13,7 @@ use std::time::UNIX_EPOCH;
 /// SHA-256 of every installed file the rewrite reads, as People Playground 1.28.41 ships them (GAME_HASHES_45: the newer build,
 /// 1.28.57, which the rewrite calls 1.28.45) (`sha256sum` lines).
 const GAME_HASHES: &str = include_str!("game-1.28.41.sha256");
-const GAME_HASHES_45: &str = include_str!("game-1.28.57.sha256");
+const GAME_HASHES_45: &str = include_str!("game-1.28.59.sha256");
 
 /// %LOCALAPPDATA%/ppg-rewrite (elsewhere $XDG_DATA_HOME or ~/.local/share).
 pub fn user_dir() -> PathBuf {
@@ -53,12 +53,12 @@ fn stamp(path: &Path) -> Option<String> {
 /// Stops unless every file in GAME_HASHES has 1.28.45's or 1.28.41's content. Hashing reads ~330 MB, so the size and time of
 /// files that matched are kept in the user folder and only changed files are hashed again.
 pub fn check_version(game: &Path) -> Result<(), String> {
-    // Either supported version: 1.28.57 (the current Steam one; "1.28.45" in the code) or 1.28.41.
+    // Either supported version: 1.28.59 (the current Steam one; "1.28.45" in the code) or 1.28.41.
     check_hashes(game, GAME_HASHES_45).or_else(|_| check_hashes(game, GAME_HASHES))
 }
 
 fn check_hashes(game: &Path, list: &str) -> Result<(), String> {
-    let wrong = || "This rewrite needs People Playground 1.28.57 (the current Steam version) or 1.28.41; your install is a different version.".to_string();
+    let wrong = || "This rewrite needs People Playground 1.28.59 (the current Steam version) or 1.28.41; your install is a different version.".to_string();
     let verified_file = user_dir().join("verified.txt");
     let verified = std::fs::read_to_string(&verified_file).unwrap_or_default();
     let mut lines = Vec::new();
@@ -722,11 +722,11 @@ mod tests {
         std::fs::remove_dir_all(out).unwrap();
     }
 
-    /// Both hash lists name the same files in sha256sum's format, and 1.28.57's Assembly-CSharp hash is the one il.rs knows.
+    /// Both hash lists name the same files in sha256sum's format, and 1.28.59's Assembly-CSharp hash is the one il.rs knows.
     #[test]
     fn hash_lists_cover_the_same_files() {
         let files = |l: &str| l.lines().map(|e| { let (h, f) = e.split_once("  ").unwrap(); assert_eq!(h.len(), 64); f.to_string() }).collect::<Vec<_>>();
         assert_eq!(files(GAME_HASHES), files(GAME_HASHES_45));
-        assert!(GAME_HASHES_45.contains("e537a66a1e42bbec4200fd70e3b56837aee5ead8d2655a741d783c7a3965500e  People Playground_Data/Managed/Assembly-CSharp.dll"));
+        assert!(GAME_HASHES_45.contains("1dfb5e97a32e556f8f8f838e666f70564177efe8393c952e1deff34fd2a58e3a  People Playground_Data/Managed/Assembly-CSharp.dll"));
     }
 }

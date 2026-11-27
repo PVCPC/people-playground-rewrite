@@ -20,13 +20,14 @@ use super::clr::{AttrArg, Assembly, FIELD, METHOD_DEF, TYPE_DEF};
 
 /// SHA-256 of People Playground 1.28.41's Assembly-CSharp.dll.
 const DLL_SHA256: &str = "36b6db3364d94e24899943994f739859663760d75a520647a9c09c4d73c69352";
-/// SHA-256 of the newer build's: 1.28.57 (GameInfo.Version 1.28.57; Steam build 26935388, 2026-11-25). "1.28.45" is the rewrite's
-/// name for the newer build: it was 1.28.51 (6825452f..., Steam 2026-11-17), then 1.28.52 (d9b0e6fb..., 2026-11-20), then 1.28.53
-/// (a5f500c4..., 2026-11-21), then 1.28.54's hotfix (ac2291cc..., Steam build 26851557, 2026-11-22), until 1.28.57 replaced it;
-/// the older ones are no longer supported, as Steam updates every install.
-const DLL_SHA256_45: &str = "e537a66a1e42bbec4200fd70e3b56837aee5ead8d2655a741d783c7a3965500e";
+/// SHA-256 of the newer build's: 1.28.59 (GameInfo.Version 1.28.59; Steam build 26964314, and 26976577 with the same files).
+/// "1.28.45" is the rewrite's name for the newer build: it was 1.28.51 (6825452f..., Steam 2026-11-17), then 1.28.52 (d9b0e6fb...,
+/// 2026-11-20), then 1.28.53 (a5f500c4..., 2026-11-21), then 1.28.54's hotfix (ac2291cc..., Steam build 26851557, 2026-11-22), then
+/// 1.28.57 (e537a66a..., Steam build 26935388, 2026-11-25), until 1.28.59 replaced it; the older ones are no longer supported, as
+/// Steam updates every install.
+const DLL_SHA256_45: &str = "1dfb5e97a32e556f8f8f838e666f70564177efe8393c952e1deff34fd2a58e3a";
 
-/// The installed game's version: the rewrite follows each version's code where 1.28.45 (now 1.28.57) changed it.
+/// The installed game's version: the rewrite follows each version's code where 1.28.45 (now 1.28.59) changed it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GameVersion {
     V1_28_41,
@@ -38,7 +39,7 @@ static GAME: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 /// The loaded game's version (1.28.41 before `load`, as in the tests that build no table).
 pub fn version() -> GameVersion {
-    // Tests: the game PPG_GAME_DIR names decides, whichever test runs first (else a 1.28.57 run took 1.28.41 paths in
+    // Tests: the game PPG_GAME_DIR names decides, whichever test runs first (else a 1.28.59 run took 1.28.41 paths in
     // every test that never loaded the table).
     #[cfg(test)]
     if VERSION.get().is_none() {
@@ -94,7 +95,7 @@ pub fn load(game: &Path) -> Result<(), String> {
         GameVersion::V1_28_45
     } else {
         return Err(format!(
-            "{} is not People Playground 1.28.41's or 1.28.57's (the current Steam build) (SHA-256 {hash}). The rewrite reads the game's numbers \
+            "{} is not People Playground 1.28.41's or 1.28.59's (the current Steam build) (SHA-256 {hash}). The rewrite reads the game's numbers \
              and text from those exact builds' Assembly-CSharp.dll; install one of them.",
             path.display()
         ));

@@ -543,7 +543,10 @@ impl Game {
         let wake = self.time.timeAsDouble + delay as f64;
         self.coroutine_seq += 1;
         let seq = self.coroutine_seq;
-        self.explosives[e].Armed = true;
+        // 1.28.59: `if (!CanExplodeMultipleTimes) Armed = true;` (1.28.41: always).
+        if !crate::assets::il::is_1_28_45() || !self.explosives[e].CanExplodeMultipleTimes {
+            self.explosives[e].Armed = true;
+        }
         // OnArm?.Invoke()
         self.invoke_event(self.explosives[e].id, "OnArm");
         self.explosives[e].coroutines.push(Coroutine { wake, from: self.time.frameCount as i64 + 1, seq, end_of_frame: false });
@@ -642,7 +645,8 @@ Parameter name: index"));
     pub fn explosive_on_fragment_hit(&mut self, e: usize) {
         let s = &self.explosives[e];
         if s.ExplodesOnFragmentHit && !s.Armed {
-            self.explosive_start_explode(e, 0.05, true);
+            // 1.28.59: Explode(0.05f) (forceDoubleCheck false); 1.28.41: Explode(0.05f, forceDoubleCheck: true).
+            self.explosive_start_explode(e, 0.05, !crate::assets::il::is_1_28_45());
         }
     }
 
@@ -821,7 +825,13 @@ Parameter name: index"));
         let (range, mask) = (s.Range, s.BlockingLayers);
         let (lift, burn, temperature) = (s.ShockwaveLiftForce, s.BurnPower, s.AffectVictimTemperature);
         let centre = V::new(position[0], position[1]);
-        for (victim, _) in self.overlap_circle(centre, range, mask) {
+        let mut hits = self.overlap_circle(centre, range, mask);
+        // 1.28.59: Physics2D.OverlapCircleNonAlloc into the static colliderBuffer (Collider2D[8]): the query's first
+        // min(count, 8) colliders (OverlapCircleArray_Binding); 1.28.41: OverlapCircleAll, every one.
+        if crate::assets::il::is_1_28_45() {
+            hits.truncate(EXPLOSIVE_COLLIDER_BUFFER);
+        }
+        for (victim, _) in hits {
             // PhysicalObjectsInWorldByTransform: the collider sits on the physical's own Transform.
             let Some(v) = victim.filter(|&v| self.physicals[v].in_world) else { continue };
             let at = self.physicals[v].transform.position;
@@ -1655,6 +1665,11 @@ pub(crate) const HIT_BUFFER: usize = 64;
 
 /// ExplosiveBehaviour.losBuffer: static RaycastHit2D[8] (its static constructor; the rewrite's code uses it as the cap).
 pub(crate) const EXPLOSIVE_LOS_BUFFER: usize = 8;
+
+/// ExplosiveBehaviour.colliderBuffer (1.28.59): static Collider2D[8], Explode's OverlapCircleNonAlloc buffer. Its other new
+/// static, the List<Collider2D> colliderBuffer2FuckMyLife, is Explode's GetComponentsInChildren list: the same colliders in
+/// the same order as 1.28.41's array (Unity clears and fills it), cleared after, so `explosive_disable_colliders` serves both.
+pub(crate) const EXPLOSIVE_COLLIDER_BUFFER: usize = 8;
 
 impl Game {
     /// ExplosiveBehaviour.Awake: physicalBehaviour = GetComponent<PhysicalBehaviour>(); BlockingLayers 0 takes

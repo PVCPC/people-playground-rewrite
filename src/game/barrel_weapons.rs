@@ -25,7 +25,12 @@ script! {
         Projectile: Option<rt::Go> = None,
         muzzleFlash: Option<rt::Go> = None,
         myRigidBody: Option<usize> = None,
+        /// 1.28.59's [SkipSerialisation] PhysicalBehaviour (Awake: GetComponent<PhysicalBehaviour>()).
+        PhysicalBehaviour: Option<usize> = None,
         foleyAudioSource: bool = false,
+        /// 1.28.59's [SkipSerialisation] SmokeParticles: set (its ParticleSystem's component id in `present_ids`); the
+        /// Tank prefab leaves it null, Tank 23 points it at its Barrel/smoke.
+        SmokeParticles: bool = false,
     }
 }
 
@@ -98,8 +103,14 @@ impl Game {
         Xf::this(s.this_physical, s.this_physics)
     }
 
+    /// TankBarrelBehaviour.Awake (1.28.59): PhysicalBehaviour = GetComponent<PhysicalBehaviour>().
+    pub fn tank_barrel_behaviour_awake(&mut self, t: usize) {
+        let s = &mut self.tr.tank_barrel_behaviour[t];
+        s.PhysicalBehaviour = s.this_physical;
+    }
+
     /// TankBarrelBehaviour.Use (when enabled): a 300° shell along the barrel, a pulse explosion at the muzzle, the recoil
-    /// impulse and the muzzle flash.
+    /// impulse and the muzzle flash; 1.28.59 also heats the barrel and plays SmokeParticles.
     pub fn tank_barrel_behaviour_use(&mut self, t: usize, _activation: Activation) {
         if !self.tr.tank_barrel_behaviour[t].enabled {
             return;
@@ -118,6 +129,12 @@ impl Game {
             _ => None,
         };
         self.physicals[rt::nn(p)].Temperature = 300.0;
+        let v59 = crate::assets::il::is_1_28_45();
+        if v59 {
+            // PhysicalBehaviour.Temperature = Mathf.Lerp(PhysicalBehaviour.Temperature, 1200f, 0.02f)
+            let pb = rt::nn(self.tr.tank_barrel_behaviour[t].PhysicalBehaviour);
+            self.physicals[pb].Temperature = super::mathf::lerp(self.physicals[pb].Temperature, 1200.0, 0.02);
+        }
         let recoil = (d(self.tr.tank_barrel_behaviour[t].RecoilIntensity) * self.tr_lossy_scale(self.tank_barrel_xf(t))[0]).f();
         let rb = rt::nn(self.tr.tank_barrel_behaviour[t].myRigidBody);
         self.physicals[rb].rigidbody.add_relative_force_impulse(&mut self.world, rt::mul([-1.0, 0.0], recoil));
@@ -125,6 +142,13 @@ impl Game {
         let at = self.tank_barrel_behaviour_get_barrel_position(t);
         let dir = self.tank_barrel_behaviour_get_barrel_direction(t);
         self.barrel_spawn(flash, at, dir);
+        if v59 {
+            // SmokeParticles.Play() (withChildren: true); a null one (the Tank prefab's) throws here, after all of the above.
+            let s = &self.tr.tank_barrel_behaviour[t];
+            rt::pres(s.SmokeParticles);
+            let id = s.this_id;
+            self.ps_field_play_stop(id, "SmokeParticles", true);
+        }
     }
 
     /// TankBarrelBehaviour.GetBarrelPosition

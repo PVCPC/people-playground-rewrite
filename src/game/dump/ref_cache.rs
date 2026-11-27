@@ -121,6 +121,8 @@ pub(super) static REF_CACHE: &[(&str, &[&str])] = &[
     ("SortingLayerChild.Awake", &["spriteRenderer", "lineRenderer", "particleSystem"]),
     ("SoundOnShakeBehaviour.Awake", &["rb"]),
     ("SyringeBehaviour.Awake", &["spriteRenderer"]),
+    // 1.28.59 (by hand, ref_cache.py reads 1.28.41): Awake's PhysicalBehaviour = GetComponent<PhysicalBehaviour>().
+    ("TankBarrelBehaviour.Awake", &["PhysicalBehaviour"]),
     ("TelevisionBehaviour.Awake", &["physicalBehaviour"]),
     ("TemperatureTransferBehaviour.Awake", &["phys"]),
     ("TeslaCoilLightningBoltBehaviour.Awake", &["lineRenderer"]),

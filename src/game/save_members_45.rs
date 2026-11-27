@@ -21,6 +21,8 @@ pub const PUBLIC_MEMBERS: &[(&str, &[&str])] = &[
     ("WaterBreathingSyringe", &["Finite", "CanToggleInfinite", "PressureMode", "NewlySpawned", "IsAttachedToLauncher", "MeasuredPressure", "SerialisableDistributions"]),
     ("ZombieSyringe", &["Finite", "CanToggleInfinite", "PressureMode", "NewlySpawned", "IsAttachedToLauncher", "MeasuredPressure", "SerialisableDistributions"]),
     // 1.28.57: EnergySwordBehaviour.Color.
+    // 1.28.59: MachineGunBehaviour's RecoilMultiplier, TemperatureTarget, HeatIntensity (declared after FireRateMultiplier).
+    ("MachineGunBehaviour", &["ExplosiveRounds", "ExplosionSettings", "FireRateMultiplier", "RecoilMultiplier", "TemperatureTarget", "HeatIntensity", "ShockwaveIntensity", "Automatic"]),
     ("EnergySwordBehaviour", &["Color", "Activated", "SerialisableVictims"]),
     ("AppliedBandageBehaviour", &["SoakColour", "localRenderEndpoint", "targetDistance", "SpringStrength", "WireWidth", "WireColor", "WireMaterialName", "usedToHaveConnectedBody", "currentConnectedAnchor", "currentAnchor", "currentBreakingForce", "Invisible"]),
     // 1.28.45's new classes.
@@ -85,11 +87,18 @@ pub const MEMBER_TYPES: &[(&str, &str, &str)] = &[
     ("ProjectileLauncherBehaviour", "LayerToPutProjectileOn", "System.Int32"),
     ("ProjectileLauncherBehaviour", "RemoveLaunchedObjectsWithMe", "System.Boolean"),
     ("EnergySwordBehaviour", "Color", "UnityEngine.Color"),
+    ("MachineGunBehaviour", "RecoilMultiplier", "System.Single"),
+    ("MachineGunBehaviour", "TemperatureTarget", "System.Single"),
+    ("MachineGunBehaviour", "HeatIntensity", "System.Single"),
 ];
 
 pub const IMMUTABLE_MEMBERS: &[(&str, &str)] = &[
     ("PhysicalBehaviour", "SelectionPriority"),
     ("ThrusterbedBehaviour", "ChargeBoostModifier"),
+    // 1.28.59: no statement assigns them (Shoot only reads them), like the class's other members.
+    ("MachineGunBehaviour", "RecoilMultiplier"),
+    ("MachineGunBehaviour", "TemperatureTarget"),
+    ("MachineGunBehaviour", "HeatIntensity"),
     // 1.28.45's new classes.
     ("CrossbowBehaviour", "SyringeEjectForce"),
     ("CrossbowBehaviour", "SyringeFluidUsage"),

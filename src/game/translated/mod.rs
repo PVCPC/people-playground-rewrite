@@ -357,6 +357,8 @@ pub fn link_fields(class: &str) -> &'static [(&'static str, LinkKind)] {
         "RocketLauncherBehaviour" => &[("Projectile", LinkKind::Prefab), ("AudioSource", LinkKind::Present), ("LaunchingSounds", LinkKind::Len)],
         "RotorBehaviour" => &[("Hinge", LinkKind::Hinge), ("AudioSource", LinkKind::Present), ("PhysicalBehaviour", LinkKind::Physical), ("ActiveLight", LinkKind::Present)],
         "SirenBehaviour" => &[("AudioSource", LinkKind::Present), ("SirenSound", LinkKind::Present), ("BrokenSirenSound", LinkKind::Present), ("DamagableMachineryBehaviour", LinkKind::Handwritten("DamagableMachineryBehaviour"))],
+        // 1.28.59 adds SmokeParticles (1.28.41's prefabs have no such field).
+        "TankBarrelBehaviour" if crate::assets::il::is_1_28_45() => &[("Projectile", LinkKind::Prefab), ("muzzleFlash", LinkKind::Prefab), ("myRigidBody", LinkKind::Rigidbody), ("foleyAudioSource", LinkKind::Present), ("SmokeParticles", LinkKind::Present)],
         "TankBarrelBehaviour" => &[("Projectile", LinkKind::Prefab), ("muzzleFlash", LinkKind::Prefab), ("myRigidBody", LinkKind::Rigidbody), ("foleyAudioSource", LinkKind::Present)],
         "TargetLineRenderer" => &[("LineRenderer", LinkKind::Present), ("Target", LinkKind::Transform)],
         _ => &[],
@@ -597,6 +599,7 @@ impl Game {
             (TBehaviour::TankBarrelBehaviour(i), "muzzleFlash", LinkVal::Prefab(v)) => self.tr.tank_barrel_behaviour[i].muzzleFlash = v,
             (TBehaviour::TankBarrelBehaviour(i), "myRigidBody", LinkVal::Physical(v)) => self.tr.tank_barrel_behaviour[i].myRigidBody = v,
             (TBehaviour::TankBarrelBehaviour(i), "foleyAudioSource", LinkVal::Present(v)) => self.tr.tank_barrel_behaviour[i].foleyAudioSource = v,
+            (TBehaviour::TankBarrelBehaviour(i), "SmokeParticles", LinkVal::Present(v)) => self.tr.tank_barrel_behaviour[i].SmokeParticles = v,
             (TBehaviour::TargetLineRenderer(i), "LineRenderer", LinkVal::Present(v)) => self.tr.target_line_renderer[i].LineRenderer = v,
             (TBehaviour::TargetLineRenderer(i), "Target", LinkVal::Transform(v)) => self.tr.target_line_renderer[i].Target = v,
             (b, f, v) => panic!("{b:?}.{f} linked with {v:?}"),
@@ -673,6 +676,8 @@ impl Game {
             TBehaviour::IonThrusterBehaviour(i) => self.ion_thruster_behaviour_awake(i),
             TBehaviour::MagnetBehaviour(i) => self.magnet_behaviour_awake(i),
             TBehaviour::TargetLineRenderer(i) => self.target_line_renderer_hand(i, true),
+            // 1.28.59's TankBarrelBehaviour.Awake (1.28.41 has none).
+            TBehaviour::TankBarrelBehaviour(i) if crate::assets::il::is_1_28_45() => self.tank_barrel_behaviour_awake(i),
             _ => {}
         }
     }

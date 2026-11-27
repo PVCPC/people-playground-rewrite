@@ -12,6 +12,11 @@ script! {
         barrelDirection: [f32; 2] = [0.0; 2],
         ExplosiveRounds: bool = false,
         FireRateMultiplier: f32 = 1.0,
+        /// RecoilMultiplier, TemperatureTarget, HeatIntensity: 1.28.59's new fields (its .ctor's initialisers; 1.28.41's
+        /// prefabs have none, and its Shoot reads none).
+        RecoilMultiplier: f32 = 2.0,
+        TemperatureTarget: f32 = 900.0,
+        HeatIntensity: f32 = 0.03,
         ShockwaveIntensity: f32 = 0.25,
         Automatic: bool = true,
         DistantSound: i32 = 0,
@@ -89,7 +94,7 @@ impl Game {
         [v[0] * s, v[1] * s]
     }
 
-    /// MachineGunBehaviour.Shoot; Effect.Play is particles.
+    /// MachineGunBehaviour.Shoot.
     pub(crate) fn machine_gun_shoot(&mut self, m: usize) {
         let g = &self.machine_guns[m];
         let (explosive, settings) = (g.ExplosiveRounds, g.ExplosionSettings);
@@ -107,7 +112,18 @@ impl Game {
         let direction = self.machine_gun_barrel_direction(m);
         let at = self.machine_gun_barrel_position(m);
         let rb = self.physicals[p].rigidbody.clone();
-        rb.add_impulse_at_position(&mut self.world, [direction[0] * -15.0, direction[1] * -15.0], at);
+        // 1.28.59: BarrelDirection * (-15f * RecoilMultiplier); 1.28.41: BarrelDirection * -15f.
+        let recoil = if crate::assets::il::is_1_28_45() { -15.0 * self.machine_guns[m].RecoilMultiplier } else { -15.0 };
+        rb.add_impulse_at_position(&mut self.world, [direction[0] * recoil, direction[1] * recoil], at);
+        // Effect.Play() (withChildren: true).
+        let id = self.machine_guns[m].id;
+        self.ps_field_play_stop(id, "Effect", true);
+        // 1.28.59: phys.Temperature = Mathf.Lerp(phys.Temperature, TemperatureTarget, HeatIntensity).
+        if crate::assets::il::is_1_28_45() {
+            let g = &self.machine_guns[m];
+            let (target, heat) = (g.TemperatureTarget, g.HeatIntensity);
+            self.physicals[p].Temperature = mathf::lerp(self.physicals[p].Temperature, target, heat);
+        }
         let k = self.machine_guns[m].ShockwaveIntensity;
         if k > mathf::EPSILON {
             let at = self.machine_gun_barrel_position(m);

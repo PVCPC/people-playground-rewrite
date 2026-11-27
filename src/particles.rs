@@ -3513,6 +3513,9 @@ pub enum Listed {
     /// Stops it (isPlaying), so it is stopped and empty and the next EndUpdateAll walk removes it. Under water Update
     /// would Play it, which needs its seeds (a stop in the replay).
     SmokePuff(usize),
+    /// ponytail: any other listed system (a PhysicalBehaviour's bubble or charge particles) is taken to leave at the first
+    /// EndUpdateAll; the recordings carry neither its seeds nor its particles. One that plays on needs both.
+    Ghost,
 }
 
 /// A loaded SpawnParticles' system clock (it holds no particles): `t` advances as Update0's
@@ -3947,7 +3950,7 @@ pub fn begin_update_all(g: &mut Game) {
                 Listed::Bleed => bleed_of(i),
                 Listed::Trail(psm) => Some(trail_of(psm).expect("a listed Trail's bleed has its sub-emitter run")),
                 Listed::Puff(b, j) => puff_of(b, j),
-                Listed::Destroyed(_) | Listed::WaterPuff(_) | Listed::SmokePuff(_) => None,
+                Listed::Destroyed(_) | Listed::WaterPuff(_) | Listed::SmokePuff(_) | Listed::Ghost => None,
             };
             let id = id.unwrap_or_else(|| {
                 manager.next += 1;
@@ -4197,7 +4200,7 @@ pub fn end_update_all(g: &mut Game) -> Vec<crate::game::Pooled> {
         // comes first); a stopped smoke puff at once; a water puff only at its Destroy.
         if let Some(k) = m.ghosts.get_mut(&id) {
             let gone = match &mut k.1 {
-                None => matches!(k.0, Listed::SmokePuff(_)),
+                None => matches!(k.0, Listed::SmokePuff(_) | Listed::Ghost),
                 Some(c) => {
                     c.t += if c.unscaled { g.time.unscaledDeltaTime } else { g.time.deltaTime } * c.speed;
                     c.t > c.end

@@ -398,11 +398,19 @@ pub(super) const STATICS: &[(&str, fn() -> Vec<(&'static str, String)>)] = &[
     ("EggBehaviour.static setup", || vec![("canEnter", format!("{:?}", crate::game::acts::CAN_ENTER)), ("enteredCode", format!("{:?}", crate::game::acts::ENTERED_CODE))]),
     ("EnergySwordBehaviour.static setup", || vec![("buffer", format!("{:?}", crate::game::energy_sword::BUFFER))]),
     ("ExplosionCreator.static setup", || vec![("hitBuffer", format!("{:?}", crate::game::explosion::HIT_BUFFER))]),
-    ("ExplosiveBehaviour.static setup", || vec![("losBuffer", format!("{:?}", crate::game::explosion::EXPLOSIVE_LOS_BUFFER))]),
+    // 1.28.59 adds colliderBuffer (Collider2D[8]) and colliderBuffer2FuckMyLife (an empty List<Collider2D>).
+    ("ExplosiveBehaviour.static setup", || {
+        let mut v = vec![("losBuffer", format!("{:?}", crate::game::explosion::EXPLOSIVE_LOS_BUFFER))];
+        if crate::assets::il::is_1_28_45() {
+            v.push(("colliderBuffer", format!("{:?}", crate::game::explosion::EXPLOSIVE_COLLIDER_BUFFER)));
+            v.push(("colliderBuffer2FuckMyLife", "[]".to_string()));
+        }
+        v
+    }),
     ("FanBehaviour.static setup", || vec![("buffer", format!("{:?}", crate::game::translated::Translated::default().fan_behaviour__buffer.len()))]),
     ("FlamethrowerBehaviour.static setup", || vec![("buffer", format!("{:?}", crate::game::flamethrower::FLAMETHROWER_BUFFER))]),
     ("FuseBoxBehaviour.static setup", || vec![("d", format!("{:?}", String::from_utf8_lossy(&crate::game::antenna::FUSE_BOX_D)))]),
-    ("GameInfo.static setup", || vec![("Version", format!("{:?}", crate::ui::debug_info::VERSION))]),
+    ("GameInfo.static setup", || { let (a, b, c) = crate::ui::debug_info::version(); vec![("Version", format!("{:?}", crate::ui::debug_info::Version { _Major: a, _Minor: b, _Build: c, _Revision: -1 }))] }),
     ("GorseDroolingBehaviour.static setup", || vec![("buffer", format!("{:?}", crate::game::gorse::GORSE_DROOLING_BUFFER))]),
     ("GripBehaviour.static setup", || vec![("buffer", format!("{:?}", crate::game::grip::GRIP_BUFFER))]),
     ("HappyTypeBinder.static setup", || vec![("BlockedNamespaces", format!("{:?}", crate::game::ceras::BLOCKED_NAMESPACES))]),
